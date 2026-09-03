@@ -1,0 +1,25 @@
+entrypoint = "backend/app/main.py"
+modules = ["python-3.12", "nodejs-20"]
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PYTHONUNBUFFERED = "1"
+
+# Local Replit "Run" button: dev mode (backend --reload + Vite dev server).
+run = "bash scripts/dev.sh"
+
+[deployment]
+# Replit Deployment: single command that installs deps, builds the frontend,
+# runs Alembic migrations, and serves API + built SPA from one process.
+run = ["bash", "scripts/start.sh"]
+deploymentTarget = "autoscale"
+
+[[ports]]
+localPort = 8000
+externalPort = 80
+
+[[ports]]
+localPort = 5173
+externalPort = 5173
