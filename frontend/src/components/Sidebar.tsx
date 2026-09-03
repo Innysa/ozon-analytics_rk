@@ -18,6 +18,9 @@ export function Sidebar() {
         <NavLink to="/products" className={linkClass}>
           Товары
         </NavLink>
+        <NavLink to="/advertising" className={linkClass}>
+          Реклама
+        </NavLink>
         <NavLink to="/ai-settings" className={linkClass}>
           Настройки ответов
         </NavLink>

@@ -23,7 +23,7 @@ def _get_or_none(db: Session, store_id: str) -> OzonCredentials | None:
 @router.get("/credentials", response_model=OzonCredentialsOut)
 def get_credentials(ctx: StoreContext = Depends(require_store_role(StoreRole.OWNER)), db: Session = Depends(get_db)) -> OzonCredentialsOut:
     creds = _get_or_none(db, ctx.store_id)
-    if not creds:
+    if not creds or not creds.client_id_encrypted:
         return OzonCredentialsOut(configured=False)
     return OzonCredentialsOut(
         configured=True,
@@ -75,7 +75,7 @@ def check_connection(
     ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)), db: Session = Depends(get_db)
 ) -> OzonCredentialsOut:
     creds = _get_or_none(db, ctx.store_id)
-    if not creds:
+    if not creds or not creds.client_id_encrypted:
         return OzonCredentialsOut(configured=False, last_connection_ok=False, last_connection_message="Ключи Ozon не заданы")
 
     client_id = decrypt_secret(creds.client_id_encrypted)

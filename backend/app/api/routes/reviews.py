@@ -359,7 +359,7 @@ def publish_comment(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Публиковать можно только одобренный ответ")
 
     creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
-    if not creds or creds.reviews_api_available is False:
+    if not creds or not creds.client_id_encrypted or creds.reviews_api_available is False:
         comment.publish_error = "Публикация через API недоступна для этого магазина. Скопируйте ответ для ручной публикации."
         db.flush()
         record_audit(db, action="reply_publish_attempt", user_id=user.id, store_id=ctx.store_id, target_type="review_comment", target_id=comment.id, result="failure", message=comment.publish_error)

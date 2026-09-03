@@ -165,8 +165,28 @@ export interface SyncRun {
   status: string;
   started_at: string;
   finished_at: string | null;
-  reviews_fetched: number;
-  reviews_created: number;
-  reviews_skipped_duplicate: number;
+  items_fetched: number;
+  items_created: number;
+  items_skipped_duplicate: number;
   error_message: string | null;
+}
+
+export interface PerformanceCredentialsStatus {
+  configured: boolean;
+  client_id_masked?: string | null;
+  client_secret_masked?: string | null;
+  last_connection_check_at?: string | null;
+  last_connection_ok?: boolean | null;
+  last_connection_message?: string | null;
+}
+
+export interface AdvertisingCampaign {
+  id: string;
+  ozon_campaign_id: string;
+  name: string | null;
+  campaign_type: string | null;
+  state: string | null;
+  daily_budget_rub: number | null;
+  date_from: string | null;
+  date_to: string | null;
 }

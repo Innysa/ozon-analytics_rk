@@ -6,11 +6,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
+    advertising,
     ai_settings,
     analytics,
     auth,
     change_history,
     ozon_connection,
+    ozon_performance,
     products,
     reviews,
     review_upload,
@@ -38,6 +40,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(stores.router)
 app.include_router(ozon_connection.router)
+app.include_router(ozon_performance.router)
+app.include_router(advertising.router)
 app.include_router(sync.router)
 app.include_router(review_upload.router)
 app.include_router(reviews.router)
