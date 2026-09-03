@@ -190,3 +190,71 @@ export interface AdvertisingCampaign {
   date_from: string | null;
   date_to: string | null;
 }
+
+export interface AdvertisingStatistic {
+  id: string;
+  product_id: string | null;
+  product_name: string | null;
+  product_sku: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  ozon_campaign_id: string;
+  ad_tool: string | null;
+  placement: string | null;
+  period_start: string;
+  period_end: string;
+  spend_rub: number;
+  sales_promo_rub: number | null;
+  units_sold: number | null;
+  impressions: number | null;
+  clicks: number | null;
+  ctr_pct_ozon: number | null;
+  cart_additions: number | null;
+  cart_conversion_pct_ozon: number | null;
+  drr_promo_pct_ozon: number | null;
+  drr_total_pct_ozon: number | null;
+  cost_per_order_rub_ozon: number | null;
+  avg_cpc_rub_ozon: number | null;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+}
+
+export interface AdvertisingStatisticListResponse {
+  items: AdvertisingStatistic[];
+  total: number;
+}
+
+export interface CampaignBreakdown {
+  campaign_id: string;
+  campaign_name: string;
+  spend_rub: number;
+  sales_promo_rub: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+}
+
+export interface ProductBreakdown {
+  product_id: string;
+  product_name: string;
+  spend_rub: number;
+  sales_promo_rub: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+}
+
+export interface AdvertisingAnalytics {
+  has_data: boolean;
+  period_start: string | null;
+  period_end: string | null;
+  total_spend_rub: number;
+  total_sales_promo_rub: number;
+  total_impressions: number;
+  total_clicks: number;
+  total_units_sold: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+  ctr_calculated_pct: number | null;
+  avg_cpc_calculated_rub: number | null;
+  by_campaign: CampaignBreakdown[];
+  by_product: ProductBreakdown[];
+}

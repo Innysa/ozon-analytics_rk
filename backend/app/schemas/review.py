@@ -71,10 +71,3 @@ class ReviewCommentUpdate(BaseModel):
 
 class RewriteInstruction(BaseModel):
     instruction: str  # shorter | warmer | formal | regenerate
-
-
-class ImportSummary(BaseModel):
-    fetched: int
-    created: int
-    skipped_duplicate: int
-    errors: list[str]

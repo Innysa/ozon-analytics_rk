@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.models.membership import StoreRole
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
-from app.schemas.review import ImportSummary
+from app.schemas.common import ImportSummary
 from app.services.audit import record_audit
 from app.services.review_import import import_reviews_from_file
 
