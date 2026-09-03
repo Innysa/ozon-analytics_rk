@@ -53,7 +53,8 @@ README.md
    в Replit Secrets.
 3. Добавьте остальные секреты в Replit Secrets (Tools → Secrets), не в код и не в `.env`:
    `SESSION_SECRET`, `APP_ENCRYPTION_KEY`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`,
-   `YANDEX_MODEL`, `AI_PROVIDER=yandex`.
+   `YANDEX_MODEL`, `AI_PROVIDER=yandex`. Для Replit Deployment дополнительно задайте
+   `ENV=production` — это включает флаг `Secure` у сессионной cookie (HTTPS‑only).
 4. Нажмите Run — выполнится `scripts/dev.sh` (backend с автоперезагрузкой + Vite).
 5. Для Replit Deployment используется `scripts/start.sh`: он ставит зависимости,
    собирает frontend, накатывает миграции Alembic и поднимает единственный процесс

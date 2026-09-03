@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserOut(BaseModel):
@@ -14,7 +14,7 @@ class UserOut(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
-    password: str
+    password: str = Field(min_length=8, max_length=200)
     is_admin: bool = False
 
 
@@ -22,4 +22,4 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     is_admin: bool | None = None
     is_active: bool | None = None
-    password: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=200)

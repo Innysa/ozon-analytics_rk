@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, get_current_user, require_store_role
 from app.core.encryption import decrypt_secret
+from app.db.base import utcnow
 from app.db.session import get_db
 from app.models.membership import StoreRole
 from app.models.ozon_credentials import OzonCredentials
@@ -334,7 +335,7 @@ def approve_comment(
 
     comment.status = CommentStatus.APPROVED
     comment.approved_by_user_id = user.id
-    comment.approved_at = datetime.utcnow().isoformat()
+    comment.approved_at = utcnow().isoformat()
     review.status = ReviewStatus.APPROVED
     db.flush()
     record_audit(db, action="reply_approved", user_id=user.id, store_id=ctx.store_id, target_type="review_comment", target_id=comment.id)
