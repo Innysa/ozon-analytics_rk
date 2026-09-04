@@ -21,6 +21,7 @@ import pandas as pd
 
 from app.models.product import Product
 from app.models.review import Review, ReviewSource, ReviewStatus
+from app.services.xlsx_compat import tolerant_xlsx_bytes
 
 _COLUMN_ALIASES = {
     "ozon_review_id": {"ozon_review_id", "id_отзыва", "review_id", "id отзыва"},
@@ -57,7 +58,7 @@ def _normalize_columns(df: pd.DataFrame) -> dict[str, str]:
 def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     if filename.lower().endswith(".csv"):
         return pd.read_csv(io.BytesIO(content))
-    return pd.read_excel(io.BytesIO(content))
+    return pd.read_excel(io.BytesIO(tolerant_xlsx_bytes(content)))
 
 
 def import_reviews_from_file(

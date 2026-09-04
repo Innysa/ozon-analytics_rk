@@ -1,33 +1,21 @@
-"""Structural placeholders for future modules (card/sales analytics, search
+"""Structural placeholder for the one remaining unimplemented module (search
 queries).
 
-These tables exist so the schema/architecture is ready, per the spec, but are
+This table exists so the schema/architecture is ready, per the spec, but is
 NOT populated with fabricated data anywhere in this codebase. Endpoints that
-would read them return "no data" rather than synthesizing numbers.
+would read it return "no data" rather than synthesizing numbers.
 
-Advertising campaign metadata (app.models.advertising_campaign) and
-advertising performance statistics (app.models.advertising_statistic) are no
-longer placeholders — both are populated from real Ozon data (Performance API
-sync and CSV/XLSX import of Ozon's own "Продвижение → Статистика" export,
-respectively).
+Advertising campaign metadata (app.models.advertising_campaign), advertising
+performance statistics (app.models.advertising_statistic), and product-card
+analytics (app.models.product_card_statistic) are no longer placeholders —
+all are populated from real Ozon data (Performance API sync, and CSV/XLSX
+import of Ozon's own "Продвижение → Статистика" / "Аналитика → Товары"
+exports, respectively).
 """
-from sqlalchemy import Date, ForeignKey, Numeric, String
+from sqlalchemy import Date, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, new_uuid
-
-
-class ProductDailyMetric(TimestampMixin, Base):
-    __tablename__ = "product_daily_metrics"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
-    product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
-    date: Mapped[Date] = mapped_column(Date, nullable=False, index=True)
-
-    views: Mapped[int | None] = mapped_column(nullable=True)
-    orders: Mapped[int | None] = mapped_column(nullable=True)
-    revenue_rub: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
 
 
 class SearchQuery(TimestampMixin, Base):

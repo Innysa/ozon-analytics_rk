@@ -258,3 +258,66 @@ export interface AdvertisingAnalytics {
   by_campaign: CampaignBreakdown[];
   by_product: ProductBreakdown[];
 }
+
+export interface ProductCardStatistic {
+  id: string;
+  product_id: string | null;
+  product_name: string | null;
+  ozon_sku: string;
+  offer_id: string | null;
+  brand: string | null;
+  category_l1: string | null;
+  fulfillment_scheme: string | null;
+  date: string;
+  impressions_total: number | null;
+  impressions_search_catalog: number | null;
+  card_visits: number | null;
+  cart_adds_total: number | null;
+  ordered_units: number | null;
+  delivered_units: number | null;
+  bought_out_units: number | null;
+  cancelled_units_by_order_date: number | null;
+  returned_units_by_order_date: number | null;
+  ordered_sum_actual_price_rub: number | null;
+  search_catalog_position_ozon: number | null;
+  conv_impression_to_order_pct_ozon: number | null;
+  conv_to_cart_total_pct_ozon: number | null;
+  conv_cart_to_order_pct_ozon: number | null;
+  conv_order_to_buyout_pct_ozon: number | null;
+  avg_price_rub: number | null;
+  price_index_label_ozon: string | null;
+  drr_pct_ozon: number | null;
+  stock_end_of_period: number | null;
+  reviews_count: number | null;
+  rating: number | null;
+}
+
+export interface ProductCardStatisticListResponse {
+  items: ProductCardStatistic[];
+  total: number;
+}
+
+export interface ProductCardAnalytics {
+  has_data: boolean;
+  date_from: string | null;
+  date_to: string | null;
+  total_impressions: number;
+  total_card_visits: number;
+  total_cart_adds: number;
+  total_ordered_units: number;
+  total_delivered_units: number;
+  total_bought_out_units: number;
+  total_cancelled_units: number;
+  total_returned_units: number;
+  total_ordered_sum_rub: number;
+  latest_stock: number | null;
+  latest_reviews_count: number | null;
+  latest_rating: number | null;
+  latest_avg_price_rub: number | null;
+  latest_price_index_label: string | null;
+  cart_conversion_calculated_pct: number | null;
+  order_conversion_calculated_pct: number | null;
+  buyout_rate_calculated_pct: number | null;
+  rating_trend: { date: string; rating: number }[];
+  stock_trend: { date: string; stock: number }[];
+}
