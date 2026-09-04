@@ -67,6 +67,10 @@ frontend/     React + TS + Vite SPA
 migrations/   Alembic-миграции (общие для всего проекта)
 tests/        Pytest, включая тесты изоляции магазинов
 scripts/      dev.sh (разработка), start.sh (единая команда запуска)
+docker/       entrypoint.sh контейнера app, nginx.conf для TLS-оверлея
+Dockerfile                  многоступенчатая сборка frontend + backend
+docker-compose.yml          app + PostgreSQL
+docker-compose.proxy.yml    опциональный оверлей: nginx + certbot (TLS)
 README.md
 .env.example
 ```
@@ -92,6 +96,125 @@ README.md
    cd backend && source .venv/bin/activate
    python -m app.seed.bootstrap_admin admin@example.com "Имя Фамилия" пароль
    ```
+
+## Развёртывание на своём сервере (Docker)
+
+Для запуска вне Replit — на своём VPS или выделенном сервере — в репозитории есть
+`Dockerfile` и `docker-compose.yml`: тот же принцип, что и в `scripts/start.sh` (один
+процесс `uvicorn` отдаёт и API, и собранный frontend), но в контейнере и со своей
+PostgreSQL рядом.
+
+### Минимальные требования к серверу
+
+- **CPU**: 1 vCPU для старта достаточно (один процесс uvicorn без воркеров +
+  PostgreSQL на той же машине); 2 vCPU — комфортный запас, если магазинов/пользователей
+  станет больше одного-двух.
+- **RAM**: от 1 ГБ (PostgreSQL ~150–300 МБ, backend на Python ~150–250 МБ, плюс ОС);
+  реально рекомендуется **2 ГБ**, особенно с запасом на кратковременные пики при разборе
+  больших XLSX-отчётов через pandas (импорт держит весь файл в памяти).
+- **Диск**: 10–20 ГБ для старта (образы Docker + база + логи); дальше растёт вместе с
+  объёмом загруженных отчётов и историей отзывов — на типичных объёмах одного магазина
+  рост медленный (десятки МБ в месяц), но стоит иметь план по мониторингу места.
+- **ОС**: любой Linux с Docker Engine 24+ и Docker Compose plugin (протестировано на
+  Ubuntu 22.04/24.04 LTS). GPU не нужен — обращения к ИИ идут во внешний Yandex AI
+  Studio API, локальная модель не запускается.
+- **Сеть**: публичный IP, открытые порты 80/443 (для TLS-прокси) либо только 8000, если
+  сервис будет за уже существующим реверс-прокси или доступен только по VPN/приватной сети.
+
+Один сервер такого размера спокойно тянет несколько магазинов при типичной для малого/
+среднего продавца нагрузке; рост требований в первую очередь придётся на PostgreSQL при
+накоплении больших объёмов отзывов/статистики — тогда есть смысл вынести БД на отдельную
+машину или взять управляемый PostgreSQL.
+
+### Быстрый старт
+
+```bash
+git clone <URL вашего форка/репозитория>
+cd ozon-analytics_rk
+cp .env.example .env
+```
+
+Заполните `.env`: `POSTGRES_PASSWORD` (произвольный пароль для контейнера БД —
+обязателен, `docker compose` откажется стартовать без него), `SESSION_SECRET` и
+`APP_ENCRYPTION_KEY` (команды для генерации — см. комментарии в `.env.example`),
+`AI_PROVIDER`/`YANDEX_*` (или `AI_PROVIDER=demo` без реального ИИ-провайдера),
+`ENV=production` (включает `Secure` у сессионной cookie), `CORS_ORIGINS` — домен, с
+которого будет открываться приложение. `DATABASE_URL` в `.env` для Docker-запуска не
+используется — `docker-compose.yml` строит его сам из `POSTGRES_*` и указывает на
+контейнер `db`.
+
+```bash
+docker compose up -d --build
+```
+
+Поднимутся два контейнера: `db` (PostgreSQL 16 с volume `db_data` — данные переживают
+пересборку и перезапуск) и `app` (собирает frontend, накатывает миграции Alembic при
+каждом старте контейнера через `docker/entrypoint.sh`, поднимает uvicorn). Приложение
+будет доступно на `http://<адрес сервера>:8000`. Проверить, что всё поднялось:
+
+```bash
+curl http://localhost:8000/api/health
+```
+
+Создайте первого администратора (без него в приложение попасть некому):
+
+```bash
+docker compose exec app python -m app.seed.bootstrap_admin admin@example.com "Имя Фамилия" пароль
+```
+
+### TLS на своём домене (nginx + Let's Encrypt)
+
+Порт 8000 напрямую без TLS годится для теста или для работы за уже существующим
+прокси/VPN, но не для боевой эксплуатации с реальными паролями и данными. Для
+терминации TLS в комплекте есть оверлей `docker-compose.proxy.yml` (nginx + certbot):
+
+1. В `docker/nginx.conf` замените `YOUR_DOMAIN` на реальный домен (два места).
+2. Направьте DNS A-запись домена на IP сервера.
+3. Первичный выпуск сертификата (webroot-режим, порт 80 должен быть свободен и открыт):
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d db app nginx
+   docker compose -f docker-compose.yml -f docker-compose.proxy.yml run --rm certbot \
+     certonly --webroot -w /var/www/certbot -d YOUR_DOMAIN --email you@example.com --agree-tos --no-eff-email
+   docker compose -f docker-compose.yml -f docker-compose.proxy.yml restart nginx
+   ```
+4. Продление сертификата не автоматизировано контейнером certbot (он не крутит цикл
+   сам) — добавьте в cron/systemd-таймер на хосте раз в день-два:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.proxy.yml run --rm certbot renew \
+     && docker compose -f docker-compose.yml -f docker-compose.proxy.yml exec nginx nginx -s reload
+   ```
+
+С этим оверлеем `app` перестаёт слушать порт 8000 на всех интерфейсах (только
+`127.0.0.1`) — наружу торчит только nginx на 80/443.
+
+### Резервное копирование и обновление
+
+```bash
+# бэкап БД (том db_data не даёт файловой копии — дамп через pg_dump внутри контейнера)
+docker compose exec db pg_dump -U ozon_app ozon_analytics > backup_$(date +%F).sql
+
+# восстановление
+cat backup_2026-09-04.sql | docker compose exec -T db psql -U ozon_app ozon_analytics
+
+# обновление на новую версию кода
+git pull
+docker compose up -d --build   # миграции Alembic накатятся автоматически при старте
+```
+
+### Ограничение проверки в этой сессии
+
+Собрать образ и реально поднять контейнеры в этой (песочничной) сессии не удалось —
+исходящий сетевой доступ к CDN Docker Hub (`production.cloudfront.docker.com`, откуда
+тянутся слои базовых образов `python:3.12-slim`/`node:20-alpine`) заблокирован политикой
+исходящего трафика этой среды. Проверено то, что было доступно: `docker compose config`
+(включая merge с `docker-compose.proxy.yml` — override портов через `!override`
+подтверждён рабочим на установленной здесь версии Docker Compose), синтаксис
+`docker/entrypoint.sh` (`bash -n`), и путь `frontend/dist` в многоступенчатой сборке
+подобран так, чтобы совпасть с тем, что уже проверено в `scripts/start.sh`/Replit
+(`Path(__file__).resolve().parents[2]` в `app/main.py` указывает на `/app` при раскладке
+`/app/backend/app/main.py` + `/app/frontend/dist`). Перед боевым использованием
+рекомендуется один раз прогнать `docker compose up -d --build` на реальном сервере с
+доступом в интернет и свериться с логами.
 
 ## Локальный запуск
 
