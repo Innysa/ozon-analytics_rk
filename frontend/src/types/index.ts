@@ -321,3 +321,50 @@ export interface ProductCardAnalytics {
   rating_trend: { date: string; rating: number }[];
   stock_trend: { date: string; stock: number }[];
 }
+
+export interface SearchQueryStatistic {
+  id: string;
+  product_id: string | null;
+  product_name: string | null;
+  ozon_sku: string;
+  offer_id: string | null;
+  query_text: string;
+  period_start: string;
+  period_end: string;
+  people_searched: number | null;
+  people_saw: number | null;
+  position_ozon: number | null;
+  conv_search_to_card_pct_ozon: number | null;
+  conv_search_to_order_pct_ozon: number | null;
+  ordered_units_by_query: number | null;
+  ordered_sum_by_query_rub: number | null;
+}
+
+export interface SearchQueryStatisticListResponse {
+  items: SearchQueryStatistic[];
+  total: number;
+}
+
+export interface TopQueryItem {
+  query_text: string;
+  people_searched: number | null;
+  people_saw: number | null;
+  position_ozon: number | null;
+  ordered_units_by_query: number | null;
+  ordered_sum_by_query_rub: number | null;
+}
+
+export interface SearchQueryAnalytics {
+  has_data: boolean;
+  period_start: string | null;
+  period_end: string | null;
+  distinct_queries: number;
+  total_people_searched: number;
+  total_people_saw: number;
+  total_ordered_units: number;
+  total_ordered_sum_rub: number;
+  order_rate_calculated_pct: number | null;
+  avg_position_calculated: number | null;
+  top_queries_by_searches: TopQueryItem[];
+  top_queries_by_orders: TopQueryItem[];
+}

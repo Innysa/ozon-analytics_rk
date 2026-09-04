@@ -35,19 +35,42 @@ export function ProductsPage() {
     }
   };
 
+  const uploadSearchQueries = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setNotice("Загрузка отчёта...");
+    try {
+      const result = await api.upload<ImportSummary>(`/stores/${currentStore.id}/search-queries/upload`, file);
+      setNotice(
+        `Загружено: получено ${result.fetched}, создано ${result.created}, дублей пропущено ${result.skipped_duplicate}` +
+          (result.errors.length ? `. Примечания: ${result.errors.slice(0, 3).join("; ")}` : "")
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка загрузки файла");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold text-slate-800">Товары — {currentStore.name}</h1>
-        <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
-          Загрузить аналитику карточек (CSV/XLSX)
-          <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadAnalytics} />
-        </label>
+        <div className="flex flex-wrap gap-2">
+          <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
+            Загрузить аналитику карточек (CSV/XLSX)
+            <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadAnalytics} />
+          </label>
+          <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
+            Загрузить поисковые запросы (CSV/XLSX)
+            <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadSearchQueries} />
+          </label>
+        </div>
       </div>
 
       <p className="text-xs text-slate-500">
         Загрузите отчёт «Аналитика → Товары» из личного кабинета Ozon — воронка продаж, конверсии, остатки, ДРР по дням
-        появятся на вкладке «Продажи» карточки товара.
+        появятся на вкладке «Продажи» карточки товара. Отчёт «Аналитика → Запросы» — на вкладке «Поисковые запросы».
       </p>
 
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}

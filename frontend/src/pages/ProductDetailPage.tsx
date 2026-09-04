@@ -2,7 +2,15 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { Product, ProductCardAnalytics, ProductCardStatisticListResponse, Review, ReviewAnalytics, ReviewListResponse } from "../types";
+import type {
+  Product,
+  ProductCardAnalytics,
+  ProductCardStatisticListResponse,
+  Review,
+  ReviewAnalytics,
+  ReviewListResponse,
+  SearchQueryAnalytics,
+} from "../types";
 import { ReviewCard } from "../components/ReviewCard";
 import { ChangeHistoryPanel } from "../components/ChangeHistoryPanel";
 
@@ -14,7 +22,7 @@ const TABS: { key: Tab; label: string; planned?: boolean }[] = [
   { key: "analytics", label: "Аналитика отзывов" },
   { key: "ads", label: "Реклама", planned: true },
   { key: "sales", label: "Продажи" },
-  { key: "search", label: "Поисковые запросы", planned: true },
+  { key: "search", label: "Поисковые запросы" },
   { key: "history", label: "История изменений" },
   { key: "recommendations", label: "Рекомендации ИИ" },
 ];
@@ -74,7 +82,7 @@ export function ProductDetailPage() {
           </div>
         )}
         {tab === "sales" && <ProductSalesTab storeId={currentStore.id} productId={productId} />}
-        {tab === "search" && <PlannedTab text="Модуль поисковых запросов запланирован." />}
+        {tab === "search" && <ProductSearchQueriesTab storeId={currentStore.id} productId={productId} />}
         {tab === "history" && <ChangeHistoryPanel storeId={currentStore.id} productId={productId} />}
         {tab === "recommendations" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} recommendationsOnly />}
       </div>
@@ -96,10 +104,6 @@ function OverviewTab({ product }: { product: Product | null }) {
       </dl>
     </div>
   );
-}
-
-function PlannedTab({ text }: { text: string }) {
-  return <div className="rounded-md border border-dashed border-slate-300 bg-white p-6 text-center text-slate-500">{text}</div>;
 }
 
 function ProductReviewsTab({ storeId, productId }: { storeId: string; productId: string }) {
@@ -270,6 +274,88 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function ProductSearchQueriesTab({ storeId, productId }: { storeId: string; productId: string }) {
+  const [summary, setSummary] = useState<SearchQueryAnalytics | null>(null);
+
+  useEffect(() => {
+    api.get<SearchQueryAnalytics>(`/stores/${storeId}/search-queries/summary?product_id=${productId}`).then(setSummary);
+  }, [storeId, productId]);
+
+  if (!summary) return <div className="text-slate-500">Загрузка...</div>;
+  if (!summary.has_data) {
+    return (
+      <div className="rounded-md border border-slate-200 bg-white p-6 text-center text-slate-500">
+        Нет данных. Загрузите отчёт «Аналитика → Запросы» на странице{" "}
+        <Link to="/products" className="text-indigo-600 underline">
+          «Товары»
+        </Link>
+        .
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="text-xs text-slate-500">
+        Период данных: {summary.period_start} — {summary.period_end} · Уникальных запросов: {summary.distinct_queries}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Человек искало (факт)" value={summary.total_people_searched.toLocaleString("ru-RU")} />
+        <Stat label="Человек увидело (факт)" value={summary.total_people_saw.toLocaleString("ru-RU")} />
+        <Stat label="Заказано, шт (факт)" value={summary.total_ordered_units.toLocaleString("ru-RU")} />
+        <Stat label="Заказано на сумму (факт)" value={fmtRub(summary.total_ordered_sum_rub)} />
+        <Stat label="Средняя позиция (рассчитано)" value={summary.avg_position_calculated ?? "Нет данных"} />
+        <Stat label="Конверсия в заказ (рассчитано)" value={fmtPct(summary.order_rate_calculated_pct)} />
+      </div>
+
+      <p className="text-xs italic text-slate-500">
+        Показатель «Конверсия в заказ (рассчитано)» — это отношение заказанных штук к сумме «человек искало» по всем
+        запросам, посчитанное этим приложением. Он НЕ равен построчной «Конверсии из поиска в заказ», которую Ozon
+        указывает в самом отчёте для каждого запроса (эти значения различаются на порядки — методика Ozon явно
+        учитывает что-то помимо количества поисков), поэтому в таблице ниже эти проценты показаны отдельно как
+        значения Ozon.
+      </p>
+
+      <QueryTable title="Топ запросов по количеству искавших" items={summary.top_queries_by_searches} />
+      <QueryTable title="Топ запросов по количеству заказов" items={summary.top_queries_by_orders} />
+    </div>
+  );
+}
+
+function QueryTable({ title, items }: { title: string; items: SearchQueryAnalytics["top_queries_by_searches"] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="overflow-x-auto">
+      <h3 className="mb-2 text-sm font-semibold text-slate-700">{title}</h3>
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 text-xs text-slate-500">
+            <th className="py-1">Запрос</th>
+            <th>Искало</th>
+            <th>Увидело</th>
+            <th>Позиция (Ozon)</th>
+            <th>Заказано, шт</th>
+            <th>Заказано на сумму</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((q) => (
+            <tr key={q.query_text} className="border-b border-slate-100">
+              <td className="py-1">{q.query_text}</td>
+              <td>{q.people_searched ?? "—"}</td>
+              <td>{q.people_saw ?? "—"}</td>
+              <td>{q.position_ozon ?? "—"}</td>
+              <td>{q.ordered_units_by_query ?? "—"}</td>
+              <td>{fmtRub(q.ordered_sum_by_query_rub)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

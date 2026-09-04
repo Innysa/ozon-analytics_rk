@@ -17,6 +17,7 @@ from app.api.routes import (
     products,
     reviews,
     review_upload,
+    search_queries,
     stores,
     sync,
     users,
@@ -50,6 +51,7 @@ app.include_router(ai_settings.router)
 app.include_router(analytics.router)
 app.include_router(products.router)
 app.include_router(product_analytics.router)
+app.include_router(search_queries.router)
 app.include_router(change_history.router)
 
 
