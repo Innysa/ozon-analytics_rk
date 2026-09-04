@@ -1,0 +1,37 @@
+# Minimal self-hosted stack: the app (backend + built frontend, one process)
+# plus its own PostgreSQL. For TLS on a real domain, add docker-compose.proxy.yml
+# on top (see README "Развёртывание на своём сервере (Docker)").
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ozon_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?укажите POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ozon_analytics}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ozon_app} -d ${POSTGRES_DB:-ozon_analytics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Overrides whatever DATABASE_URL is in .env: the app always talks to
+      # the "db" service on the compose network, built from the same
+      # POSTGRES_* variables that provisioned it above.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ozon_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ozon_analytics}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
