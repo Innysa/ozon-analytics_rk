@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import StoreContext, get_current_user, require_store_role
 from app.core.encryption import decrypt_secret
 from app.db.session import get_db
+from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.membership import StoreRole
 from app.models.ozon_credentials import OzonCredentials
 from app.models.product import Product
@@ -17,6 +18,12 @@ from app.services.audit import record_audit
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
+from app.services.ozon_performance.client import OzonPerformanceClient
+from app.services.ozon_performance.client import PerformanceCredentials as OzonPerfCredentials
+from app.services.ozon_performance.exceptions import (
+    OzonPerformanceAPIError,
+    OzonPerformanceAuthError,
+)
 
 router = APIRouter(prefix="/api/stores/{store_id}/sync", tags=["sync"])
 
@@ -28,9 +35,9 @@ def _serialize(run: SyncRun) -> dict:
         "status": run.status.value,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
-        "reviews_fetched": run.reviews_fetched,
-        "reviews_created": run.reviews_created,
-        "reviews_skipped_duplicate": run.reviews_skipped_duplicate,
+        "items_fetched": run.items_fetched,
+        "items_created": run.items_created,
+        "items_skipped_duplicate": run.items_skipped_duplicate,
         "error_message": run.error_message,
     }
 
@@ -129,9 +136,99 @@ def sync_ozon_reviews(
         error_message = str(exc)
 
     run.finished_at = datetime.now(timezone.utc)
-    run.reviews_fetched = fetched
-    run.reviews_created = created
-    run.reviews_skipped_duplicate = skipped
+    run.items_fetched = fetched
+    run.items_created = created
+    run.items_skipped_duplicate = skipped
+    run.error_message = error_message
+    db.flush()
+    record_audit(
+        db,
+        action="sync_finished",
+        user_id=user.id,
+        store_id=ctx.store_id,
+        target_type="sync_run",
+        target_id=run.id,
+        result="success" if run.status == SyncStatus.SUCCESS else "failure",
+        message=error_message,
+    )
+    db.commit()
+    return _serialize(run)
+
+
+@router.post("/ozon-advertising")
+def sync_ozon_advertising_campaigns(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Syncs advertising campaign *metadata* (id, name, type, state, budget,
+    dates) from Ozon Performance API. Deliberately does not touch day-by-day
+    spend/clicks/orders — that requires the Performance API's async
+    statistics-report flow, not implemented yet (see app.models.future)."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.performance_client_id_encrypted or not creds.performance_client_secret_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Performance API")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_ADVERTISING_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    perf_client_id = decrypt_secret(creds.performance_client_id_encrypted)
+    perf_client_secret = decrypt_secret(creds.performance_client_secret_encrypted)
+
+    existing_campaigns = {
+        c.ozon_campaign_id: c
+        for c in db.query(AdvertisingCampaign).filter(AdvertisingCampaign.store_id == ctx.store_id).all()
+    }
+
+    fetched = created = updated = 0
+    error_message = None
+    try:
+        with OzonPerformanceClient(OzonPerfCredentials(client_id=perf_client_id, client_secret=perf_client_secret)) as client:
+            campaigns = client.list_campaigns()
+            for item in campaigns:
+                fetched += 1
+                campaign_id = str(item.id)
+                existing = existing_campaigns.get(campaign_id)
+                if existing:
+                    existing.name = item.title
+                    existing.campaign_type = item.advObjectType
+                    existing.state = item.state
+                    existing.daily_budget_rub = item.daily_budget_rub
+                    existing.raw_payload = item.model_dump_json()
+                    updated += 1
+                else:
+                    campaign = AdvertisingCampaign(
+                        store_id=ctx.store_id,
+                        ozon_campaign_id=campaign_id,
+                        name=item.title,
+                        campaign_type=item.advObjectType,
+                        state=item.state,
+                        daily_budget_rub=item.daily_budget_rub,
+                        raw_payload=item.model_dump_json(),
+                    )
+                    db.add(campaign)
+                    created += 1
+        run.status = SyncStatus.SUCCESS
+    except OzonPerformanceAuthError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+    except OzonPerformanceAPIError as exc:
+        run.status = SyncStatus.PARTIAL if created or updated else SyncStatus.FAILED
+        error_message = str(exc)
+
+    run.finished_at = datetime.now(timezone.utc)
+    run.items_fetched = fetched
+    run.items_created = created
+    run.items_skipped_duplicate = updated  # "duplicates" here means campaigns already known and refreshed
     run.error_message = error_message
     db.flush()
     record_audit(

@@ -12,10 +12,10 @@ from app.models.change_history import ChangeHistory
 from app.models.recommendation import Recommendation
 from app.models.sync_run import SyncRun
 from app.models.audit_log import AuditLog
+from app.models.advertising_campaign import AdvertisingCampaign
+from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.future import (
     ProductDailyMetric,
-    AdvertisingCampaign,
-    AdvertisingDailyMetric,
     SearchQuery,
 )
 
@@ -36,6 +36,6 @@ __all__ = [
     "AuditLog",
     "ProductDailyMetric",
     "AdvertisingCampaign",
-    "AdvertisingDailyMetric",
+    "AdvertisingStatistic",
     "SearchQuery",
 ]

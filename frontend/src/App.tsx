@@ -8,6 +8,7 @@ import { ReviewsPage } from "./pages/ReviewsPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ProductsPage } from "./pages/ProductsPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
+import { AdvertisingPage } from "./pages/AdvertisingPage";
 import { AISettingsPage } from "./pages/AISettingsPage";
 import { OzonSettingsPage } from "./pages/OzonSettingsPage";
 import { AdminStoresPage } from "./pages/AdminStoresPage";
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/products/:productId" element={<ProductDetailPage />} />
+          <Route path="/advertising" element={<AdvertisingPage />} />
           <Route path="/ai-settings" element={<AISettingsPage />} />
           <Route path="/ozon-settings" element={<OzonSettingsPage />} />
           <Route path="/admin/stores" element={<AdminStoresPage />} />

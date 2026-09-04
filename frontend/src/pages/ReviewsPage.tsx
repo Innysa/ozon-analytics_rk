@@ -72,13 +72,13 @@ export function ReviewsPage() {
   const syncFromOzon = async () => {
     setNotice("Синхронизация с Ozon...");
     try {
-      const run = await api.post<{ status: string; error_message: string | null; reviews_created: number }>(
+      const run = await api.post<{ status: string; error_message: string | null; items_created: number }>(
         `/stores/${currentStore.id}/sync/ozon-reviews`
       );
       if (run.status === "failed") {
         setNotice(`Синхронизация не удалась: ${run.error_message}`);
       } else {
-        setNotice(`Синхронизация завершена: создано ${run.reviews_created} отзывов.`);
+        setNotice(`Синхронизация завершена: создано ${run.items_created} отзывов.`);
       }
       load();
       refreshStores();

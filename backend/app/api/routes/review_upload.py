@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.models.membership import StoreRole
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
-from app.schemas.review import ImportSummary
+from app.schemas.common import ImportSummary
 from app.services.audit import record_audit
 from app.services.review_import import import_reviews_from_file
 
@@ -43,9 +43,9 @@ async def upload_reviews(
     result = import_reviews_from_file(db, store_id=ctx.store_id, filename=file.filename, content=content)
 
     run.finished_at = datetime.now(timezone.utc)
-    run.reviews_fetched = result.fetched
-    run.reviews_created = result.created
-    run.reviews_skipped_duplicate = result.skipped_duplicate
+    run.items_fetched = result.fetched
+    run.items_created = result.created
+    run.items_skipped_duplicate = result.skipped_duplicate
     run.status = SyncStatus.SUCCESS if not result.errors else (SyncStatus.PARTIAL if result.created else SyncStatus.FAILED)
     run.error_message = "; ".join(result.errors[:20]) if result.errors else None
 

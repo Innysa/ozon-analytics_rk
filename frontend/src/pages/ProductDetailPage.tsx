@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useStore } from "../store/StoreContext";
 import type { Product, Review, ReviewAnalytics, ReviewListResponse } from "../types";
@@ -64,7 +64,15 @@ export function ProductDetailPage() {
         {tab === "overview" && <OverviewTab product={product} />}
         {tab === "reviews" && <ProductReviewsTab storeId={currentStore.id} productId={productId} />}
         {tab === "analytics" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} />}
-        {tab === "ads" && <PlannedTab text="Модуль аналитики рекламы Ozon запланирован. Данные появятся после подключения Performance API." />}
+        {tab === "ads" && (
+          <div className="rounded-md border border-dashed border-slate-300 bg-white p-6 text-center text-slate-500">
+            Список кампаний магазина синхронизируется на отдельной странице{" "}
+            <Link to="/advertising" className="text-indigo-600 underline">
+              «Реклама»
+            </Link>
+            . Привязка кампаний к конкретному товару и статистика по дням (показы, клики, расход) пока не реализованы.
+          </div>
+        )}
         {tab === "sales" && <PlannedTab text="Модуль аналитики продаж запланирован." />}
         {tab === "search" && <PlannedTab text="Модуль поисковых запросов запланирован." />}
         {tab === "history" && <ChangeHistoryPanel storeId={currentStore.id} productId={productId} />}

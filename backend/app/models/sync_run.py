@@ -14,12 +14,18 @@ class SyncStatus(str, enum.Enum):
 
 
 class SyncSourceType(str, enum.Enum):
-    OZON_API = "ozon_api"
+    OZON_API = "ozon_api"  # Ozon Seller API (reviews)
+    OZON_ADVERTISING_API = "ozon_advertising_api"  # Ozon Performance API (campaigns)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 
 
 class SyncRun(TimestampMixin, Base):
+    """Log of a single sync attempt, shared by every module that pulls data
+    from an external source (reviews from Ozon/CSV/XLSX, advertising
+    campaigns from Ozon Performance API, ...). Field names are generic
+    ("items_*") on purpose so the same table serves all of them."""
+
     __tablename__ = "sync_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -32,8 +38,8 @@ class SyncRun(TimestampMixin, Base):
     started_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    reviews_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    reviews_created: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    reviews_skipped_duplicate: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    items_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    items_created: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    items_skipped_duplicate: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
