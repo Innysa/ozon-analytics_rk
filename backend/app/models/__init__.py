@@ -14,10 +14,8 @@ from app.models.sync_run import SyncRun
 from app.models.audit_log import AuditLog
 from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.advertising_statistic import AdvertisingStatistic
-from app.models.future import (
-    ProductDailyMetric,
-    SearchQuery,
-)
+from app.models.product_card_statistic import ProductCardStatistic
+from app.models.search_query_statistic import SearchQueryStatistic
 
 __all__ = [
     "User",
@@ -34,8 +32,8 @@ __all__ = [
     "Recommendation",
     "SyncRun",
     "AuditLog",
-    "ProductDailyMetric",
     "AdvertisingCampaign",
     "AdvertisingStatistic",
-    "SearchQuery",
+    "ProductCardStatistic",
+    "SearchQueryStatistic",
 ]

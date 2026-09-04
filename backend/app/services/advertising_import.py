@@ -31,7 +31,6 @@ from __future__ import annotations
 import io
 import json
 import re
-from dataclasses import dataclass, field
 from datetime import date, datetime
 
 import pandas as pd
@@ -39,6 +38,8 @@ import pandas as pd
 from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.product import Product
+from app.services.import_common import ImportResult, clean_int, clean_number, clean_str
+from app.services.xlsx_compat import tolerant_xlsx_bytes
 
 _PERIOD_RE = re.compile(r"(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})")
 
@@ -65,8 +66,6 @@ _COLUMN_MAP = {
     "средняя стоимость клика": "avg_cpc_rub_ozon",
 }
 
-_MISSING_SENTINELS = {"", "-", "—", "n/a", "na"}
-
 
 def _normalize_header(h: object) -> str:
     text = re.sub(r"[,%₽()]", "", str(h).lower())
@@ -81,51 +80,13 @@ def _parse_period(cell: object) -> tuple[date, date] | None:
     return datetime.strptime(start, "%d.%m.%Y").date(), datetime.strptime(end, "%d.%m.%Y").date()
 
 
-def _clean_number(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and pd.isna(value):
-            return None
-        return float(value)
-    text = str(value).strip()
-    if text.lower() in _MISSING_SENTINELS:
-        return None
-    try:
-        return float(text.replace(",", "."))
-    except ValueError:
-        return None
-
-
-def _clean_int(value: object) -> int | None:
-    n = _clean_number(value)
-    return int(n) if n is not None else None
-
-
-def _clean_str(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or text in _MISSING_SENTINELS:
-        return None
-    return text
-
-
-@dataclass
-class ImportResult:
-    fetched: int = 0
-    created: int = 0
-    skipped_duplicate: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
 def _read_raw_table(filename: str, content: bytes) -> tuple[pd.DataFrame, str | None]:
     """Returns (raw dataframe with no header applied, warning-or-None about
     a sheet that was present but skipped)."""
     if filename.lower().endswith(".csv"):
         return pd.read_csv(io.BytesIO(content), header=None, dtype=object), None
 
-    xls = pd.ExcelFile(io.BytesIO(content))
+    xls = pd.ExcelFile(io.BytesIO(tolerant_xlsx_bytes(content)))
     sheet_name = "Statistics" if "Statistics" in xls.sheet_names else xls.sheet_names[0]
     warning = None
     if "Union" in xls.sheet_names and sheet_name != "Union":
@@ -210,8 +171,8 @@ def import_advertising_statistics_from_file(
             continue
         result.fetched += 1
         try:
-            sku = _clean_str(cell(row, "sku"))
-            campaign_ozon_id = _clean_str(cell(row, "campaign_id"))
+            sku = clean_str(cell(row, "sku"))
+            campaign_ozon_id = clean_str(cell(row, "campaign_id"))
             if not sku or not campaign_ozon_id:
                 result.errors.append("Пропущена строка без SKU или ID кампании")
                 continue
@@ -221,14 +182,14 @@ def import_advertising_statistics_from_file(
                 result.skipped_duplicate += 1
                 continue
 
-            spend = _clean_number(cell(row, "spend_rub"))
+            spend = clean_number(cell(row, "spend_rub"))
             if spend is None:
                 result.errors.append(f"Некорректный расход у SKU {sku}, кампания {campaign_ozon_id}")
                 continue
 
             product = product_cache.get(sku)
             if not product:
-                product_name = _clean_str(cell(row, "product_name")) or f"Товар SKU {sku}"
+                product_name = clean_str(cell(row, "product_name")) or f"Товар SKU {sku}"
                 product = Product(store_id=store_id, ozon_sku=sku, name=product_name)
                 db_session.add(product)
                 db_session.flush()
@@ -249,24 +210,24 @@ def import_advertising_statistics_from_file(
                 campaign_id=campaign.id,
                 ozon_sku=sku,
                 ozon_campaign_id=campaign_ozon_id,
-                ad_tool=_clean_str(cell(row, "ad_tool")),
-                placement=_clean_str(cell(row, "placement")),
+                ad_tool=clean_str(cell(row, "ad_tool")),
+                placement=clean_str(cell(row, "placement")),
                 period_start=period_start,
                 period_end=period_end,
                 spend_rub=spend,
-                sales_promo_rub=_clean_number(cell(row, "sales_promo_rub")),
-                units_sold=_clean_int(cell(row, "units_sold")),
-                sales_promo_model_rub=_clean_number(cell(row, "sales_promo_model_rub")),
-                units_sold_model=_clean_int(cell(row, "units_sold_model")),
-                impressions=_clean_int(cell(row, "impressions")),
-                clicks=_clean_int(cell(row, "clicks")),
-                ctr_pct_ozon=_clean_number(cell(row, "ctr_pct_ozon")),
-                cart_additions=_clean_int(cell(row, "cart_additions")),
-                cart_conversion_pct_ozon=_clean_number(cell(row, "cart_conversion_pct_ozon")),
-                drr_promo_pct_ozon=_clean_number(cell(row, "drr_promo_pct_ozon")),
-                drr_total_pct_ozon=_clean_number(cell(row, "drr_total_pct_ozon")),
-                cost_per_order_rub_ozon=_clean_number(cell(row, "cost_per_order_rub_ozon")),
-                avg_cpc_rub_ozon=_clean_number(cell(row, "avg_cpc_rub_ozon")),
+                sales_promo_rub=clean_number(cell(row, "sales_promo_rub")),
+                units_sold=clean_int(cell(row, "units_sold")),
+                sales_promo_model_rub=clean_number(cell(row, "sales_promo_model_rub")),
+                units_sold_model=clean_int(cell(row, "units_sold_model")),
+                impressions=clean_int(cell(row, "impressions")),
+                clicks=clean_int(cell(row, "clicks")),
+                ctr_pct_ozon=clean_number(cell(row, "ctr_pct_ozon")),
+                cart_additions=clean_int(cell(row, "cart_additions")),
+                cart_conversion_pct_ozon=clean_number(cell(row, "cart_conversion_pct_ozon")),
+                drr_promo_pct_ozon=clean_number(cell(row, "drr_promo_pct_ozon")),
+                drr_total_pct_ozon=clean_number(cell(row, "drr_total_pct_ozon")),
+                cost_per_order_rub_ozon=clean_number(cell(row, "cost_per_order_rub_ozon")),
+                avg_cpc_rub_ozon=clean_number(cell(row, "avg_cpc_rub_ozon")),
                 source=source,
                 raw_payload=json.dumps({str(k): (None if pd.isna(v) else str(v)) for k, v in row.items()}, ensure_ascii=False),
             )
