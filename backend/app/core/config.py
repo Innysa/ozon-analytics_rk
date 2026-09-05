@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,15 @@ class Settings(BaseSettings):
     # set this to false explicitly for that case (e.g. IP-only, no domain yet)
     # instead of lying about ENV to work around it.
     SESSION_COOKIE_SECURE: bool | None = None
+
+    @field_validator("SESSION_COOKIE_SECURE", mode="before")
+    @classmethod
+    def _blank_session_cookie_secure_means_unset(cls, v: object) -> object:
+        # A stray "SESSION_COOKIE_SECURE=" (no value) in .env would otherwise
+        # crash Settings() at startup with a bool-parsing error, taking the
+        # whole app down over a blank line rather than just falling back to
+        # deriving it from ENV as intended.
+        return None if v == "" else v
 
     @property
     def session_cookie_secure(self) -> bool:
