@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useState } from "react";
-import { api } from "../api/client";
+import { FormEvent, useState } from "react";
+import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
 import type { Store } from "../types";
 
@@ -7,13 +7,23 @@ export function AdminStoresPage() {
   const { stores, refreshStores } = useStore();
   const [name, setName] = useState("");
   const [legalName, setLegalName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    await api.post<Store>("/stores", { name, legal_name: legalName || null });
-    setName("");
-    setLegalName("");
-    refreshStores();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await api.post<Store>("/stores", { name, legal_name: legalName || null });
+      setName("");
+      setLegalName("");
+      refreshStores();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Не удалось создать магазин");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -29,10 +39,16 @@ export function AdminStoresPage() {
           <label className="mb-1 block text-sm text-slate-600">Юр. название (необязательно)</label>
           <input value={legalName} onChange={(e) => setLegalName(e.target.value)} className="rounded-md border border-slate-300 px-2 py-1 text-sm" />
         </div>
-        <button type="submit" className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-          Добавить магазин
+        <button
+          type="submit"
+          disabled={submitting}
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+        >
+          {submitting ? "Добавление..." : "Добавить магазин"}
         </button>
       </form>
+
+      {error && <div className="rounded-md bg-red-50 p-2 text-sm text-red-700">{error}</div>}
 
       <table className="w-full text-left text-sm">
         <thead>

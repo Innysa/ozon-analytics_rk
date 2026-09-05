@@ -27,7 +27,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         key=settings.SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=settings.ENV == "production",
+        secure=settings.session_cookie_secure,
         samesite="lax",
         max_age=settings.SESSION_MAX_AGE_SECONDS,
         path="/",
