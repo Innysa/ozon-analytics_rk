@@ -46,8 +46,13 @@ export function AdminUsersPage() {
   const assignMembership = async (e: FormEvent) => {
     e.preventDefault();
     if (!assignUserId || !assignStoreId) return;
-    await api.post("/users/memberships", { user_id: assignUserId, store_id: assignStoreId, role: assignRole });
-    loadUsers();
+    setError(null);
+    try {
+      await api.post("/users/memberships", { user_id: assignUserId, store_id: assignStoreId, role: assignRole });
+      loadUsers();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Ошибка назначения доступа");
+    }
   };
 
   const storeName = (id: string) => stores.find((s) => s.id === id)?.name ?? id;

@@ -21,6 +21,19 @@ class Settings(BaseSettings):
     SESSION_COOKIE_NAME: str = "oaa_session"
     SESSION_MAX_AGE_SECONDS: int = 60 * 60 * 12  # 12 hours
 
+    # None (default) = derive from ENV (Secure in production). Browsers never
+    # send a Secure cookie back over plain HTTP, so a "production" deployment
+    # without TLS in front of it would otherwise be unable to log in at all —
+    # set this to false explicitly for that case (e.g. IP-only, no domain yet)
+    # instead of lying about ENV to work around it.
+    SESSION_COOKIE_SECURE: bool | None = None
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        if self.SESSION_COOKIE_SECURE is not None:
+            return self.SESSION_COOKIE_SECURE
+        return self.ENV == "production"
+
     APP_ENCRYPTION_KEY: str = ""  # Fernet key, required to store Ozon credentials
 
     AI_PROVIDER: Literal["yandex", "demo"] = "demo"

@@ -1,6 +1,21 @@
 from tests.conftest import login
 
 
+def test_session_cookie_secure_flag_follows_env_by_default(monkeypatch):
+    """Regression test for a real deployment bug: ENV=production sets the
+    session cookie's Secure flag, which browsers refuse to send back over
+    plain HTTP — breaking login entirely on an ENV=production deployment
+    without TLS in front of it. SESSION_COOKIE_SECURE lets that be overridden
+    explicitly without having to misreport ENV."""
+    from app.core.config import Settings
+
+    assert Settings(ENV="production").session_cookie_secure is True
+    assert Settings(ENV="development").session_cookie_secure is False
+    # Explicit override wins regardless of ENV.
+    assert Settings(ENV="production", SESSION_COOKIE_SECURE=False).session_cookie_secure is False
+    assert Settings(ENV="development", SESSION_COOKIE_SECURE=True).session_cookie_secure is True
+
+
 def test_login_wrong_password_rejected(client, two_stores_with_users):
     resp = client.post("/api/auth/login", json={"email": "owner_a@example.com", "password": "wrong"})
     assert resp.status_code == 401
