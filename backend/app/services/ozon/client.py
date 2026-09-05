@@ -107,11 +107,16 @@ class OzonSellerClient:
         return response.json()
 
     def check_connection(self) -> dict:
-        """Lightweight connectivity/credentials check using review/list with limit=1.
+        """Lightweight connectivity/credentials check using review/list with the
+        smallest limit Ozon actually accepts. Confirmed against a real deployment:
+        Ozon rejects limit=1 with "Request validation error: invalid
+        ReviewListRequest.Limit: value must be inside range [20, 100]" — the
+        documented range starts at 20, not 1, despite this being a lightweight
+        connectivity check that doesn't need any of the returned rows.
         Returns a dict describing outcome — never raises for expected failure modes,
         so the route layer can show a clear message instead of a stack trace."""
         try:
-            data = self._post("/v1/review/list", {"limit": 1, "sort_dir": "ASC"})
+            data = self._post("/v1/review/list", {"limit": 20, "sort_dir": "ASC"})
             OzonReviewListResponse.model_validate(data)
             return {"ok": True, "reviews_api_available": True, "message": "Подключение к Ozon Seller API успешно"}
         except OzonAuthError:
