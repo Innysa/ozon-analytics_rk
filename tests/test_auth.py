@@ -15,6 +15,12 @@ def test_session_cookie_secure_flag_follows_env_by_default(monkeypatch):
     assert Settings(ENV="production", SESSION_COOKIE_SECURE=False).session_cookie_secure is False
     assert Settings(ENV="development", SESSION_COOKIE_SECURE=True).session_cookie_secure is True
 
+    # A blank "SESSION_COOKIE_SECURE=" line in .env (no value after '=') must
+    # fall back to deriving from ENV, not crash Settings() at startup with a
+    # bool-parsing error — this actually happens when hand-editing .env.
+    assert Settings(ENV="production", SESSION_COOKIE_SECURE="").session_cookie_secure is True
+    assert Settings(ENV="development", SESSION_COOKIE_SECURE="").session_cookie_secure is False
+
 
 def test_login_wrong_password_rejected(client, two_stores_with_users):
     resp = client.post("/api/auth/login", json={"email": "owner_a@example.com", "password": "wrong"})
