@@ -9,6 +9,8 @@ Endpoints implemented here (Ozon Seller API, base https://api-seller.ozon.ru):
   POST /v1/review/info           - single review detail
   POST /v1/review/comment/list   - comments/replies on a review
   POST /v1/review/comment/create - post a reply/comment to a review
+  POST /v3/product/list          - paginated list of product ids/skus
+  POST /v3/product/info/list     - product details (name, price, stocks) by id
 
 These are documented as *beta* methods that require an Ozon Premium Plus
 subscription (https://docs.ozon.ru/api/seller/). Field names were verified
@@ -35,7 +37,12 @@ from app.services.ozon.exceptions import (
     OzonFeatureUnavailable,
     OzonRateLimited,
 )
-from app.services.ozon.schemas import OzonReviewCommentItem, OzonReviewListResponse
+from app.services.ozon.schemas import (
+    OzonProductInfoListResponse,
+    OzonProductListResponse,
+    OzonReviewCommentItem,
+    OzonReviewListResponse,
+)
 
 BASE_URL = "https://api-seller.ozon.ru"
 
@@ -154,3 +161,14 @@ class OzonSellerClient:
                 "mark_review_as_processed": mark_review_as_processed,
             },
         )
+
+    def list_products(self, *, last_id: str = "", limit: int = 1000) -> OzonProductListResponse:
+        data = self._post(
+            "/v3/product/list",
+            {"filter": {"visibility": "ALL"}, "last_id": last_id, "limit": limit},
+        )
+        return OzonProductListResponse.model_validate(data)
+
+    def get_products_info(self, product_ids: list[int]) -> OzonProductInfoListResponse:
+        data = self._post("/v3/product/info/list", {"product_id": product_ids})
+        return OzonProductInfoListResponse.model_validate(data)
