@@ -637,18 +637,6 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
                     <h4 className="text-xs font-semibold text-slate-700">
                       Автоматически собрано (Ozon Performance API, по дням)
                     </h4>
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                      <Stat label="Расход (факт)" value={fmtRub(detail.auto_daily.total_spend_rub)} />
-                      <Stat label="Показы (факт)" value={detail.auto_daily.total_impressions.toLocaleString("ru-RU")} />
-                      <Stat label="Клики (факт)" value={detail.auto_daily.total_clicks.toLocaleString("ru-RU")} />
-                      <Stat label="Выручка (факт)" value={fmtRub(detail.auto_daily.total_revenue_rub)} />
-                      <Stat label="Заказы (факт)" value={detail.auto_daily.total_orders.toLocaleString("ru-RU")} />
-                      <Stat label="ДРР (рассчитано)" value={fmtPct(detail.auto_daily.drr_calculated_pct)} />
-                      <Stat
-                        label="ROAS (рассчитано)"
-                        value={detail.auto_daily.roas_calculated !== null ? `×${detail.auto_daily.roas_calculated}` : "Нет данных"}
-                      />
-                    </div>
                     <div className="text-xs text-slate-500">
                       Период автосбора: {detail.auto_daily.period_start} — {detail.auto_daily.period_end}
                     </div>
