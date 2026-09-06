@@ -316,6 +316,34 @@ export interface CampaignDailyComparison {
   sales_promo_rub: MetricComparison;
 }
 
+export interface CampaignAutoDailyComparison {
+  date_today: string;
+  date_yesterday: string;
+  spend_rub: MetricComparison;
+  impressions: MetricComparison;
+  clicks: MetricComparison;
+  revenue_rub: MetricComparison;
+}
+
+// Same shape/purpose as CampaignDetail below, but aggregated from the
+// automatically-collected AdvertisingDailyStatistic (Ozon Performance API)
+// instead of the CSV-uploaded AdvertisingStatistic — kept separate, never
+// merged with the fields above it, to avoid double-counting spend/revenue.
+export interface CampaignAutoDailyDetail {
+  has_data: boolean;
+  total_spend_rub: number;
+  total_revenue_rub: number;
+  total_impressions: number;
+  total_clicks: number;
+  total_orders: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+  period_start: string | null;
+  period_end: string | null;
+  daily_comparison: CampaignAutoDailyComparison | null;
+  daily_comparison_unavailable_reason: string | null;
+}
+
 export interface CampaignDetail {
   campaign_id: string;
   has_data: boolean;
@@ -330,6 +358,7 @@ export interface CampaignDetail {
   period_end: string | null;
   daily_comparison: CampaignDailyComparison | null;
   daily_comparison_unavailable_reason: string | null;
+  auto_daily: CampaignAutoDailyDetail;
 }
 
 export interface ProductCardStatistic {

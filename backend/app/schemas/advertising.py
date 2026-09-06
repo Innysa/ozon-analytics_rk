@@ -111,6 +111,37 @@ class CampaignDailyComparison(BaseModel):
     sales_promo_rub: MetricComparison
 
 
+class CampaignAutoDailyComparison(BaseModel):
+    date_today: date
+    date_yesterday: date
+    spend_rub: MetricComparison
+    impressions: MetricComparison
+    clicks: MetricComparison
+    revenue_rub: MetricComparison
+
+
+class CampaignAutoDailyDetailOut(BaseModel):
+    """Same shape/purpose as CampaignDetailOut below, but aggregated from
+    AdvertisingDailyStatistic (Ozon Performance API auto-sync) instead of the
+    CSV-uploaded AdvertisingStatistic. Every row here is already exactly one
+    day, so — unlike CampaignDetailOut's daily_comparison, which requires
+    period_start == period_end to rule out a weekly/monthly upload — the only
+    condition for a comparison here is having at least two distinct dates."""
+
+    has_data: bool = False
+    total_spend_rub: float = 0
+    total_revenue_rub: float = 0
+    total_impressions: int = 0
+    total_clicks: int = 0
+    total_orders: int = 0
+    drr_calculated_pct: float | None = None
+    roas_calculated: float | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    daily_comparison: CampaignAutoDailyComparison | None = None
+    daily_comparison_unavailable_reason: str | None = None
+
+
 class CampaignDetailOut(BaseModel):
     campaign_id: str
     has_data: bool
@@ -131,6 +162,14 @@ class CampaignDetailOut(BaseModel):
     # period_end exist for this campaign — see app.services.advertising_analytics_service.
     daily_comparison: CampaignDailyComparison | None = None
     daily_comparison_unavailable_reason: str | None = None
+
+    # Totals from the SEPARATE, automatically-collected AdvertisingDailyStatistic
+    # source (Ozon Performance API) for this same campaign — never merged into
+    # the CSV-based totals above (see AdvertisingDailyStatistic's own docstring
+    # for why summing the two risks double-counting spend/revenue). Always
+    # present (has_data=False when there's nothing collected yet), so the
+    # frontend never has to guess whether the field exists.
+    auto_daily: CampaignAutoDailyDetailOut = CampaignAutoDailyDetailOut()
 
 
 class AdvertisingDailyStatisticOut(BaseModel):

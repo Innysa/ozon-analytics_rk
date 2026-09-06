@@ -20,10 +20,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.advertising_campaign import AdvertisingCampaign
+from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.product import Product
 from app.schemas.advertising import (
     AdvertisingAnalyticsOut,
+    CampaignAutoDailyComparison,
+    CampaignAutoDailyDetailOut,
     CampaignBreakdown,
     CampaignDailyComparison,
     CampaignDetailOut,
@@ -145,13 +148,90 @@ def _compare(today: float, yesterday: float) -> MetricComparison:
     )
 
 
+def compute_campaign_auto_daily_detail(db: Session, *, store_id: str, campaign_id: str) -> CampaignAutoDailyDetailOut:
+    """Same idea as compute_campaign_detail below, but aggregated from the
+    automatically-collected AdvertisingDailyStatistic rows (Ozon Performance
+    API async statistics-report sync) instead of the CSV-uploaded
+    AdvertisingStatistic. Deliberately a separate function/return type, never
+    merged into compute_campaign_detail's totals — see
+    AdvertisingDailyStatistic's own docstring for why summing the two sources
+    would risk double-counting spend/revenue. Every row here is already
+    exactly one day, so (unlike the CSV path) a comparison only needs two
+    distinct dates, not a period_start == period_end check."""
+    rows = db.scalars(
+        select(AdvertisingDailyStatistic).where(
+            AdvertisingDailyStatistic.store_id == store_id,
+            AdvertisingDailyStatistic.campaign_id == campaign_id,
+        )
+    ).all()
+    if not rows:
+        return CampaignAutoDailyDetailOut(has_data=False)
+
+    total_spend = sum(float(r.spend_rub or 0) for r in rows)
+    total_revenue = sum(float(r.revenue_rub or 0) for r in rows)
+    total_impressions = sum(r.impressions or 0 for r in rows)
+    total_clicks = sum(r.clicks or 0 for r in rows)
+    total_orders = sum(r.orders or 0 for r in rows)
+
+    by_date: dict[date, dict[str, float]] = defaultdict(lambda: {"spend": 0.0, "revenue": 0.0, "impressions": 0.0, "clicks": 0.0})
+    for r in rows:
+        agg = by_date[r.date]
+        agg["spend"] += float(r.spend_rub or 0)
+        agg["revenue"] += float(r.revenue_rub or 0)
+        agg["impressions"] += r.impressions or 0
+        agg["clicks"] += r.clicks or 0
+
+    comparison = None
+    reason = None
+    dates_sorted = sorted(by_date.keys(), reverse=True)
+    if len(dates_sorted) >= 2:
+        today_d, yesterday_d = dates_sorted[0], dates_sorted[1]
+        today_vals, yesterday_vals = by_date[today_d], by_date[yesterday_d]
+        comparison = CampaignAutoDailyComparison(
+            date_today=today_d,
+            date_yesterday=yesterday_d,
+            spend_rub=_compare(today_vals["spend"], yesterday_vals["spend"]),
+            impressions=_compare(today_vals["impressions"], yesterday_vals["impressions"]),
+            clicks=_compare(today_vals["clicks"], yesterday_vals["clicks"]),
+            revenue_rub=_compare(today_vals["revenue"], yesterday_vals["revenue"]),
+        )
+    else:
+        reason = (
+            "Сравнение с предыдущим днём недоступно — нужно как минимум два разных дня "
+            f"автоматически собранной статистики для этой кампании; сейчас доступно: {len(dates_sorted)}."
+        )
+
+    return CampaignAutoDailyDetailOut(
+        has_data=True,
+        total_spend_rub=round(total_spend, 2),
+        total_revenue_rub=round(total_revenue, 2),
+        total_impressions=total_impressions,
+        total_clicks=total_clicks,
+        total_orders=total_orders,
+        drr_calculated_pct=_drr(total_spend, total_revenue),
+        roas_calculated=_roas(total_spend, total_revenue),
+        period_start=min(by_date.keys()),
+        period_end=max(by_date.keys()),
+        daily_comparison=comparison,
+        daily_comparison_unavailable_reason=reason,
+    )
+
+
 def compute_campaign_detail(db: Session, *, store_id: str, campaign_id: str) -> CampaignDetailOut:
     """Aggregates every uploaded advertising_statistics row for one campaign
     (spend/impressions/clicks/sales, summed across all its SKU rows and
     whatever periods have been uploaded), plus a day-over-day comparison —
     only when at least two distinct dates with period_start == period_end
     exist for this campaign. A weekly/monthly report alone can never produce
-    a same-length "day" to compare against, so this never fabricates one."""
+    a same-length "day" to compare against, so this never fabricates one.
+
+    Always also attaches auto_daily — the same aggregation over the separate,
+    automatically-collected AdvertisingDailyStatistic source — regardless of
+    whether this (CSV) source has any data, so the frontend can show
+    auto-collected numbers for a campaign even when nothing was ever
+    uploaded manually for it."""
+    auto_daily = compute_campaign_auto_daily_detail(db, store_id=store_id, campaign_id=campaign_id)
+
     rows = db.scalars(
         select(AdvertisingStatistic).where(
             AdvertisingStatistic.store_id == store_id,
@@ -159,7 +239,7 @@ def compute_campaign_detail(db: Session, *, store_id: str, campaign_id: str) -> 
         )
     ).all()
     if not rows:
-        return CampaignDetailOut(campaign_id=campaign_id, has_data=False)
+        return CampaignDetailOut(campaign_id=campaign_id, has_data=False, auto_daily=auto_daily)
 
     total_spend = sum(float(r.spend_rub) for r in rows)
     total_sales = sum(float(r.sales_promo_rub or 0) for r in rows)
@@ -212,4 +292,5 @@ def compute_campaign_detail(db: Session, *, store_id: str, campaign_id: str) -> 
         period_end=max(r.period_end for r in rows),
         daily_comparison=comparison,
         daily_comparison_unavailable_reason=reason,
+        auto_daily=auto_daily,
     )

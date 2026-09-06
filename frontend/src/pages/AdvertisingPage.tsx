@@ -544,50 +544,103 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
           <td colSpan={5} className="p-3">
             {loading || !detail ? (
               <div className="text-slate-500">Загрузка...</div>
-            ) : !detail.has_data ? (
+            ) : !detail.has_data && !detail.auto_daily.has_data ? (
               <div className="text-slate-500">
-                Нет загруженной статистики для этой кампании. Она появится после загрузки отчёта «Продвижение →
-                Статистика», если в файле есть строки с этим ID кампании.
+                Нет данных для этой кампании — ни загруженных вручную (CSV/XLSX «Продвижение → Статистика»), ни
+                автоматически собранных через Performance API (кнопка «Обновить статистику (авто)» выше).
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <Stat label="Расход (факт)" value={fmtRub(detail.total_spend_rub)} />
-                  <Stat label="Показы (факт)" value={detail.total_impressions.toLocaleString("ru-RU")} />
-                  <Stat label="Клики (факт)" value={detail.total_clicks.toLocaleString("ru-RU")} />
-                  <Stat label="Продажи (факт)" value={fmtRub(detail.total_sales_promo_rub)} />
-                  <Stat label="ДРР (рассчитано)" value={fmtPct(detail.drr_calculated_pct)} />
-                  <Stat
-                    label="ROAS (рассчитано)"
-                    value={detail.roas_calculated !== null ? `×${detail.roas_calculated}` : "Нет данных"}
-                  />
-                </div>
-                <div className="text-xs text-slate-500">
-                  Период всех загруженных данных: {detail.period_start} — {detail.period_end}
-                </div>
-
-                {detail.daily_comparison ? (
-                  <div>
-                    <h4 className="mb-1 text-xs font-semibold text-slate-600">
-                      Сравнение {detail.daily_comparison.date_today} с {detail.daily_comparison.date_yesterday}
-                    </h4>
-                    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                      <ComparisonStat label="Расход" comparison={detail.daily_comparison.spend_rub} format={fmtRub} />
-                      <ComparisonStat
-                        label="Показы"
-                        comparison={detail.daily_comparison.impressions}
-                        format={(v) => v.toLocaleString("ru-RU")}
+              <div className="space-y-4">
+                {detail.has_data && (
+                  <div className="space-y-3">
+                    <h4 className="text-xs font-semibold text-slate-700">Загружено вручную (CSV/XLSX)</h4>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <Stat label="Расход (факт)" value={fmtRub(detail.total_spend_rub)} />
+                      <Stat label="Показы (факт)" value={detail.total_impressions.toLocaleString("ru-RU")} />
+                      <Stat label="Клики (факт)" value={detail.total_clicks.toLocaleString("ru-RU")} />
+                      <Stat label="Продажи (факт)" value={fmtRub(detail.total_sales_promo_rub)} />
+                      <Stat label="ДРР (рассчитано)" value={fmtPct(detail.drr_calculated_pct)} />
+                      <Stat
+                        label="ROAS (рассчитано)"
+                        value={detail.roas_calculated !== null ? `×${detail.roas_calculated}` : "Нет данных"}
                       />
-                      <ComparisonStat
-                        label="Клики"
-                        comparison={detail.daily_comparison.clicks}
-                        format={(v) => v.toLocaleString("ru-RU")}
-                      />
-                      <ComparisonStat label="Продажи" comparison={detail.daily_comparison.sales_promo_rub} format={fmtRub} />
                     </div>
+                    <div className="text-xs text-slate-500">
+                      Период всех загруженных данных: {detail.period_start} — {detail.period_end}
+                    </div>
+
+                    {detail.daily_comparison ? (
+                      <div>
+                        <h5 className="mb-1 text-xs font-semibold text-slate-600">
+                          Сравнение {detail.daily_comparison.date_today} с {detail.daily_comparison.date_yesterday}
+                        </h5>
+                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                          <ComparisonStat label="Расход" comparison={detail.daily_comparison.spend_rub} format={fmtRub} />
+                          <ComparisonStat
+                            label="Показы"
+                            comparison={detail.daily_comparison.impressions}
+                            format={(v) => v.toLocaleString("ru-RU")}
+                          />
+                          <ComparisonStat
+                            label="Клики"
+                            comparison={detail.daily_comparison.clicks}
+                            format={(v) => v.toLocaleString("ru-RU")}
+                          />
+                          <ComparisonStat label="Продажи" comparison={detail.daily_comparison.sales_promo_rub} format={fmtRub} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs italic text-slate-500">{detail.daily_comparison_unavailable_reason}</div>
+                    )}
                   </div>
-                ) : (
-                  <div className="text-xs italic text-slate-500">{detail.daily_comparison_unavailable_reason}</div>
+                )}
+
+                {detail.auto_daily.has_data && (
+                  <div className={`space-y-3 ${detail.has_data ? "border-t border-slate-200 pt-3" : ""}`}>
+                    <h4 className="text-xs font-semibold text-slate-700">
+                      Автоматически собрано (Ozon Performance API, по дням)
+                    </h4>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <Stat label="Расход (факт)" value={fmtRub(detail.auto_daily.total_spend_rub)} />
+                      <Stat label="Показы (факт)" value={detail.auto_daily.total_impressions.toLocaleString("ru-RU")} />
+                      <Stat label="Клики (факт)" value={detail.auto_daily.total_clicks.toLocaleString("ru-RU")} />
+                      <Stat label="Выручка (факт)" value={fmtRub(detail.auto_daily.total_revenue_rub)} />
+                      <Stat label="Заказы (факт)" value={detail.auto_daily.total_orders.toLocaleString("ru-RU")} />
+                      <Stat label="ДРР (рассчитано)" value={fmtPct(detail.auto_daily.drr_calculated_pct)} />
+                      <Stat
+                        label="ROAS (рассчитано)"
+                        value={detail.auto_daily.roas_calculated !== null ? `×${detail.auto_daily.roas_calculated}` : "Нет данных"}
+                      />
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Период автосбора: {detail.auto_daily.period_start} — {detail.auto_daily.period_end}
+                    </div>
+
+                    {detail.auto_daily.daily_comparison ? (
+                      <div>
+                        <h5 className="mb-1 text-xs font-semibold text-slate-600">
+                          Сравнение {detail.auto_daily.daily_comparison.date_today} с{" "}
+                          {detail.auto_daily.daily_comparison.date_yesterday}
+                        </h5>
+                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                          <ComparisonStat label="Расход" comparison={detail.auto_daily.daily_comparison.spend_rub} format={fmtRub} />
+                          <ComparisonStat
+                            label="Показы"
+                            comparison={detail.auto_daily.daily_comparison.impressions}
+                            format={(v) => v.toLocaleString("ru-RU")}
+                          />
+                          <ComparisonStat
+                            label="Клики"
+                            comparison={detail.auto_daily.daily_comparison.clicks}
+                            format={(v) => v.toLocaleString("ru-RU")}
+                          />
+                          <ComparisonStat label="Выручка" comparison={detail.auto_daily.daily_comparison.revenue_rub} format={fmtRub} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs italic text-slate-500">{detail.auto_daily.daily_comparison_unavailable_reason}</div>
+                    )}
+                  </div>
                 )}
               </div>
             )}

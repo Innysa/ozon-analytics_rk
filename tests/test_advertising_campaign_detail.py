@@ -177,6 +177,97 @@ def test_store_isolation_campaign_id_from_other_store_shows_no_data(db_session, 
     assert result.has_data is False
 
 
+def _add_auto_daily_row(db_session, *, store_id: str, campaign_id: str, ozon_campaign_id: str, day: date, spend: float, revenue: float, impressions: int, clicks: int, sku: str = "111"):
+    from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
+
+    row = AdvertisingDailyStatistic(
+        store_id=store_id,
+        campaign_id=campaign_id,
+        ozon_campaign_id=ozon_campaign_id,
+        ozon_sku=sku,
+        date=day,
+        spend_rub=spend,
+        revenue_rub=revenue,
+        impressions=impressions,
+        clicks=clicks,
+        source="ozon_performance_api",
+    )
+    db_session.add(row)
+
+
+def test_auto_daily_detail_absent_when_nothing_synced(db_session, two_stores_with_users):
+    from app.services.advertising_analytics_service import compute_campaign_auto_daily_detail
+
+    d = two_stores_with_users
+    result = compute_campaign_auto_daily_detail(db_session, store_id=d["store_a"].id, campaign_id="does-not-exist")
+    assert result.has_data is False
+    assert result.daily_comparison is None
+
+
+def test_auto_daily_detail_two_days_produce_comparison(db_session, two_stores_with_users):
+    from app.services.advertising_analytics_service import compute_campaign_auto_daily_detail
+
+    d = two_stores_with_users
+    campaign = _make_campaign(db_session, d["store_a"].id)
+    _add_auto_daily_row(
+        db_session, store_id=d["store_a"].id, campaign_id=campaign.id, ozon_campaign_id=campaign.ozon_campaign_id,
+        day=date(2026, 9, 1), spend=100, revenue=500, impressions=1000, clicks=20,
+    )
+    _add_auto_daily_row(
+        db_session, store_id=d["store_a"].id, campaign_id=campaign.id, ozon_campaign_id=campaign.ozon_campaign_id,
+        day=date(2026, 9, 2), spend=150, revenue=400, impressions=900, clicks=25,
+    )
+    db_session.flush()
+
+    result = compute_campaign_auto_daily_detail(db_session, store_id=d["store_a"].id, campaign_id=campaign.id)
+    assert result.has_data is True
+    assert result.total_spend_rub == pytest.approx(250)
+    assert result.total_revenue_rub == pytest.approx(900)
+    comp = result.daily_comparison
+    assert comp is not None
+    assert comp.date_today == date(2026, 9, 2)
+    assert comp.spend_rub.direction == "up"
+    assert comp.revenue_rub.direction == "down"
+
+
+def test_auto_daily_detail_one_day_has_no_comparison_but_has_totals(db_session, two_stores_with_users):
+    from app.services.advertising_analytics_service import compute_campaign_auto_daily_detail
+
+    d = two_stores_with_users
+    campaign = _make_campaign(db_session, d["store_a"].id)
+    _add_auto_daily_row(
+        db_session, store_id=d["store_a"].id, campaign_id=campaign.id, ozon_campaign_id=campaign.ozon_campaign_id,
+        day=date(2026, 9, 1), spend=100, revenue=500, impressions=1000, clicks=20,
+    )
+    db_session.flush()
+
+    result = compute_campaign_auto_daily_detail(db_session, store_id=d["store_a"].id, campaign_id=campaign.id)
+    assert result.has_data is True
+    assert result.daily_comparison is None
+    assert result.daily_comparison_unavailable_reason is not None
+
+
+def test_campaign_detail_attaches_auto_daily_even_without_csv_data(db_session, two_stores_with_users):
+    """The bug this locks in: expanding a campaign row that has ONLY
+    auto-collected (Performance API) data and no manually uploaded CSV must
+    not show "нет данных" — has_data at the top level stays CSV-specific
+    (False here), but auto_daily must still carry the real numbers."""
+    from app.services.advertising_analytics_service import compute_campaign_detail
+
+    d = two_stores_with_users
+    campaign = _make_campaign(db_session, d["store_a"].id)
+    _add_auto_daily_row(
+        db_session, store_id=d["store_a"].id, campaign_id=campaign.id, ozon_campaign_id=campaign.ozon_campaign_id,
+        day=date(2026, 9, 1), spend=100, revenue=500, impressions=1000, clicks=20,
+    )
+    db_session.flush()
+
+    result = compute_campaign_detail(db_session, store_id=d["store_a"].id, campaign_id=campaign.id)
+    assert result.has_data is False  # no CSV rows
+    assert result.auto_daily.has_data is True
+    assert result.auto_daily.total_spend_rub == pytest.approx(100)
+
+
 def test_campaign_detail_via_api_end_to_end(client, db_session, two_stores_with_users):
     d = two_stores_with_users
     campaign = _make_campaign(db_session, d["store_a"].id)
