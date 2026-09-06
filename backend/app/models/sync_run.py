@@ -18,6 +18,7 @@ class SyncSourceType(str, enum.Enum):
     OZON_ADVERTISING_API = "ozon_advertising_api"  # Ozon Performance API (campaigns)
     OZON_ADVERTISING_STATISTICS_API = "ozon_advertising_statistics_api"  # Ozon Performance API (daily campaign stats)
     OZON_PRODUCTS_API = "ozon_products_api"  # Ozon Seller API (product list/info, stocks)
+    OZON_SEARCH_QUERY_STATISTICS_API = "ozon_search_query_statistics_api"  # Ozon Seller API (product-queries/details)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 

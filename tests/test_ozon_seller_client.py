@@ -41,34 +41,52 @@ def test_check_connection_reports_auth_error(monkeypatch):
 
 
 def test_get_product_queries_sends_expected_path_and_returns_raw_dict():
-    """get_product_queries()'s request/response contract is UNCONFIRMED (see
-    OzonSellerClient's module docstring — docs.ozon.ru and api-seller.ozon.ru
-    itself are both blocked from this sandbox). This only locks in the one
-    thing that IS certain: the endpoint path, and that the raw dict is
-    returned unmodified rather than forced through a guessed schema."""
+    """get_product_queries()'s request/response contract is now CONFIRMED
+    against a real account (see OzonSellerClient's module docstring): full
+    ISO timestamps, and a `page_size` field rather than `limit`."""
     client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
     client._client.post = MagicMock(return_value=_mock_post(200, {"whatever": "shape", "items": []}))
 
-    result = client.get_product_queries(date_from="2026-08-01", date_to="2026-09-06", skus=["123"])
+    result = client.get_product_queries(
+        date_from="2026-08-08T00:00:00Z", date_to="2026-09-04T23:59:59Z", skus=["123"], page_size=10
+    )
 
     assert result == {"whatever": "shape", "items": []}
     sent_path, sent_kwargs = client._client.post.call_args
     assert sent_path[0] == "/v1/analytics/product-queries"
-    assert sent_kwargs["json"]["date_from"] == "2026-08-01"
-    assert sent_kwargs["json"]["date_to"] == "2026-09-06"
+    assert sent_kwargs["json"]["date_from"] == "2026-08-08T00:00:00Z"
+    assert sent_kwargs["json"]["date_to"] == "2026-09-04T23:59:59Z"
     assert sent_kwargs["json"]["skus"] == ["123"]
+    assert sent_kwargs["json"]["page_size"] == 10
+    assert "limit" not in sent_kwargs["json"]
+    assert "limit_by_sku" not in sent_kwargs["json"]
 
 
 def test_get_product_query_details_sends_expected_path():
+    """get_product_query_details() requires BOTH limit_by_sku and page_size
+    in the same request (confirmed live: Ozon returns a validation error if
+    either is missing) and has no `query` parameter at all — the response
+    itself carries one row per query via its own `query` field."""
     client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
     client._client.post = MagicMock(return_value=_mock_post(200, {"whatever": "shape"}))
 
-    result = client.get_product_query_details(query="обувница", date_from="2026-08-01", date_to="2026-09-06")
+    result = client.get_product_query_details(
+        date_from="2026-08-08T00:00:00Z",
+        date_to="2026-09-04T23:59:59Z",
+        skus=["2953864771"],
+        limit_by_sku=10,
+        page_size=10,
+    )
 
     assert result == {"whatever": "shape"}
     sent_path, sent_kwargs = client._client.post.call_args
     assert sent_path[0] == "/v1/analytics/product-queries/details"
-    assert sent_kwargs["json"]["query"] == "обувница"
+    assert sent_kwargs["json"]["date_from"] == "2026-08-08T00:00:00Z"
+    assert sent_kwargs["json"]["date_to"] == "2026-09-04T23:59:59Z"
+    assert sent_kwargs["json"]["skus"] == ["2953864771"]
+    assert sent_kwargs["json"]["limit_by_sku"] == 10
+    assert sent_kwargs["json"]["page_size"] == 10
+    assert "query" not in sent_kwargs["json"]
 
 
 def test_get_product_queries_reports_feature_unavailable_on_404():

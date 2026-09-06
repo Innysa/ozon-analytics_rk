@@ -2,7 +2,7 @@ import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useResizableColumns } from "../hooks/useResizableColumns";
 import { useStore } from "../store/StoreContext";
-import type { ImportSummary, QueryCompetitorsReport, SearchQueryPosition } from "../types";
+import type { ImportSummary, QueryCompetitorsReport, SearchQueryPosition, SyncRun } from "../types";
 
 const COLUMNS = ["Товар", "Запрос", "Текущая позиция", "Позиция в прошлый раз", "Изменение", "Показы", "Заказы"];
 const DEFAULT_WIDTHS = [220, 240, 130, 150, 150, 90, 90];
@@ -18,6 +18,7 @@ export function SearchPositionsPage() {
   const [productFilter, setProductFilter] = useState("");
   const [queryFilter, setQueryFilter] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const { widths, startResize } = useResizableColumns(DEFAULT_WIDTHS);
 
   const load = () => {
@@ -45,6 +46,43 @@ export function SearchPositionsPage() {
       load();
     } catch (err) {
       setNotice(err instanceof ApiError ? err.message : "Ошибка загрузки файла");
+    }
+  };
+
+  const pollSyncRun = async (runId: string, attempt = 0): Promise<SyncRun | null> => {
+    if (!currentStore) return null;
+    const runs = await api.get<SyncRun[]>(`/stores/${currentStore.id}/sync/runs`);
+    const run = runs.find((r) => r.id === runId) ?? null;
+    if (!run || run.status !== "running" || attempt >= 60) return run;
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return pollSyncRun(runId, attempt + 1);
+  };
+
+  const syncViaApi = async () => {
+    if (!currentStore) return;
+    setSyncing(true);
+    setNotice("Запуск автосбора позиций через Ozon Seller API...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-search-query-statistics`);
+      setNotice("Сбор данных выполняется в фоне...");
+      const finished = await pollSyncRun(run.id);
+      if (!finished) {
+        setNotice("Не удалось получить статус синхронизации — обновите страницу и проверьте журнал синхронизаций.");
+      } else if (finished.status === "failed") {
+        setNotice(`Автосбор не удался: ${finished.error_message ?? "неизвестная ошибка"}`);
+      } else if (finished.status === "running") {
+        setNotice("Синхронизация всё ещё выполняется — проверьте журнал синхронизаций на странице «Подключение к Ozon» позже.");
+      } else {
+        setNotice(
+          `Готово: получено ${finished.items_fetched}, создано ${finished.items_created}, обновлено ${finished.items_skipped_duplicate}.` +
+            (finished.error_message ? ` Предупреждения: ${finished.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка автосбора данных");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -79,10 +117,20 @@ export function SearchPositionsPage() {
             </button>
           </div>
           {tab === "positions" && (
-            <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
-              Загрузить отчёт (XLSX)
-              <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadReport} />
-            </label>
+            <>
+              <button
+                onClick={syncViaApi}
+                disabled={syncing}
+                className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                title="Автоматически собрать данные через Ozon Seller API (POST /v1/analytics/product-queries/details) — без ручной загрузки XLSX"
+              >
+                {syncing ? "Сбор данных..." : "Обновить данные (авто)"}
+              </button>
+              <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
+                Загрузить отчёт (XLSX)
+                <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadReport} />
+              </label>
+            </>
           )}
         </div>
       </div>

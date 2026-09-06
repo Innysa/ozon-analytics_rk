@@ -120,6 +120,7 @@ def list_search_queries(
             conv_search_to_order_pct_ozon=r.conv_search_to_order_pct_ozon,
             ordered_units_by_query=r.ordered_units_by_query,
             ordered_sum_by_query_rub=r.ordered_sum_by_query_rub,
+            query_index=r.query_index,
         )
         for r in rows
     ]

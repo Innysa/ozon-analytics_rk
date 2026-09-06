@@ -29,6 +29,10 @@ from app.services.advertising_daily_scheduler import (
     start_advertising_daily_statistics_scheduler,
     stop_advertising_daily_statistics_scheduler,
 )
+from app.services.search_query_stats_scheduler import (
+    start_search_query_stats_scheduler,
+    stop_search_query_stats_scheduler,
+)
 
 configure_logging()
 settings = get_settings()
@@ -37,8 +41,10 @@ settings = get_settings()
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     start_advertising_daily_statistics_scheduler()
+    start_search_query_stats_scheduler()
     yield
     stop_advertising_daily_statistics_scheduler()
+    stop_search_query_stats_scheduler()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=_lifespan)

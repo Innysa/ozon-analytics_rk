@@ -20,6 +20,7 @@ class SearchQueryStatisticOut(BaseModel):
     conv_search_to_order_pct_ozon: float | None
     ordered_units_by_query: int | None
     ordered_sum_by_query_rub: float | None
+    query_index: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -96,6 +97,7 @@ class SearchQueryPositionOut(BaseModel):
     people_searched: int | None
     people_saw: int | None
     ordered_units_by_query: int | None
+    query_index: int | None = None  # API-only: Ozon's own query-importance rank for this SKU, NOT the search position
 
 
 class SearchQueryPositionListResponse(BaseModel):

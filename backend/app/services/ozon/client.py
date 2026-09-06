@@ -20,20 +20,46 @@ time this was written; if Ozon changes the contract, `OzonReviewItem`'s
 dropped, and unexpected shapes should be re-verified against the official
 docs before being relied upon.
 
-Also present, but deliberately NOT relied on for anything yet:
+Also present:
   POST /v1/analytics/product-queries          - see get_product_queries()
   POST /v1/analytics/product-queries/details  - see get_product_query_details()
-These two exist (confirmed via a dev.ozon.ru changelog entry: the methods
-left beta on 2025-07-23) and are the Seller API equivalent of "Аналитика →
-Товары в поиске → Запросы моего товара" — the same report this app already
-imports from a real exported XLSX (app.services.search_query_import). But
-their exact request/response field names could not be confirmed: both
-docs.ozon.ru AND api-seller.ozon.ru itself are blocked by this sandbox's
-network egress policy (confirmed via a direct curl attempt returning
-`connect_rejected`, not merely assumed), so there was no way to inspect a
-real response before writing these two methods. They return the raw parsed
-JSON dict rather than a validated schema, and no parser/DB-writing code has
-been built on top of them — see each method's own docstring.
+These are the Seller API equivalent of "Аналитика → Товары в поиске →
+Запросы моего товара" — the same report this app used to require as a
+manual XLSX upload (app.services.search_query_import) before this pair was
+wired up. Their contract below is CONFIRMED against a real account via a
+manual curl test (this sandbox's own network egress to api-seller.ozon.ru
+is blocked, so the contract was verified externally, not by this process):
+
+  - date_from/date_to: full ISO-8601 timestamp WITH time and a trailing
+    "Z", e.g. "2026-08-08T00:00:00Z" — a bare "YYYY-MM-DD" date is rejected
+    with "invalid google.protobuf.Timestamp value". Callers of this client
+    must pass the full timestamp string themselves (see
+    app.services.search_query_details_sync_service for the date_from
+    00:00:00Z / date_to 23:59:59Z convention this app uses).
+  - skus: list[str] of SKU ids. Confirmed working with 1 SKU in the request;
+    the maximum SKUs accepted per call is NOT confirmed (untested on the
+    real account) — see search_query_details_sync_service's own docstring
+    for the conservative batch size this app uses until that limit is
+    field-tested.
+  - get_product_queries() ("общая аналитика по SKU за период"): takes
+    `page_size` (NOT "limit"), range (0, 1000]. No `limit_by_sku`.
+  - get_product_query_details() ("детализация по каждому запросу", the one
+    that returns a `position` per individual query — what "Позиции в
+    поиске" needs): requires BOTH `limit_by_sku` (range (0, 15]) and
+    `page_size` (range (0, 100]) in the same request — Ozon returns a
+    validation error if either is missing. There is no `query` request
+    parameter (an earlier, unconfirmed version of this method guessed one
+    and was wrong) — the response already carries one row per query,
+    labelled by its own `query` field.
+  - Whether only 1 request may be in flight per account at a time (as is
+    the case for the unrelated Performance API statistics-report flow) is
+    NOT confirmed for these two endpoints — see
+    search_query_details_sync_service's docstring for why batches are
+    still processed sequentially regardless.
+Both methods return the raw parsed JSON dict rather than a validated
+schema — the response shape (item field names, `total`/`page_count`) is
+confirmed by the manual test, but not exhaustively enough to justify a
+pydantic model yet.
 
 Every request carries the target store's own Client-Id / Api-Key headers —
 callers must never share credentials across stores.
@@ -194,55 +220,40 @@ class OzonSellerClient:
         date_from: str,
         date_to: str,
         skus: list[str] | None = None,
-        limit: int = 100,
-        page_token: str = "",
+        page_size: int = 100,
     ) -> dict:
         """POST /v1/analytics/product-queries — per-SKU search-query
-        analytics (general list: which queries led to this product).
-
-        UNCONFIRMED CONTRACT — see this module's docstring for why. The
-        request body below is a best-effort guess based on this app's other
-        Ozon Seller/Performance analytics calls, NOT verified documentation:
-          - date_from/date_to as "YYYY-MM-DD": this app already hit one real
-            case (the Performance API statistics-report endpoint) where the
-            obvious DD.MM.YYYY guess was rejected and ISO was required —
-            treat this as the more likely format, but unconfirmed here.
-          - skus, limit, page_token: named by analogy with this same
-            client's other paginated calls; Ozon may use different names
-            (e.g. "product_id" instead of "skus", as /v3/product/info/list
-            does) or a different pagination style entirely (last_id vs
-            page_token vs offset).
-        Returns the raw parsed JSON dict, not a validated schema — do not
-        write a parser or persist this response until a real call's exact
-        shape has been confirmed (see app.services.search_query_import for
-        the confirmed, real-file-based path this app relies on today)."""
-        body: dict = {"date_from": date_from, "date_to": date_to, "limit": limit}
+        analytics aggregated over the whole period (average position, no
+        per-query breakdown). CONFIRMED contract — see this module's
+        docstring. date_from/date_to must be full ISO timestamps
+        ("...T00:00:00Z"); page_size range is (0, 1000]."""
+        body: dict = {"date_from": date_from, "date_to": date_to, "page_size": page_size}
         if skus:
             body["skus"] = skus
-        if page_token:
-            body["page_token"] = page_token
         return self._post("/v1/analytics/product-queries", body)
 
     def get_product_query_details(
         self,
         *,
-        query: str,
         date_from: str,
         date_to: str,
         skus: list[str] | None = None,
-        limit: int = 100,
-        page_token: str = "",
+        limit_by_sku: int = 15,
+        page_size: int = 100,
     ) -> dict:
-        """POST /v1/analytics/product-queries/details — detail for one
-        specific query (the method described as the equivalent of "Запросы
-        моего товара", i.e. the one that should carry product position).
-
-        Same UNCONFIRMED CONTRACT caveat as get_product_queries() above —
-        additionally, it's not confirmed whether the query-text parameter
-        is named "query", "queries" (plural/list), or "search_query"."""
-        body: dict = {"query": query, "date_from": date_from, "date_to": date_to, "limit": limit}
+        """POST /v1/analytics/product-queries/details — one row per
+        individual search query per SKU, each carrying its own `position` —
+        this is the method "Позиции в поиске" needs. CONFIRMED contract —
+        see this module's docstring. date_from/date_to must be full ISO
+        timestamps ("...T00:00:00Z"); BOTH limit_by_sku (range (0, 15]) and
+        page_size (range (0, 100]) are required together, or Ozon returns a
+        validation error."""
+        body: dict = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "limit_by_sku": limit_by_sku,
+            "page_size": page_size,
+        }
         if skus:
             body["skus"] = skus
-        if page_token:
-            body["page_token"] = page_token
         return self._post("/v1/analytics/product-queries/details", body)

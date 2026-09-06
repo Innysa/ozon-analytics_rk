@@ -144,6 +144,7 @@ def compute_search_query_positions(
                 people_searched=current.people_searched,
                 people_saw=current.people_saw,
                 ordered_units_by_query=current.ordered_units_by_query,
+                query_index=current.query_index,
             )
         )
 

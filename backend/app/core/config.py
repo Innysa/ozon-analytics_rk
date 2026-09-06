@@ -65,6 +65,25 @@ class Settings(BaseSettings):
     ADVERTISING_STATS_SCHEDULER_ENABLED: bool = True
     ADVERTISING_STATS_SCHEDULER_HOUR_UTC: int = 3  # once a day, off-peak
 
+    # Automatic Ozon Seller API search-query-details sync (see
+    # app.services.search_query_details_sync_service) — replaces the manual
+    # "Аналитика → Запросы" XLSX upload with POST
+    # /v1/analytics/product-queries/details. limit_by_sku/page_size defaults
+    # are Ozon's own confirmed hard maxima (field-tested on a real account:
+    # limit_by_sku range (0,15], page_size range (0,100]). SKU_BATCH_SIZE is
+    # NOT a confirmed Ozon limit — the real maximum SKUs-per-request is
+    # untested (only 1 SKU was tried); this default is a conservative guess
+    # sized so a worst case (every SKU maxing out at LIMIT_BY_SKU rows) still
+    # fits inside one PAGE_SIZE response without needing pagination, which
+    # this client does not yet implement (no confirmed page/page_token
+    # field). Revisit once the real per-request SKU cap is confirmed.
+    SEARCH_QUERY_STATS_SKU_BATCH_SIZE: int = 6
+    SEARCH_QUERY_STATS_LIMIT_BY_SKU: int = 15
+    SEARCH_QUERY_STATS_PAGE_SIZE: int = 100
+    SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    SEARCH_QUERY_STATS_SCHEDULER_ENABLED: bool = True
+    SEARCH_QUERY_STATS_SCHEDULER_HOUR_UTC: int = 4  # once a day, off-peak, staggered after advertising's own job
+
     CORS_ORIGINS: str = "http://localhost:5173"
 
     @property

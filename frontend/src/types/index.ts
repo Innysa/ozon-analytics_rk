@@ -440,6 +440,10 @@ export interface SearchQueryStatistic {
   conv_search_to_order_pct_ozon: number | null;
   ordered_units_by_query: number | null;
   ordered_sum_by_query_rub: number | null;
+  // API-only (null for rows from the manual XLSX/CSV upload): Ozon's own
+  // ranking of this query's importance/traffic for the SKU — NOT the
+  // search-results position (see position_ozon for that).
+  query_index: number | null;
 }
 
 export interface SearchQueryStatisticListResponse {
@@ -490,6 +494,7 @@ export interface SearchQueryPosition {
   people_searched: number | null;
   people_saw: number | null;
   ordered_units_by_query: number | null;
+  query_index: number | null;
 }
 
 export interface SearchQueryPositionListResponse {

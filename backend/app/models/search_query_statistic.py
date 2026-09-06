@@ -27,6 +27,19 @@ floats, i.e. genuinely a fraction under the hood). This file hands back
 the percentage as pre-formatted text, so 2.98 is what "2.98%" actually
 means here, kept as-is rather than forced into the other file's fraction
 convention.
+
+Rows now also come from an automatic source — Ozon Seller API's POST
+/v1/analytics/product-queries/details (source="ozon_seller_api"; see
+app.services.search_query_details_sync_service) — alongside the original
+manual XLSX/CSV upload. The API's response has no exact equivalent for
+conv_search_to_order_pct_ozon or a distinct "search→card" conversion: its
+single `view_conversion` percentage is stored into
+conv_search_to_card_pct_ozon as the closest analogous field (an assumption,
+not a confirmed field-for-field mapping — see the sync service's
+docstring), and conv_search_to_order_pct_ozon is left NULL for API-sourced
+rows rather than guessed. query_index (API-only, NULL for upload-sourced
+rows) is Ozon's own ranking of a query's importance/traffic for that SKU —
+explicitly NOT the search-results position (see `position_ozon` for that).
 """
 from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -66,7 +79,12 @@ class SearchQueryStatistic(TimestampMixin, Base):
     conv_search_to_card_pct_ozon: Mapped[float | None] = mapped_column(Numeric(9, 4), nullable=True)
     conv_search_to_order_pct_ozon: Mapped[float | None] = mapped_column(Numeric(9, 4), nullable=True)
 
-    source: Mapped[str] = mapped_column(String(20), nullable=False)  # "csv_import" | "xlsx_import"
+    # API-only (NULL for rows from the manual XLSX/CSV upload): Ozon's own
+    # ranking of this query's importance/traffic for the SKU, 1 = most
+    # significant — NOT the search-results position (see position_ozon).
+    query_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # "csv_import" | "xlsx_import" | "ozon_seller_api"
     raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     store = relationship("Store")
