@@ -52,8 +52,8 @@ class ErrorOnceThenOkClient(FakeOzonSellerClient):
         return super().get_product_query_details(**kwargs)
 
 
-def _make_product(db_session, store_id: str, sku: str):
-    product = Product(store_id=store_id, ozon_sku=sku, name=f"Товар {sku}")
+def _make_product(db_session, store_id: str, sku: str, *, name: str | None = None, offer_id: str | None = None):
+    product = Product(store_id=store_id, ozon_sku=sku, name=name or f"Товар {sku}", offer_id=offer_id)
     db_session.add(product)
     db_session.flush()
     return product
@@ -94,7 +94,7 @@ def test_sku_zero_is_filtered_out_and_reported(db_session, two_stores_with_users
     and the skip must be visible in outcome.errors rather than silent."""
     d = two_stores_with_users
     _make_product(db_session, d["store_a"].id, "2953864771")
-    _make_product(db_session, d["store_a"].id, "0")
+    _make_product(db_session, d["store_a"].id, "0", name="Необувница", offer_id="art-42")
 
     client = FakeOzonSellerClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1}])
     outcome = sync_search_query_details(
@@ -104,7 +104,10 @@ def test_sku_zero_is_filtered_out_and_reported(db_session, two_stores_with_users
     assert len(client.calls) == 1
     assert client.calls[0]["skus"] == ["2953864771"]
     assert outcome.created == 1
-    assert any("0" in e and "SKU" in e for e in outcome.errors)
+    # The diagnostic must name the specific product (not just a count) so a
+    # seller can actually go check/fix it — a bare "1 товар пропущен" gave
+    # no way to tell which product was the culprit.
+    assert any("Необувница" in e and "art-42" in e for e in outcome.errors)
 
 
 def test_no_products_reports_a_clear_error(db_session, two_stores_with_users):

@@ -200,8 +200,20 @@ def sync_ozon_products(
     client_id = decrypt_secret(creds.client_id_encrypted)
     api_key = decrypt_secret(creds.api_key_encrypted)
 
-    existing_by_sku = {
-        p.ozon_sku: p for p in db.query(Product).filter(Product.store_id == ctx.store_id).all()
+    all_existing_products = db.query(Product).filter(Product.store_id == ctx.store_id).all()
+    existing_by_sku = {p.ozon_sku: p for p in all_existing_products}
+    # Matched separately from existing_by_sku, and consulted FIRST: Ozon's
+    # own product_id is the stable identity for a product, unlike sku, which
+    # can start at the sentinel 0 ("no SKU assigned yet") and later become a
+    # real positive value once Ozon activates the product into a scheme.
+    # Confirmed the hard way: before this, a product stuck at sku=0 (created
+    # by an older version of this sync, back when it didn't skip sku=0 at
+    # all) stayed an orphaned row forever — re-syncing after Ozon assigned
+    # it a real sku matched nothing in existing_by_sku (the dict was keyed
+    # by the OLD "0"), so a brand-new duplicate Product row was created
+    # instead of the old one being corrected in place.
+    existing_by_product_id = {
+        p.ozon_product_id: p for p in all_existing_products if p.ozon_product_id is not None
     }
 
     fetched = created = updated = 0
@@ -249,8 +261,9 @@ def sync_ozon_products(
                     price = _to_decimal(item.price)
                     old_price = _to_decimal(item.old_price)
 
-                    product = existing_by_sku.get(sku)
+                    product = existing_by_product_id.get(item.id) or existing_by_sku.get(sku)
                     if product:
+                        product.ozon_sku = sku  # may correct a stale sku (e.g. 0 -> a newly assigned real sku)
                         product.ozon_product_id = item.id
                         product.offer_id = item.offer_id
                         product.name = item.name or product.name
@@ -276,8 +289,9 @@ def sync_ozon_products(
                             is_archived=bool(item.is_archived),
                         )
                         db.add(product)
-                        existing_by_sku[sku] = product
                         created += 1
+                    existing_by_product_id[item.id] = product
+                    existing_by_sku[sku] = product
         run.status = SyncStatus.SUCCESS
     except OzonAuthError as exc:
         run.status = SyncStatus.FAILED

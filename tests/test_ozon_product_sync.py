@@ -186,3 +186,57 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
     assert resp2.json()["items_skipped_duplicate"] == 1
     products_resp2 = client.get(f"/api/stores/{d['store_a'].id}/products")
     assert len(products_resp2.json()) == 1
+
+
+def test_stale_sku_zero_row_is_corrected_in_place_not_duplicated(client, two_stores_with_users, monkeypatch, db_session):
+    """Regression test: a product row stuck at ozon_sku="0" (Ozon's own "no
+    SKU assigned yet" sentinel — see the skip in sync_ozon_products) used to
+    be left orphaned forever once Ozon later assigned it a real sku: the old
+    sku-only lookup was keyed under the stale "0", so it never matched the
+    new sku and a brand-new duplicate Product row was created instead.
+    Matching by Ozon's own stable product_id first must find and correct the
+    same row in place."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    from app.models.product import Product
+
+    stale = Product(store_id=d["store_a"].id, ozon_sku="0", ozon_product_id=5330508572, name="Товар без SKU")
+    db_session.add(stale)
+    db_session.commit()
+
+    list_payload = {
+        "result": {
+            "items": [
+                {
+                    "product_id": 5330508572, "offer_id": "чем27", "has_fbo_stocks": False,
+                    "has_fbs_stocks": True, "archived": False, "is_discounted": False, "quants": [],
+                    "sku": 4936624632,
+                }
+            ],
+            "total": 1, "last_id": "",
+        }
+    }
+    list_response = OzonProductListResponse.model_validate(list_payload)
+    info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)  # product_id=5330508572, sku=4936624632
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.return_value = list_response
+        fake.get_products_info.return_value = info_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items_created"] == 0
+    assert resp.json()["items_skipped_duplicate"] == 1  # the stale row was updated, not duplicated
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 1
+    assert products[0]["ozon_sku"] == "4936624632"

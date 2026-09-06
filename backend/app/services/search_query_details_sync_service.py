@@ -189,11 +189,23 @@ def sync_search_query_details(
     # single bad row would otherwise silently fail every other product in
     # its batch too.
     valid_products = [p for p in products if _is_positive_sku(p.ozon_sku)]
-    skipped_invalid = len(products) - len(valid_products)
-    if skipped_invalid:
+    invalid_products = [p for p in products if not _is_positive_sku(p.ozon_sku)]
+    if invalid_products:
+        # Name each one explicitly (sku/name/offer_id/internal id) rather
+        # than just a count — a bare count gave no way to tell which
+        # product to check on Ozon's side, or whether re-syncing the
+        # catalog had actually fixed it. Capped at 10 to keep the message
+        # readable if a store somehow has many.
+        named = "; ".join(
+            f"«{p.name}» (SKU={p.ozon_sku!r}, offer_id={p.offer_id!r}, product_id={p.id})"
+            for p in invalid_products[:10]
+        )
+        more = f" и ещё {len(invalid_products) - 10}" if len(invalid_products) > 10 else ""
         outcome.errors.append(
-            f"Пропущено {skipped_invalid} товар(ов) с некорректным SKU (0/пусто) — "
-            f"повторите синхронизацию товаров, чтобы очистить эти записи."
+            f"Пропущено {len(invalid_products)} товар(ов) с некорректным SKU (0/пусто): {named}{more} — "
+            f"это значение приходит от самого Ozon (sku=0 значит «SKU ещё не назначен», обычно для товара вне "
+            f"активной схемы FBO/FBS); проверьте товар в кабинете Ozon и повторите синхронизацию каталога "
+            f"(POST /sync/ozon-products) после того, как Ozon назначит ему реальный SKU."
         )
 
     product_by_sku = {p.ozon_sku: p for p in valid_products}
