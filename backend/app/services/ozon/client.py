@@ -20,6 +20,21 @@ time this was written; if Ozon changes the contract, `OzonReviewItem`'s
 dropped, and unexpected shapes should be re-verified against the official
 docs before being relied upon.
 
+Also present, but deliberately NOT relied on for anything yet:
+  POST /v1/analytics/product-queries          - see get_product_queries()
+  POST /v1/analytics/product-queries/details  - see get_product_query_details()
+These two exist (confirmed via a dev.ozon.ru changelog entry: the methods
+left beta on 2025-07-23) and are the Seller API equivalent of "Аналитика →
+Товары в поиске → Запросы моего товара" — the same report this app already
+imports from a real exported XLSX (app.services.search_query_import). But
+their exact request/response field names could not be confirmed: both
+docs.ozon.ru AND api-seller.ozon.ru itself are blocked by this sandbox's
+network egress policy (confirmed via a direct curl attempt returning
+`connect_rejected`, not merely assumed), so there was no way to inspect a
+real response before writing these two methods. They return the raw parsed
+JSON dict rather than a validated schema, and no parser/DB-writing code has
+been built on top of them — see each method's own docstring.
+
 Every request carries the target store's own Client-Id / Api-Key headers —
 callers must never share credentials across stores.
 """
@@ -172,3 +187,62 @@ class OzonSellerClient:
     def get_products_info(self, product_ids: list[int]) -> OzonProductInfoListResponse:
         data = self._post("/v3/product/info/list", {"product_id": product_ids})
         return OzonProductInfoListResponse.model_validate(data)
+
+    def get_product_queries(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        skus: list[str] | None = None,
+        limit: int = 100,
+        page_token: str = "",
+    ) -> dict:
+        """POST /v1/analytics/product-queries — per-SKU search-query
+        analytics (general list: which queries led to this product).
+
+        UNCONFIRMED CONTRACT — see this module's docstring for why. The
+        request body below is a best-effort guess based on this app's other
+        Ozon Seller/Performance analytics calls, NOT verified documentation:
+          - date_from/date_to as "YYYY-MM-DD": this app already hit one real
+            case (the Performance API statistics-report endpoint) where the
+            obvious DD.MM.YYYY guess was rejected and ISO was required —
+            treat this as the more likely format, but unconfirmed here.
+          - skus, limit, page_token: named by analogy with this same
+            client's other paginated calls; Ozon may use different names
+            (e.g. "product_id" instead of "skus", as /v3/product/info/list
+            does) or a different pagination style entirely (last_id vs
+            page_token vs offset).
+        Returns the raw parsed JSON dict, not a validated schema — do not
+        write a parser or persist this response until a real call's exact
+        shape has been confirmed (see app.services.search_query_import for
+        the confirmed, real-file-based path this app relies on today)."""
+        body: dict = {"date_from": date_from, "date_to": date_to, "limit": limit}
+        if skus:
+            body["skus"] = skus
+        if page_token:
+            body["page_token"] = page_token
+        return self._post("/v1/analytics/product-queries", body)
+
+    def get_product_query_details(
+        self,
+        *,
+        query: str,
+        date_from: str,
+        date_to: str,
+        skus: list[str] | None = None,
+        limit: int = 100,
+        page_token: str = "",
+    ) -> dict:
+        """POST /v1/analytics/product-queries/details — detail for one
+        specific query (the method described as the equivalent of "Запросы
+        моего товара", i.e. the one that should carry product position).
+
+        Same UNCONFIRMED CONTRACT caveat as get_product_queries() above —
+        additionally, it's not confirmed whether the query-text parameter
+        is named "query", "queries" (plural/list), or "search_query"."""
+        body: dict = {"query": query, "date_from": date_from, "date_to": date_to, "limit": limit}
+        if skus:
+            body["skus"] = skus
+        if page_token:
+            body["page_token"] = page_token
+        return self._post("/v1/analytics/product-queries/details", body)
