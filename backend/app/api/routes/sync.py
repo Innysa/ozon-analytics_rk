@@ -35,6 +35,27 @@ router = APIRouter(prefix="/api/stores/{store_id}/sync", tags=["sync"])
 PRODUCT_INFO_BATCH_SIZE = 100  # Ozon's /v3/product/info/list caps ids per request
 
 
+def _resolve_zero_sku_via_offer_id(client: OzonSellerClient, item):
+    """Ozon can report sku == 0 for a product/info/list item looked up by
+    product_id when that product hasn't yet had stock arrive at an Ozon
+    warehouse, even though the product already has a real SKU visible in
+    the seller's own "Аналитика" section — confirmed on a real store.
+    Re-querying the same endpoint by offer_id for just that one item was
+    confirmed to return the real SKU instead. Returns the retried item if it
+    has a usable SKU, else None — never raises, so one bad lookup doesn't
+    fail the whole sync."""
+    if not item.offer_id:
+        return None
+    try:
+        retried = client.get_products_info_by_offer_id([item.offer_id])
+    except OzonAPIError:
+        return None
+    for candidate in retried.items:
+        if candidate.sku:
+            return candidate
+    return None
+
+
 def _to_decimal(value: str | None) -> Decimal | None:
     if not value:
         return None
@@ -179,7 +200,14 @@ def sync_ozon_products(
 ) -> dict:
     """Pulls the seller's product catalog (offer_id/sku/price/stocks) from
     Ozon Seller API: /v3/product/list for the id list, then /v3/product/info/list
-    in batches for the actual details, since list responses only carry ids."""
+    in batches for the actual details, since list responses only carry ids.
+
+    A product with no stock movement at an Ozon warehouse yet can come back
+    with sku == 0 from that batched, product_id-keyed lookup even though it
+    already has a real SKU (confirmed on a real store) — for just those
+    items, a single extra by-offer_id lookup is retried
+    (_resolve_zero_sku_via_offer_id) before giving up on the item, so a
+    normal sync isn't slowed down by it."""
     creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
     if not creds:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon")
@@ -204,6 +232,7 @@ def sync_ozon_products(
     }
 
     fetched = created = updated = 0
+    skipped_invalid_sku: list[str] = []
     error_message = None
     try:
         with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
@@ -224,7 +253,15 @@ def sync_ozon_products(
                 info = client.get_products_info(batch)
                 for item in info.items:
                     fetched += 1
-                    if item.sku is None:
+                    if not item.sku:
+                        # sku 0/None from the product_id-keyed lookup — retry
+                        # by offer_id (only for this one item, not the whole
+                        # batch) before giving up on it.
+                        resolved = _resolve_zero_sku_via_offer_id(client, item)
+                        if resolved is not None:
+                            item = resolved
+                    if not item.sku:
+                        skipped_invalid_sku.append(item.offer_id or f"product_id={item.id}")
                         continue
                     sku = str(item.sku)
 
@@ -279,6 +316,16 @@ def sync_ozon_products(
     except OzonAPIError as exc:
         run.status = SyncStatus.PARTIAL if created or updated else SyncStatus.FAILED
         error_message = str(exc)
+
+    if skipped_invalid_sku:
+        skip_note = (
+            f"Пропущено товаров с некорректным SKU (0/пусто) после повторного запроса по offer_id: "
+            f"{len(skipped_invalid_sku)} ({', '.join(skipped_invalid_sku[:10])}"
+            f"{'…' if len(skipped_invalid_sku) > 10 else ''})"
+        )
+        error_message = f"{error_message}; {skip_note}" if error_message else skip_note
+        if run.status == SyncStatus.SUCCESS:
+            run.status = SyncStatus.PARTIAL if (created or updated) else SyncStatus.FAILED
 
     run.finished_at = datetime.now(timezone.utc)
     run.items_fetched = fetched

@@ -61,6 +61,73 @@ PRODUCT_INFO_PAYLOAD = {
 }
 
 
+# Regression case: a real store reported that a product which hasn't yet
+# had stock arrive at an Ozon warehouse can come back with sku == 0 from
+# the product_id-keyed /v3/product/info/list lookup, even though the
+# product already has a real SKU visible in the seller's own "Аналитика"
+# section — confirmed to be fixed by re-querying the same endpoint keyed by
+# offer_id instead.
+ZERO_SKU_PRODUCT_ID = 999000001
+ZERO_SKU_OFFER_ID = "мус/вед/бел1/3"
+ZERO_SKU_PRODUCT_NAME = "Мусорное ведро для кухни и туалета с крышкой 11 л"
+RESOLVED_SKU = 5716615794
+
+PRODUCT_LIST_WITH_ZERO_SKU_PAYLOAD = {
+    "result": {
+        "items": [
+            {
+                "product_id": ZERO_SKU_PRODUCT_ID,
+                "offer_id": ZERO_SKU_OFFER_ID,
+                "has_fbo_stocks": False,
+                "has_fbs_stocks": False,
+                "archived": False,
+                "is_discounted": False,
+                "sku": 0,
+            },
+        ],
+        "total": 1,
+        "last_id": "",
+    }
+}
+
+PRODUCT_INFO_ZERO_SKU_PAYLOAD = {
+    "items": [
+        {
+            "id": ZERO_SKU_PRODUCT_ID,
+            "name": ZERO_SKU_PRODUCT_NAME,
+            "offer_id": ZERO_SKU_OFFER_ID,
+            "is_archived": False,
+            "price": "1200.00",
+            "old_price": "1500.00",
+            "currency_code": "RUB",
+            "primary_image": [],
+            "stocks": {"has_stock": False, "stocks": []},
+            "sku": 0,
+        }
+    ]
+}
+
+PRODUCT_INFO_BY_OFFER_ID_RESOLVED_PAYLOAD = {
+    "items": [
+        {
+            "id": ZERO_SKU_PRODUCT_ID,
+            "name": ZERO_SKU_PRODUCT_NAME,
+            "offer_id": ZERO_SKU_OFFER_ID,
+            "is_archived": False,
+            "price": "1200.00",
+            "old_price": "1500.00",
+            "currency_code": "RUB",
+            "primary_image": [],
+            "stocks": {
+                "has_stock": True,
+                "stocks": [{"present": 5, "reserved": 0, "sku": RESOLVED_SKU, "source": "fbo"}],
+            },
+            "sku": RESOLVED_SKU,
+        }
+    ]
+}
+
+
 def _mock_post(json_body: dict):
     response = MagicMock()
     response.status_code = 200
@@ -122,6 +189,103 @@ def test_get_products_info_sends_requested_ids():
     assert sent_path[0] == "/v3/product/info/list"
     assert sent_kwargs["json"]["product_id"] == [5330508572]
     assert info.items[0].name == "деталь чемодана"
+
+
+def test_get_products_info_by_offer_id_sends_requested_offer_ids():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(PRODUCT_INFO_BY_OFFER_ID_RESOLVED_PAYLOAD))
+
+    info = client.get_products_info_by_offer_id([ZERO_SKU_OFFER_ID])
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/product/info/list"
+    assert sent_kwargs["json"]["offer_id"] == [ZERO_SKU_OFFER_ID]
+    assert info.items[0].sku == RESOLVED_SKU
+
+
+def test_sync_ozon_products_resolves_zero_sku_via_offer_id_retry(client, two_stores_with_users, monkeypatch):
+    """Regression test for the real-store bug reported: a product with
+    sku == 0 from the product_id-keyed lookup must be retried by offer_id
+    and saved with the resolved SKU, not skipped outright."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_WITH_ZERO_SKU_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    zero_sku_info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_ZERO_SKU_PAYLOAD)
+    resolved_info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_BY_OFFER_ID_RESOLVED_PAYLOAD)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+
+        def _list_products(*, last_id=""):
+            return empty_response if last_id else list_response
+
+        fake.list_products.side_effect = _list_products
+        fake.get_products_info.return_value = zero_sku_info_response
+        fake.get_products_info_by_offer_id.return_value = resolved_info_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "success"
+    assert body["items_created"] == 1
+    assert body["error_message"] is None
+
+    products_resp = client.get(f"/api/stores/{d['store_a'].id}/products")
+    products = products_resp.json()
+    assert len(products) == 1
+    assert products[0]["ozon_sku"] == str(RESOLVED_SKU)
+    assert products[0]["offer_id"] == ZERO_SKU_OFFER_ID
+    assert products[0]["name"] == ZERO_SKU_PRODUCT_NAME
+    assert products[0]["fbo_stock"] == 5
+
+
+def test_sync_ozon_products_skips_and_reports_when_retry_still_zero(client, two_stores_with_users, monkeypatch):
+    """If the offer_id retry ALSO comes back with sku == 0, the item must be
+    skipped with a clear error message — never saved with a fake "0" SKU
+    that would silently collide across different products."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_WITH_ZERO_SKU_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    zero_sku_info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_ZERO_SKU_PAYLOAD)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+
+        def _list_products(*, last_id=""):
+            return empty_response if last_id else list_response
+
+        fake.list_products.side_effect = _list_products
+        fake.get_products_info.return_value = zero_sku_info_response
+        fake.get_products_info_by_offer_id.return_value = zero_sku_info_response  # still zero
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["items_created"] == 0
+    assert body["status"] == "failed"  # nothing created/updated, and one item explicitly failed
+    assert "некорректным SKU" in body["error_message"]
+    assert ZERO_SKU_OFFER_ID in body["error_message"]
+
+    products_resp = client.get(f"/api/stores/{d['store_a'].id}/products")
+    assert products_resp.json() == []  # no bogus "0"-SKU product created
 
 
 def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_with_users, monkeypatch):

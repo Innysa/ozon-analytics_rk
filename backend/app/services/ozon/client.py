@@ -188,6 +188,20 @@ class OzonSellerClient:
         data = self._post("/v3/product/info/list", {"product_id": product_ids})
         return OzonProductInfoListResponse.model_validate(data)
 
+    def get_products_info_by_offer_id(self, offer_ids: list[str]) -> OzonProductInfoListResponse:
+        """Same endpoint as get_products_info(), keyed by offer_id instead
+        of product_id. Used as a fallback for products whose product_id-keyed
+        response comes back with sku == 0 — confirmed on a real store: Ozon
+        can report sku == 0 for a product that hasn't yet had stock arrive at
+        an Ozon warehouse, even though the product already has a real SKU
+        visible in the seller's own "Аналитика" section; re-querying this
+        same endpoint by offer_id for just that item was confirmed to return
+        the real SKU instead of 0. Called only for the handful of items that
+        actually need it (see app.api.routes.sync's product sync), not for
+        every product, so it doesn't slow down a normal sync."""
+        data = self._post("/v3/product/info/list", {"offer_id": offer_ids})
+        return OzonProductInfoListResponse.model_validate(data)
+
     def get_product_queries(
         self,
         *,
