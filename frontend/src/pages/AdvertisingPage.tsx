@@ -2,7 +2,21 @@ import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { AdvertisingAnalytics, AdvertisingCampaign, AdvertisingStatistic, ImportSummary, PerformanceCredentialsStatus } from "../types";
+import type {
+  AdvertisingAnalytics,
+  AdvertisingCampaign,
+  AdvertisingStatistic,
+  CampaignDetail,
+  ImportSummary,
+  MetricComparison,
+  PerformanceCredentialsStatus,
+} from "../types";
+
+// Ozon campaign_type values that are referral/blogger promotion, not regular
+// paid advertising — kept separate per user request, verified against real
+// campaign_type values already seen in this store's own data.
+const REFERRAL_CAMPAIGN_TYPES = new Set(["REF_VK", "REF_BLOGGER"]);
+const ARCHIVED_STATE = "CAMPAIGN_STATE_ARCHIVED";
 
 function fmtRub(v: number | null): string {
   if (v === null) return "Нет данных";
@@ -222,34 +236,182 @@ export function AdvertisingPage() {
         </div>
       )}
 
-      <div>
-        <h3 className="mb-2 text-sm font-semibold text-slate-700">Кампании (метаданные из Ozon Performance API)</h3>
-        {campaigns === null ? (
-          <div className="text-slate-500">Загрузка...</div>
-        ) : campaigns.length === 0 ? (
-          <div className="text-slate-500">Нет данных. Синхронизируйте кампании, чтобы увидеть список.</div>
-        ) : (
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-xs text-slate-500">
-                <th className="py-1">Название</th>
-                <th>Тип</th>
-                <th>Статус</th>
-                <th>Дневной бюджет</th>
-              </tr>
-            </thead>
-            <tbody>
-              {campaigns.map((c) => (
-                <tr key={c.id} className="border-b border-slate-100">
-                  <td className="py-1">{c.name ?? "Без названия"}</td>
-                  <td>{c.campaign_type ?? "—"}</td>
-                  <td>{c.state ?? "—"}</td>
-                  <td>{c.daily_budget_rub !== null ? fmtRub(c.daily_budget_rub) : "Нет данных"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {campaigns === null ? (
+        <div className="text-slate-500">Загрузка кампаний...</div>
+      ) : (
+        <CampaignsSection storeId={currentStore.id} campaigns={campaigns} />
+      )}
+    </div>
+  );
+}
+
+function CampaignsSection({ storeId, campaigns }: { storeId: string; campaigns: AdvertisingCampaign[] }) {
+  const [tab, setTab] = useState<"active" | "referral" | "archived">("active");
+
+  const isReferral = (c: AdvertisingCampaign) => !!c.campaign_type && REFERRAL_CAMPAIGN_TYPES.has(c.campaign_type);
+  const referral = campaigns.filter(isReferral);
+  const archived = campaigns.filter((c) => !isReferral(c) && c.state === ARCHIVED_STATE);
+  const active = campaigns.filter((c) => !isReferral(c) && c.state !== ARCHIVED_STATE);
+  const shown = tab === "active" ? active : tab === "referral" ? referral : archived;
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-700">Кампании (метаданные из Ozon Performance API)</h3>
+        <div className="flex gap-1">
+          <TabButton active={tab === "active"} onClick={() => setTab("active")} label={`Активные (${active.length})`} />
+          <TabButton
+            active={tab === "referral"}
+            onClick={() => setTab("referral")}
+            label={`Рефералка/блогеры (${referral.length})`}
+          />
+          <TabButton active={tab === "archived"} onClick={() => setTab("archived")} label={`Архив (${archived.length})`} />
+        </div>
+      </div>
+
+      {campaigns.length === 0 ? (
+        <div className="text-slate-500">Нет данных. Синхронизируйте кампании, чтобы увидеть список.</div>
+      ) : shown.length === 0 ? (
+        <div className="text-slate-500">Нет кампаний в этой группе.</div>
+      ) : (
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs text-slate-500">
+              <th className="py-1" />
+              <th className="py-1">Название</th>
+              <th>Тип</th>
+              <th>Статус</th>
+              <th>Дневной бюджет</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((c) => (
+              <CampaignRow key={c.id} storeId={storeId} campaign={c} />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+        active ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function CampaignRow({ storeId, campaign }: { storeId: string; campaign: AdvertisingCampaign }) {
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<CampaignDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && detail === null && !loading) {
+      setLoading(true);
+      api
+        .get<CampaignDetail>(`/stores/${storeId}/advertising/campaigns/${campaign.id}/detail`)
+        .then(setDetail)
+        .finally(() => setLoading(false));
+    }
+  };
+
+  return (
+    <>
+      <tr onClick={toggle} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50">
+        <td className="w-4 py-1 text-slate-400">{expanded ? "▾" : "▸"}</td>
+        <td className="py-1">{campaign.name ?? "Без названия"}</td>
+        <td>{campaign.campaign_type ?? "—"}</td>
+        <td>{campaign.state ?? "—"}</td>
+        <td>{campaign.daily_budget_rub !== null ? fmtRub(campaign.daily_budget_rub) : "Нет данных"}</td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-slate-100 bg-slate-50">
+          <td colSpan={5} className="p-3">
+            {loading || !detail ? (
+              <div className="text-slate-500">Загрузка...</div>
+            ) : !detail.has_data ? (
+              <div className="text-slate-500">
+                Нет загруженной статистики для этой кампании. Она появится после загрузки отчёта «Продвижение →
+                Статистика», если в файле есть строки с этим ID кампании.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <Stat label="Расход (факт)" value={fmtRub(detail.total_spend_rub)} />
+                  <Stat label="Показы (факт)" value={detail.total_impressions.toLocaleString("ru-RU")} />
+                  <Stat label="Клики (факт)" value={detail.total_clicks.toLocaleString("ru-RU")} />
+                  <Stat label="Продажи (факт)" value={fmtRub(detail.total_sales_promo_rub)} />
+                  <Stat label="ДРР (рассчитано)" value={fmtPct(detail.drr_calculated_pct)} />
+                  <Stat
+                    label="ROAS (рассчитано)"
+                    value={detail.roas_calculated !== null ? `×${detail.roas_calculated}` : "Нет данных"}
+                  />
+                </div>
+                <div className="text-xs text-slate-500">
+                  Период всех загруженных данных: {detail.period_start} — {detail.period_end}
+                </div>
+
+                {detail.daily_comparison ? (
+                  <div>
+                    <h4 className="mb-1 text-xs font-semibold text-slate-600">
+                      Сравнение {detail.daily_comparison.date_today} с {detail.daily_comparison.date_yesterday}
+                    </h4>
+                    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                      <ComparisonStat label="Расход" comparison={detail.daily_comparison.spend_rub} format={fmtRub} />
+                      <ComparisonStat
+                        label="Показы"
+                        comparison={detail.daily_comparison.impressions}
+                        format={(v) => v.toLocaleString("ru-RU")}
+                      />
+                      <ComparisonStat
+                        label="Клики"
+                        comparison={detail.daily_comparison.clicks}
+                        format={(v) => v.toLocaleString("ru-RU")}
+                      />
+                      <ComparisonStat label="Продажи" comparison={detail.daily_comparison.sales_promo_rub} format={fmtRub} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-xs italic text-slate-500">{detail.daily_comparison_unavailable_reason}</div>
+                )}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function ComparisonStat({
+  label,
+  comparison,
+  format,
+}: {
+  label: string;
+  comparison: MetricComparison;
+  format: (v: number) => string;
+}) {
+  const color =
+    comparison.direction === "up" ? "text-green-600" : comparison.direction === "down" ? "text-red-600" : "text-slate-500";
+  const arrow = comparison.direction === "up" ? "▲" : comparison.direction === "down" ? "▼" : "—";
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-2">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold text-slate-800">{format(comparison.today)}</div>
+      <div className={`text-xs font-medium ${color}`}>
+        {arrow} {format(Math.abs(comparison.delta))}
+        {comparison.delta_pct !== null ? ` (${comparison.delta_pct > 0 ? "+" : ""}${comparison.delta_pct}%)` : ""}
       </div>
     </div>
   );

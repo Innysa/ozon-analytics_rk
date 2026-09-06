@@ -265,6 +265,39 @@ export interface AdvertisingAnalytics {
   by_product: ProductBreakdown[];
 }
 
+export interface MetricComparison {
+  today: number;
+  yesterday: number;
+  delta: number;
+  delta_pct: number | null;
+  direction: "up" | "down" | null;
+}
+
+export interface CampaignDailyComparison {
+  date_today: string;
+  date_yesterday: string;
+  spend_rub: MetricComparison;
+  impressions: MetricComparison;
+  clicks: MetricComparison;
+  sales_promo_rub: MetricComparison;
+}
+
+export interface CampaignDetail {
+  campaign_id: string;
+  has_data: boolean;
+  total_spend_rub: number;
+  total_sales_promo_rub: number;
+  total_impressions: number;
+  total_clicks: number;
+  total_units_sold: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+  period_start: string | null;
+  period_end: string | null;
+  daily_comparison: CampaignDailyComparison | null;
+  daily_comparison_unavailable_reason: string | null;
+}
+
 export interface ProductCardStatistic {
   id: string;
   product_id: string | null;

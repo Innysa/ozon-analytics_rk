@@ -89,6 +89,50 @@ class ProductBreakdown(BaseModel):
     roas_calculated: float | None
 
 
+class MetricComparison(BaseModel):
+    """One metric's day-over-day comparison, computed by this app from two
+    distinct daily (period_start == period_end) reports for the same
+    campaign. direction is None (not "flat") when today == yesterday exactly —
+    still a real, non-fabricated fact, just no change to show an arrow for."""
+
+    today: float
+    yesterday: float
+    delta: float
+    delta_pct: float | None  # None when yesterday == 0 — division is undefined, never shown as 0%
+    direction: str | None  # "up" | "down" | None
+
+
+class CampaignDailyComparison(BaseModel):
+    date_today: date
+    date_yesterday: date
+    spend_rub: MetricComparison
+    impressions: MetricComparison
+    clicks: MetricComparison
+    sales_promo_rub: MetricComparison
+
+
+class CampaignDetailOut(BaseModel):
+    campaign_id: str
+    has_data: bool
+
+    # Totals summed across every uploaded advertising_statistics row for this
+    # campaign, over whatever periods have been uploaded (not necessarily daily).
+    total_spend_rub: float = 0
+    total_sales_promo_rub: float = 0
+    total_impressions: int = 0
+    total_clicks: int = 0
+    total_units_sold: int = 0
+    drr_calculated_pct: float | None = None
+    roas_calculated: float | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+
+    # Present only when at least two distinct dates with period_start ==
+    # period_end exist for this campaign — see app.services.advertising_analytics_service.
+    daily_comparison: CampaignDailyComparison | None = None
+    daily_comparison_unavailable_reason: str | None = None
+
+
 class AdvertisingAnalyticsOut(BaseModel):
     has_data: bool
     period_start: date | None = None
