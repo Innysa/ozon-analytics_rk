@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
@@ -30,6 +30,59 @@ function fmtPct(v: number | null): string {
   return `${v.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%`;
 }
 
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function defaultStatsDateFrom(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return isoDate(d);
+}
+
+function defaultStatsDateTo(): string {
+  return isoDate(new Date());
+}
+
+// Resizable columns (drag the right edge of a header cell, like a
+// spreadsheet) for the automatically-collected daily statistics table —
+// campaign names and SKUs otherwise get clipped/wrapped awkwardly at a fixed
+// width. Session-only state (not persisted) — deliberately simple.
+function useResizableColumns(defaults: number[]) {
+  const [widths, setWidths] = useState<number[]>(defaults);
+  const drag = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!drag.current) return;
+      const { index, startX, startWidth } = drag.current;
+      const next = Math.max(50, startWidth + (e.clientX - startX));
+      setWidths((prev) => {
+        if (prev[index] === next) return prev;
+        const copy = [...prev];
+        copy[index] = next;
+        return copy;
+      });
+    };
+    const onUp = () => {
+      drag.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  const startResize = (index: number) => (e: ReactMouseEvent) => {
+    e.preventDefault();
+    drag.current = { index, startX: e.clientX, startWidth: widths[index] };
+  };
+
+  return { widths, startResize };
+}
+
 export function AdvertisingPage() {
   const { currentStore } = useStore();
   const [campaigns, setCampaigns] = useState<AdvertisingCampaign[] | null>(null);
@@ -40,6 +93,8 @@ export function AdvertisingPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncingStats, setSyncingStats] = useState(false);
+  const [statsDateFrom, setStatsDateFrom] = useState(defaultStatsDateFrom);
+  const [statsDateTo, setStatsDateTo] = useState(defaultStatsDateTo);
 
   const load = () => {
     if (!currentStore) return;
@@ -93,10 +148,15 @@ export function AdvertisingPage() {
 
   const syncDailyStatistics = async () => {
     if (!currentStore) return;
+    if (statsDateFrom > statsDateTo) {
+      setNotice("Дата «от» не может быть позже даты «до».");
+      return;
+    }
     setSyncingStats(true);
     setNotice("Запуск автосбора статистики рекламы через Ozon Performance API...");
     try {
-      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-advertising-statistics`);
+      const query = new URLSearchParams({ date_from: statsDateFrom, date_to: statsDateTo }).toString();
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-advertising-statistics?${query}`);
       setNotice("Сбор статистики выполняется в фоне — это может занять несколько минут...");
       const finished = await pollSyncRun(run.id);
       if (!finished) {
@@ -152,11 +212,30 @@ export function AdvertisingPage() {
           >
             {syncing ? "Синхронизация..." : "Синхронизировать кампании"}
           </button>
+          <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1">
+            <input
+              type="date"
+              value={statsDateFrom}
+              onChange={(e) => setStatsDateFrom(e.target.value)}
+              max={statsDateTo}
+              className="text-xs text-slate-600 outline-none"
+              aria-label="Период автосбора: от"
+            />
+            <span className="text-xs text-slate-400">—</span>
+            <input
+              type="date"
+              value={statsDateTo}
+              onChange={(e) => setStatsDateTo(e.target.value)}
+              min={statsDateFrom}
+              className="text-xs text-slate-600 outline-none"
+              aria-label="Период автосбора: до"
+            />
+          </div>
           <button
             onClick={syncDailyStatistics}
             disabled={syncingStats || !perfStatus?.configured}
             className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
-            title="Автоматически собрать клики, показы, расход и другие показатели через Ozon Performance API — без ручной загрузки CSV"
+            title="Автоматически собрать клики, показы, расход и другие показатели через Ozon Performance API за выбранный период — без ручной загрузки CSV"
           >
             {syncingStats ? "Сбор статистики..." : "Обновить статистику (авто)"}
           </button>
@@ -306,38 +385,7 @@ export function AdvertisingPage() {
             Нет данных. {perfStatus?.configured ? "Нажмите «Обновить статистику (авто)»." : "Сначала укажите ключи Ozon Performance API."}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-xs text-slate-500">
-                  <th className="py-1">Дата</th>
-                  <th>Кампания</th>
-                  <th>SKU</th>
-                  <th>Показы</th>
-                  <th>Клики</th>
-                  <th>CTR</th>
-                  <th>Расход</th>
-                  <th>Заказы</th>
-                  <th>Выручка</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dailyStats.map((s) => (
-                  <tr key={s.id} className="border-b border-slate-100">
-                    <td className="py-1">{s.date}</td>
-                    <td>{s.campaign_name ?? s.ozon_campaign_id}</td>
-                    <td>{s.product_name ?? s.ozon_sku}</td>
-                    <td>{s.impressions?.toLocaleString("ru-RU") ?? "—"}</td>
-                    <td>{s.clicks?.toLocaleString("ru-RU") ?? "—"}</td>
-                    <td>{fmtPct(s.ctr_pct_ozon)}</td>
-                    <td>{fmtRub(s.spend_rub)}</td>
-                    <td>{s.orders ?? "—"}</td>
-                    <td>{fmtRub(s.revenue_rub)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DailyStatsTable rows={dailyStats} />
         )}
       </div>
 
@@ -346,6 +394,58 @@ export function AdvertisingPage() {
       ) : (
         <CampaignsSection storeId={currentStore.id} campaigns={campaigns} />
       )}
+    </div>
+  );
+}
+
+const DAILY_STATS_COLUMNS = ["Дата", "Кампания", "SKU", "Показы", "Клики", "CTR", "Расход", "Заказы", "Выручка"];
+const DAILY_STATS_DEFAULT_WIDTHS = [100, 240, 130, 90, 80, 80, 110, 80, 110];
+
+function DailyStatsTable({ rows }: { rows: AdvertisingDailyStatistic[] }) {
+  const { widths, startResize } = useResizableColumns(DAILY_STATS_DEFAULT_WIDTHS);
+  const totalWidth = widths.reduce((a, b) => a + b, 0);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-left text-sm" style={{ tableLayout: "fixed", width: totalWidth }}>
+        <colgroup>
+          {widths.map((w, i) => (
+            <col key={i} style={{ width: w }} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr className="border-b border-slate-200 text-xs text-slate-500">
+            {DAILY_STATS_COLUMNS.map((label, i) => (
+              <th key={label} className="relative select-none overflow-hidden text-ellipsis whitespace-nowrap py-1 pr-2">
+                {label}
+                <span
+                  onMouseDown={startResize(i)}
+                  className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-300"
+                />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.id} className="border-b border-slate-100">
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap py-1 pr-2">{s.date}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2" title={s.campaign_name ?? s.ozon_campaign_id}>
+                {s.campaign_name ?? s.ozon_campaign_id}
+              </td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2" title={s.product_name ?? s.ozon_sku}>
+                {s.product_name ?? s.ozon_sku}
+              </td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.impressions?.toLocaleString("ru-RU") ?? "—"}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.clicks?.toLocaleString("ru-RU") ?? "—"}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtPct(s.ctr_pct_ozon)}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtRub(s.spend_rub)}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.orders ?? "—"}</td>
+              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtRub(s.revenue_rub)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

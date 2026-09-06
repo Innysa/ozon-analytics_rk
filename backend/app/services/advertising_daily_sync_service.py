@@ -218,6 +218,29 @@ def sync_advertising_daily_statistics(
         parsed = parse_statistics_report_zip(zip_bytes)
         outcome.errors.extend(parsed.warnings)
 
+        # Diagnostic, not a guess at a fix: surface it whenever a campaign's
+        # report has fewer distinct days than the requested range, so a
+        # mismatch between what we asked for and what Ozon actually put in
+        # the CSV is visible in the sync run's own log instead of only
+        # showing up as "missing data" days later. Left in permanently, not
+        # just for this investigation — it costs nothing when everything is
+        # fine and is the fastest way to catch this again.
+        expected_days = (resolved_date_to - resolved_date_from).days + 1
+        dates_by_campaign: dict[str, set] = {}
+        for row in parsed.rows:
+            dates_by_campaign.setdefault(row["ozon_campaign_id"], set()).add(row["date"])
+        for cid in batch:
+            found_days = len(dates_by_campaign.get(cid, set()))
+            if found_days < expected_days:
+                outcome.errors.append(
+                    f"Кампания {cid}: в отчёте {found_days} дн. из {expected_days} запрошенных "
+                    f"({date_from_str}—{date_to_str})"
+                )
+                logger.warning(
+                    "Реклама: кампания %s — получено %d дн. из %d ожидаемых (%s—%s)",
+                    cid, found_days, expected_days, date_from_str, date_to_str,
+                )
+
         for row in parsed.rows:
             outcome.fetched += 1
             ozon_campaign_id = row["ozon_campaign_id"]
@@ -244,6 +267,28 @@ def sync_advertising_daily_statistics(
                     )
                     .first()
                 )
+                if existing is None:
+                    # existing_keys said this row exists, but a plain SELECT
+                    # can't see it yet (autoflush is off — see db/session.py)
+                    # if it was only db.add()-ed earlier in this same loop
+                    # without an intervening flush. Flush and retry once
+                    # rather than crashing the whole batch on a None.
+                    db.flush()
+                    existing = (
+                        db.query(AdvertisingDailyStatistic)
+                        .filter(
+                            AdvertisingDailyStatistic.store_id == store_id,
+                            AdvertisingDailyStatistic.ozon_campaign_id == ozon_campaign_id,
+                            AdvertisingDailyStatistic.ozon_sku == sku,
+                            AdvertisingDailyStatistic.date == row_date,
+                        )
+                        .first()
+                    )
+                if existing is None:
+                    outcome.errors.append(
+                        f"Кампания {ozon_campaign_id}, SKU {sku}, {row_date}: не удалось найти существующую строку для обновления — пропущено"
+                    )
+                    continue
                 _apply_row(existing, row, product=product, campaign=campaign)
                 outcome.updated += 1
             else:

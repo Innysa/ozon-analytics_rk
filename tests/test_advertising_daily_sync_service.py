@@ -119,6 +119,27 @@ def test_single_batch_creates_rows(db_session, two_stores_with_users):
     assert row.campaign_id is not None  # matched back to the AdvertisingCampaign row
 
 
+def test_warns_when_report_has_fewer_days_than_requested(db_session, two_stores_with_users):
+    """If Ozon's CSV comes back with fewer distinct days than the requested
+    range, that must show up as a warning in outcome.errors (and therefore in
+    the SyncRun's error_message / the frontend's notice) rather than being
+    silently accepted — this is exactly the symptom a real account hit."""
+    d = two_stores_with_users
+    _make_running_campaign(db_session, d["store_a"].id, "111")
+    db_session.flush()
+
+    # Only one day's row in the CSV, but a 7-day range is requested below.
+    client = FakeOzonPerformanceClient({"uuid:111": _zip_for_ids(["111"], day="07.09.2026")})
+
+    outcome = sync_advertising_daily_statistics(
+        db_session, store_id=d["store_a"].id, client=client,
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 7),
+    )
+
+    assert outcome.created == 1
+    assert any("в отчёте 1 дн. из 7 запрошенных" in e for e in outcome.errors)
+
+
 def test_reupload_of_same_day_updates_instead_of_duplicating(db_session, two_stores_with_users):
     d = two_stores_with_users
     _make_running_campaign(db_session, d["store_a"].id, "111")
