@@ -1,13 +1,14 @@
-from datetime import datetime, timezone
+import logging
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, get_current_user, require_store_role
 from app.core.encryption import decrypt_secret
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.membership import StoreRole
 from app.models.ozon_credentials import OzonCredentials
@@ -15,6 +16,7 @@ from app.models.product import Product
 from app.models.review import Review, ReviewSource, ReviewStatus
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
+from app.services.advertising_daily_sync_service import sync_advertising_daily_statistics
 from app.services.audit import record_audit
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
@@ -25,6 +27,8 @@ from app.services.ozon_performance.exceptions import (
     OzonPerformanceAPIError,
     OzonPerformanceAuthError,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stores/{store_id}/sync", tags=["sync"])
 
@@ -383,4 +387,103 @@ def sync_ozon_advertising_campaigns(
         message=error_message,
     )
     db.commit()
+    return _serialize(run)
+
+
+def _run_advertising_daily_statistics_sync(
+    run_id: str,
+    store_id: str,
+    perf_client_id: str,
+    perf_client_secret: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> None:
+    """Runs in a FastAPI BackgroundTask, i.e. after the triggering request's
+    own DB session has already been closed — uses its own SessionLocal(),
+    never the request-scoped session. Can take several minutes (Ozon's async
+    report flow, processed batch-by-batch — see
+    app.services.advertising_daily_sync_service)."""
+    db = SessionLocal()
+    error_message = None
+    try:
+        run = db.get(SyncRun, run_id)
+        try:
+            with OzonPerformanceClient(OzonPerfCredentials(client_id=perf_client_id, client_secret=perf_client_secret)) as client:
+                outcome = sync_advertising_daily_statistics(
+                    db, store_id=store_id, client=client, date_from=date_from, date_to=date_to
+                )
+            run.items_fetched = outcome.fetched
+            run.items_created = outcome.created
+            run.items_skipped_duplicate = outcome.updated
+            error_message = "; ".join(outcome.errors[:20]) if outcome.errors else None
+            run.status = SyncStatus.SUCCESS if not outcome.errors else (
+                SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
+            )
+        except OzonPerformanceAuthError as exc:
+            run.status = SyncStatus.FAILED
+            error_message = str(exc)
+        except OzonPerformanceAPIError as exc:
+            run.status = SyncStatus.FAILED
+            error_message = str(exc)
+        except Exception as exc:  # a SyncRun must never be left stuck "running" forever
+            run.status = SyncStatus.FAILED
+            error_message = f"Внутренняя ошибка: {exc}"
+            logger.exception("Реклама: непредвиденная ошибка автосинхронизации статистики, store_id=%s", store_id)
+
+        run.finished_at = datetime.now(timezone.utc)
+        run.error_message = error_message
+        record_audit(
+            db,
+            action="sync_finished",
+            store_id=store_id,
+            target_type="sync_run",
+            target_id=run.id,
+            result="success" if run.status == SyncStatus.SUCCESS else "failure",
+            message=error_message,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/ozon-advertising-statistics")
+def sync_ozon_advertising_daily_statistics(
+    background_tasks: BackgroundTasks,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Triggers an automatic pull of daily advertising statistics (clicks,
+    impressions, CTR, spend, orders, revenue per campaign/SKU/day) from Ozon
+    Performance API's asynchronous statistics-report flow — the same data a
+    seller could otherwise only get via the CSV upload on /advertising/statistics.
+    Runs in the background (can take many minutes for many active campaigns,
+    since Ozon allows only 1 report in flight per account — see
+    app.services.advertising_daily_sync_service) and returns immediately with
+    a SyncRun the frontend polls via GET /runs. date_from/date_to default to
+    the last N days per ADVERTISING_STATS_DEFAULT_LOOKBACK_DAYS."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.performance_client_id_encrypted or not creds.performance_client_secret_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Performance API")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_ADVERTISING_STATISTICS_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    perf_client_id = decrypt_secret(creds.performance_client_id_encrypted)
+    perf_client_secret = decrypt_secret(creds.performance_client_secret_encrypted)
+
+    background_tasks.add_task(
+        _run_advertising_daily_statistics_sync, run.id, ctx.store_id, perf_client_id, perf_client_secret, date_from, date_to
+    )
     return _serialize(run)

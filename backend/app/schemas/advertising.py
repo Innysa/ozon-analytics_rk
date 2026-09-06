@@ -133,6 +133,45 @@ class CampaignDetailOut(BaseModel):
     daily_comparison_unavailable_reason: str | None = None
 
 
+class AdvertisingDailyStatisticOut(BaseModel):
+    """One row from the automatic Ozon Performance API sync (see
+    app.services.advertising_daily_sync_service) — genuinely daily, unlike
+    AdvertisingStatisticOut which reflects whatever period a seller's CSV
+    upload covers. Deliberately a separate schema/endpoint: summing this
+    together with AdvertisingStatisticOut client-side risks double-counting
+    spend/revenue if both sources cover the same campaign/period."""
+
+    id: str
+    product_id: str | None
+    product_name: str | None = None
+    campaign_id: str | None
+    campaign_name: str | None = None
+    ozon_campaign_id: str
+    ozon_sku: str
+    date: date
+
+    product_price_rub: float | None
+    page_type: str | None
+    impression_condition: str | None
+    impressions: int | None
+    clicks: int | None
+    ctr_pct_ozon: float | None
+    cart_additions: int | None
+    avg_bid_rub_ozon: float | None
+    spend_rub: float | None
+    orders: int | None
+    revenue_rub: float | None
+    orders_model: int | None
+    revenue_model_rub: float | None
+
+    model_config = {"from_attributes": True}
+
+
+class AdvertisingDailyStatisticListResponse(BaseModel):
+    items: list[AdvertisingDailyStatisticOut]
+    total: int
+
+
 class AdvertisingAnalyticsOut(BaseModel):
     has_data: bool
     period_start: date | None = None

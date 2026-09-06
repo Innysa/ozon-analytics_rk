@@ -5,7 +5,9 @@ import type { OzonCredentialsStatus, PerformanceCredentialsStatus, SyncRun } fro
 
 const SOURCE_LABELS: Record<string, string> = {
   ozon_api: "Ozon Seller API (отзывы)",
-  ozon_advertising_api: "Ozon Performance API (реклама)",
+  ozon_advertising_api: "Ozon Performance API (кампании)",
+  ozon_advertising_statistics_api: "Ozon Performance API (статистика)",
+  ozon_products_api: "Ozon Seller API (товары)",
   csv_import: "CSV",
   xlsx_import: "XLSX",
 };

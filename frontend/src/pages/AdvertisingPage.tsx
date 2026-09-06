@@ -5,11 +5,13 @@ import { useStore } from "../store/StoreContext";
 import type {
   AdvertisingAnalytics,
   AdvertisingCampaign,
+  AdvertisingDailyStatistic,
   AdvertisingStatistic,
   CampaignDetail,
   ImportSummary,
   MetricComparison,
   PerformanceCredentialsStatus,
+  SyncRun,
 } from "../types";
 
 // Ozon campaign_type values that are referral/blogger promotion, not regular
@@ -34,8 +36,10 @@ export function AdvertisingPage() {
   const [perfStatus, setPerfStatus] = useState<PerformanceCredentialsStatus | null>(null);
   const [analytics, setAnalytics] = useState<AdvertisingAnalytics | null>(null);
   const [statistics, setStatistics] = useState<AdvertisingStatistic[]>([]);
+  const [dailyStats, setDailyStats] = useState<AdvertisingDailyStatistic[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncingStats, setSyncingStats] = useState(false);
 
   const load = () => {
     if (!currentStore) return;
@@ -45,6 +49,9 @@ export function AdvertisingPage() {
     api
       .get<{ items: AdvertisingStatistic[]; total: number }>(`/stores/${currentStore.id}/advertising/statistics`)
       .then((d) => setStatistics(d.items.slice(0, 50)));
+    api
+      .get<{ items: AdvertisingDailyStatistic[]; total: number }>(`/stores/${currentStore.id}/advertising/daily-statistics`)
+      .then((d) => setDailyStats(d.items.slice(0, 50)));
   };
 
   useEffect(load, [currentStore]);
@@ -68,6 +75,47 @@ export function AdvertisingPage() {
       setNotice(err instanceof ApiError ? err.message : "Ошибка синхронизации");
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const pollSyncRun = async (runId: string, attempt = 0): Promise<SyncRun | null> => {
+    if (!currentStore) return null;
+    const runs = await api.get<SyncRun[]>(`/stores/${currentStore.id}/sync/runs`);
+    const run = runs.find((r) => r.id === runId) ?? null;
+    if (!run || run.status !== "running" || attempt >= 60) return run;
+    // The sync runs in the background and can take several minutes for many
+    // active campaigns (Ozon allows only 1 statistics report in flight per
+    // account, so campaigns are processed in sequential batches) — poll
+    // every 5s rather than assuming it finishes instantly.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return pollSyncRun(runId, attempt + 1);
+  };
+
+  const syncDailyStatistics = async () => {
+    if (!currentStore) return;
+    setSyncingStats(true);
+    setNotice("Запуск автосбора статистики рекламы через Ozon Performance API...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-advertising-statistics`);
+      setNotice("Сбор статистики выполняется в фоне — это может занять несколько минут...");
+      const finished = await pollSyncRun(run.id);
+      if (!finished) {
+        setNotice("Не удалось получить статус синхронизации — обновите страницу и проверьте журнал синхронизаций.");
+      } else if (finished.status === "failed") {
+        setNotice(`Автосбор статистики не удался: ${finished.error_message ?? "неизвестная ошибка"}`);
+      } else if (finished.status === "running") {
+        setNotice("Синхронизация всё ещё выполняется — проверьте журнал синхронизаций на странице «Подключение к Ozon» позже.");
+      } else {
+        setNotice(
+          `Готово: получено ${finished.items_fetched}, создано ${finished.items_created}, обновлено ${finished.items_skipped_duplicate}.` +
+            (finished.error_message ? ` Предупреждения: ${finished.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка автосбора статистики");
+    } finally {
+      setSyncingStats(false);
     }
   };
 
@@ -103,6 +151,14 @@ export function AdvertisingPage() {
             className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200 disabled:opacity-50"
           >
             {syncing ? "Синхронизация..." : "Синхронизировать кампании"}
+          </button>
+          <button
+            onClick={syncDailyStatistics}
+            disabled={syncingStats || !perfStatus?.configured}
+            className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+            title="Автоматически собрать клики, показы, расход и другие показатели через Ozon Performance API — без ручной загрузки CSV"
+          >
+            {syncingStats ? "Сбор статистики..." : "Обновить статистику (авто)"}
           </button>
         </div>
       </div>
@@ -235,6 +291,55 @@ export function AdvertisingPage() {
           </div>
         </div>
       )}
+
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-slate-700">
+          Автоматически собранная статистика (Ozon Performance API, по дням)
+        </h3>
+        <div className="mb-2 rounded-md border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
+          Эти данные собираются автоматически (кнопка «Обновить статистику (авто)» выше, а также раз в сутки по
+          расписанию) и хранятся отдельно от строк, загруженных вручную из CSV/XLSX выше — чтобы не задвоить расход и
+          выручку, если один и тот же период есть в обоих источниках.
+        </div>
+        {dailyStats.length === 0 ? (
+          <div className="text-slate-500">
+            Нет данных. {perfStatus?.configured ? "Нажмите «Обновить статистику (авто)»." : "Сначала укажите ключи Ozon Performance API."}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs text-slate-500">
+                  <th className="py-1">Дата</th>
+                  <th>Кампания</th>
+                  <th>SKU</th>
+                  <th>Показы</th>
+                  <th>Клики</th>
+                  <th>CTR</th>
+                  <th>Расход</th>
+                  <th>Заказы</th>
+                  <th>Выручка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyStats.map((s) => (
+                  <tr key={s.id} className="border-b border-slate-100">
+                    <td className="py-1">{s.date}</td>
+                    <td>{s.campaign_name ?? s.ozon_campaign_id}</td>
+                    <td>{s.product_name ?? s.ozon_sku}</td>
+                    <td>{s.impressions?.toLocaleString("ru-RU") ?? "—"}</td>
+                    <td>{s.clicks?.toLocaleString("ru-RU") ?? "—"}</td>
+                    <td>{fmtPct(s.ctr_pct_ozon)}</td>
+                    <td>{fmtRub(s.spend_rub)}</td>
+                    <td>{s.orders ?? "—"}</td>
+                    <td>{fmtRub(s.revenue_rub)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {campaigns === null ? (
         <div className="text-slate-500">Загрузка кампаний...</div>

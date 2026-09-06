@@ -230,6 +230,40 @@ export interface AdvertisingStatisticListResponse {
   total: number;
 }
 
+// Automatically-collected daily statistics from Ozon Performance API (see
+// backend app.services.advertising_daily_sync_service) — genuinely daily,
+// unlike AdvertisingStatistic which reflects whatever period a CSV upload
+// covers. Deliberately a separate type/endpoint: summing this together with
+// AdvertisingStatistic risks double-counting spend/revenue.
+export interface AdvertisingDailyStatistic {
+  id: string;
+  product_id: string | null;
+  product_name: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  ozon_campaign_id: string;
+  ozon_sku: string;
+  date: string;
+  product_price_rub: number | null;
+  page_type: string | null;
+  impression_condition: string | null;
+  impressions: number | null;
+  clicks: number | null;
+  ctr_pct_ozon: number | null;
+  cart_additions: number | null;
+  avg_bid_rub_ozon: number | null;
+  spend_rub: number | null;
+  orders: number | null;
+  revenue_rub: number | null;
+  orders_model: number | null;
+  revenue_model_rub: number | null;
+}
+
+export interface AdvertisingDailyStatisticListResponse {
+  items: AdvertisingDailyStatistic[];
+  total: number;
+}
+
 export interface CampaignBreakdown {
   campaign_id: string;
   campaign_name: string;

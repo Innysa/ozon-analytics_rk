@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import StoreContext, get_current_user, require_store_role
 from app.db.session import get_db
 from app.models.advertising_campaign import AdvertisingCampaign
+from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.membership import StoreRole
 from app.models.product import Product
@@ -15,6 +16,8 @@ from app.models.user import User
 from app.schemas.advertising import (
     AdvertisingAnalyticsOut,
     AdvertisingCampaignOut,
+    AdvertisingDailyStatisticListResponse,
+    AdvertisingDailyStatisticOut,
     AdvertisingStatisticListResponse,
     AdvertisingStatisticOut,
     CampaignDetailOut,
@@ -176,6 +179,69 @@ def list_statistics(
         )
 
     return AdvertisingStatisticListResponse(items=items, total=len(items))
+
+
+@router.get("/daily-statistics", response_model=AdvertisingDailyStatisticListResponse)
+def list_daily_statistics(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+    campaign_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> AdvertisingDailyStatisticListResponse:
+    """Automatically-collected daily statistics from Ozon Performance API
+    (see POST .../sync/ozon-advertising-statistics and
+    app.services.advertising_daily_sync_service). Kept in its own table,
+    deliberately not merged with /statistics (the CSV-upload-based
+    AdvertisingStatistic) — see AdvertisingDailyStatisticOut's docstring for
+    why summing the two would risk double-counting."""
+    stmt = select(AdvertisingDailyStatistic).where(AdvertisingDailyStatistic.store_id == ctx.store_id)
+    if campaign_id:
+        stmt = stmt.where(AdvertisingDailyStatistic.campaign_id == campaign_id)
+    if date_from:
+        stmt = stmt.where(AdvertisingDailyStatistic.date >= date_from)
+    if date_to:
+        stmt = stmt.where(AdvertisingDailyStatistic.date <= date_to)
+
+    rows = db.scalars(stmt.order_by(AdvertisingDailyStatistic.date.desc())).all()
+
+    campaign_ids = {r.campaign_id for r in rows if r.campaign_id}
+    campaigns = (
+        {c.id: c for c in db.query(AdvertisingCampaign).filter(AdvertisingCampaign.id.in_(campaign_ids)).all()}
+        if campaign_ids
+        else {}
+    )
+
+    def to_float(v: object) -> float | None:
+        return float(v) if v is not None else None
+
+    items = [
+        AdvertisingDailyStatisticOut(
+            id=r.id,
+            product_id=r.product_id,
+            product_name=r.product_name,
+            campaign_id=r.campaign_id,
+            campaign_name=campaigns[r.campaign_id].name if r.campaign_id in campaigns else None,
+            ozon_campaign_id=r.ozon_campaign_id,
+            ozon_sku=r.ozon_sku,
+            date=r.date,
+            product_price_rub=to_float(r.product_price_rub),
+            page_type=r.page_type,
+            impression_condition=r.impression_condition,
+            impressions=r.impressions,
+            clicks=r.clicks,
+            ctr_pct_ozon=to_float(r.ctr_pct_ozon),
+            cart_additions=r.cart_additions,
+            avg_bid_rub_ozon=to_float(r.avg_bid_rub_ozon),
+            spend_rub=to_float(r.spend_rub),
+            orders=r.orders,
+            revenue_rub=to_float(r.revenue_rub),
+            orders_model=r.orders_model,
+            revenue_model_rub=to_float(r.revenue_model_rub),
+        )
+        for r in rows
+    ]
+    return AdvertisingDailyStatisticListResponse(items=items, total=len(items))
 
 
 @router.get("/analytics", response_model=AdvertisingAnalyticsOut)

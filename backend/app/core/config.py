@@ -53,6 +53,18 @@ class Settings(BaseSettings):
 
     DEMO_MODE: bool = False
 
+    # Automatic Ozon Performance API advertising-statistics sync (see
+    # app.services.advertising_daily_sync_service). Defaults reflect Ozon's
+    # own field-tested constraints, not arbitrary choices: 10 campaigns per
+    # statistics-report request is Ozon's hard limit, and only 1 such report
+    # may be in flight per account at a time.
+    ADVERTISING_STATS_BATCH_SIZE: int = 10
+    ADVERTISING_STATS_POLL_INTERVAL_SECONDS: int = 15
+    ADVERTISING_STATS_POLL_TIMEOUT_SECONDS: int = 600
+    ADVERTISING_STATS_DEFAULT_LOOKBACK_DAYS: int = 7
+    ADVERTISING_STATS_SCHEDULER_ENABLED: bool = True
+    ADVERTISING_STATS_SCHEDULER_HOUR_UTC: int = 3  # once a day, off-peak
+
     CORS_ORIGINS: str = "http://localhost:5173"
 
     @property

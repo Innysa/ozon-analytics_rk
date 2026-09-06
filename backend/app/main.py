@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -24,11 +25,23 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.services.advertising_daily_scheduler import (
+    start_advertising_daily_statistics_scheduler,
+    stop_advertising_daily_statistics_scheduler,
+)
 
 configure_logging()
 settings = get_settings()
 
-app = FastAPI(title=settings.APP_NAME)
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    start_advertising_daily_statistics_scheduler()
+    yield
+    stop_advertising_daily_statistics_scheduler()
+
+
+app = FastAPI(title=settings.APP_NAME, lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

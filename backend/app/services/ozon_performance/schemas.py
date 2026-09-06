@@ -46,6 +46,30 @@ class OzonCampaignItem(BaseModel):
             return None
 
 
+class OzonStatisticsReportCreateResponse(BaseModel):
+    """POST /api/client/statistics response — confirmed against a real
+    account: {"UUID": "...", "vendor": false}."""
+
+    model_config = ConfigDict(extra="allow")
+
+    UUID: str
+
+
+class OzonStatisticsReportStatus(BaseModel):
+    """GET /api/client/statistics/{UUID} response. state is "IN_PROGRESS" or
+    "OK" (observed values); link only appears once state == "OK", and is a
+    path relative to the Performance API host, e.g.
+    "/api/client/statistics/report?UUID=...". Ozon's docs also describe an
+    "ERROR" state for a failed report; not yet observed directly but handled
+    defensively since the field is free text, not a closed enum here."""
+
+    model_config = ConfigDict(extra="allow")
+
+    state: str
+    link: str | None = None
+    error: str | None = None
+
+
 class OzonCampaignListResponse(BaseModel):
     # `list` is the literal key Ozon uses in the JSON response; the Python
     # attribute is named `campaigns` (via alias) to avoid shadowing the
