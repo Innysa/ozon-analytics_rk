@@ -14,6 +14,7 @@ divide by — never fabricated.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +25,9 @@ from app.models.product import Product
 from app.schemas.advertising import (
     AdvertisingAnalyticsOut,
     CampaignBreakdown,
+    CampaignDailyComparison,
+    CampaignDetailOut,
+    MetricComparison,
     ProductBreakdown,
 )
 
@@ -129,4 +133,83 @@ def compute_advertising_analytics(
         avg_cpc_calculated_rub=round(total_spend / total_clicks, 2) if total_clicks else None,
         by_campaign=campaign_breakdown[:20],
         by_product=product_breakdown[:20],
+    )
+
+
+def _compare(today: float, yesterday: float) -> MetricComparison:
+    delta = today - yesterday
+    direction = "up" if delta > 0 else "down" if delta < 0 else None
+    delta_pct = round(delta / yesterday * 100, 2) if yesterday else None
+    return MetricComparison(
+        today=round(today, 2), yesterday=round(yesterday, 2), delta=round(delta, 2), delta_pct=delta_pct, direction=direction
+    )
+
+
+def compute_campaign_detail(db: Session, *, store_id: str, campaign_id: str) -> CampaignDetailOut:
+    """Aggregates every uploaded advertising_statistics row for one campaign
+    (spend/impressions/clicks/sales, summed across all its SKU rows and
+    whatever periods have been uploaded), plus a day-over-day comparison —
+    only when at least two distinct dates with period_start == period_end
+    exist for this campaign. A weekly/monthly report alone can never produce
+    a same-length "day" to compare against, so this never fabricates one."""
+    rows = db.scalars(
+        select(AdvertisingStatistic).where(
+            AdvertisingStatistic.store_id == store_id,
+            AdvertisingStatistic.campaign_id == campaign_id,
+        )
+    ).all()
+    if not rows:
+        return CampaignDetailOut(campaign_id=campaign_id, has_data=False)
+
+    total_spend = sum(float(r.spend_rub) for r in rows)
+    total_sales = sum(float(r.sales_promo_rub or 0) for r in rows)
+    total_impressions = sum(r.impressions or 0 for r in rows)
+    total_clicks = sum(r.clicks or 0 for r in rows)
+    total_units = sum(r.units_sold or 0 for r in rows)
+
+    by_date: dict[date, dict[str, float]] = defaultdict(lambda: {"spend": 0.0, "sales": 0.0, "impressions": 0.0, "clicks": 0.0})
+    for r in rows:
+        if r.period_start != r.period_end:
+            continue  # not a genuine single-day report — can't anchor it to one date
+        agg = by_date[r.period_start]
+        agg["spend"] += float(r.spend_rub)
+        agg["sales"] += float(r.sales_promo_rub or 0)
+        agg["impressions"] += r.impressions or 0
+        agg["clicks"] += r.clicks or 0
+
+    comparison = None
+    reason = None
+    dates_sorted = sorted(by_date.keys(), reverse=True)
+    if len(dates_sorted) >= 2:
+        today_d, yesterday_d = dates_sorted[0], dates_sorted[1]
+        today_vals, yesterday_vals = by_date[today_d], by_date[yesterday_d]
+        comparison = CampaignDailyComparison(
+            date_today=today_d,
+            date_yesterday=yesterday_d,
+            spend_rub=_compare(today_vals["spend"], yesterday_vals["spend"]),
+            impressions=_compare(today_vals["impressions"], yesterday_vals["impressions"]),
+            clicks=_compare(today_vals["clicks"], yesterday_vals["clicks"]),
+            sales_promo_rub=_compare(today_vals["sales"], yesterday_vals["sales"]),
+        )
+    else:
+        reason = (
+            "Сравнение с предыдущим днём недоступно — нужно как минимум два отдельных "
+            "дневных отчёта (период = один день) для этой кампании; загружено с суточной "
+            f"детализацией: {len(dates_sorted)}."
+        )
+
+    return CampaignDetailOut(
+        campaign_id=campaign_id,
+        has_data=True,
+        total_spend_rub=round(total_spend, 2),
+        total_sales_promo_rub=round(total_sales, 2),
+        total_impressions=total_impressions,
+        total_clicks=total_clicks,
+        total_units_sold=total_units,
+        drr_calculated_pct=_drr(total_spend, total_sales),
+        roas_calculated=_roas(total_spend, total_sales),
+        period_start=min(r.period_start for r in rows),
+        period_end=max(r.period_end for r in rows),
+        daily_comparison=comparison,
+        daily_comparison_unavailable_reason=reason,
     )

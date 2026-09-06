@@ -17,9 +17,10 @@ from app.schemas.advertising import (
     AdvertisingCampaignOut,
     AdvertisingStatisticListResponse,
     AdvertisingStatisticOut,
+    CampaignDetailOut,
 )
 from app.schemas.common import ImportSummary
-from app.services.advertising_analytics_service import compute_advertising_analytics
+from app.services.advertising_analytics_service import compute_advertising_analytics, compute_campaign_detail
 from app.services.advertising_import import import_advertising_statistics_from_file
 from app.services.audit import record_audit
 
@@ -39,6 +40,20 @@ def list_campaigns(
         select(AdvertisingCampaign).where(AdvertisingCampaign.store_id == ctx.store_id).order_by(AdvertisingCampaign.name)
     ).all()
     return [AdvertisingCampaignOut.model_validate(c) for c in campaigns]
+
+
+@router.get("/campaigns/{campaign_id}/detail", response_model=CampaignDetailOut)
+def campaign_detail(
+    campaign_id: str,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+) -> CampaignDetailOut:
+    """Aggregated spend/impressions/clicks/sales for one campaign (across all
+    its uploaded advertising_statistics rows), plus a day-over-day comparison
+    when at least two daily reports exist for it. Filtered by store_id in the
+    query itself, so a campaign_id from another store simply comes back as
+    has_data=False rather than leaking that store's numbers."""
+    return compute_campaign_detail(db, store_id=ctx.store_id, campaign_id=campaign_id)
 
 
 @router.post("/statistics/upload", response_model=ImportSummary)
