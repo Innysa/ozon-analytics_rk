@@ -1,7 +1,6 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import { useResizableColumns } from "../hooks/useResizableColumns";
 import { useStore } from "../store/StoreContext";
 import type {
   AdvertisingAnalytics,
@@ -52,7 +51,6 @@ export function AdvertisingPage() {
   const [perfStatus, setPerfStatus] = useState<PerformanceCredentialsStatus | null>(null);
   const [analytics, setAnalytics] = useState<AdvertisingAnalytics | null>(null);
   const [statistics, setStatistics] = useState<AdvertisingStatistic[]>([]);
-  const [dailyStats, setDailyStats] = useState<AdvertisingDailyStatistic[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncingStats, setSyncingStats] = useState(false);
@@ -67,9 +65,6 @@ export function AdvertisingPage() {
     api
       .get<{ items: AdvertisingStatistic[]; total: number }>(`/stores/${currentStore.id}/advertising/statistics`)
       .then((d) => setStatistics(d.items.slice(0, 50)));
-    api
-      .get<{ items: AdvertisingDailyStatistic[]; total: number }>(`/stores/${currentStore.id}/advertising/daily-statistics`)
-      .then((d) => setDailyStats(d.items.slice(0, 50)));
   };
 
   useEffect(load, [currentStore]);
@@ -334,81 +329,11 @@ export function AdvertisingPage() {
         </div>
       )}
 
-      <div>
-        <h3 className="mb-2 text-sm font-semibold text-slate-700">
-          Автоматически собранная статистика (Ozon Performance API, по дням)
-        </h3>
-        <div className="mb-2 rounded-md border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
-          Эти данные собираются автоматически (кнопка «Обновить статистику (авто)» выше, а также раз в сутки по
-          расписанию) и хранятся отдельно от строк, загруженных вручную из CSV/XLSX выше — чтобы не задвоить расход и
-          выручку, если один и тот же период есть в обоих источниках.
-        </div>
-        {dailyStats.length === 0 ? (
-          <div className="text-slate-500">
-            Нет данных. {perfStatus?.configured ? "Нажмите «Обновить статистику (авто)»." : "Сначала укажите ключи Ozon Performance API."}
-          </div>
-        ) : (
-          <DailyStatsTable rows={dailyStats} />
-        )}
-      </div>
-
       {campaigns === null ? (
         <div className="text-slate-500">Загрузка кампаний...</div>
       ) : (
         <CampaignsSection storeId={currentStore.id} campaigns={campaigns} />
       )}
-    </div>
-  );
-}
-
-const DAILY_STATS_COLUMNS = ["Дата", "Кампания", "SKU", "Показы", "Клики", "CTR", "Расход", "Заказы", "Выручка"];
-const DAILY_STATS_DEFAULT_WIDTHS = [100, 240, 130, 90, 80, 80, 110, 80, 110];
-
-function DailyStatsTable({ rows }: { rows: AdvertisingDailyStatistic[] }) {
-  const { widths, startResize } = useResizableColumns(DAILY_STATS_DEFAULT_WIDTHS);
-  const totalWidth = widths.reduce((a, b) => a + b, 0);
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="text-left text-sm" style={{ tableLayout: "fixed", width: totalWidth }}>
-        <colgroup>
-          {widths.map((w, i) => (
-            <col key={i} style={{ width: w }} />
-          ))}
-        </colgroup>
-        <thead>
-          <tr className="border-b border-slate-200 text-xs text-slate-500">
-            {DAILY_STATS_COLUMNS.map((label, i) => (
-              <th key={label} className="relative select-none overflow-hidden text-ellipsis whitespace-nowrap py-1 pr-2">
-                {label}
-                <span
-                  onMouseDown={startResize(i)}
-                  className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-300"
-                />
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((s) => (
-            <tr key={s.id} className="border-b border-slate-100">
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap py-1 pr-2">{s.date}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2" title={s.campaign_name ?? s.ozon_campaign_id}>
-                {s.campaign_name ?? s.ozon_campaign_id}
-              </td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2" title={s.product_name ?? s.ozon_sku}>
-                {s.product_name ?? s.ozon_sku}
-              </td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.impressions?.toLocaleString("ru-RU") ?? "—"}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.clicks?.toLocaleString("ru-RU") ?? "—"}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtPct(s.ctr_pct_ozon)}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtRub(s.spend_rub)}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{s.orders ?? "—"}</td>
-              <td className="overflow-hidden text-ellipsis whitespace-nowrap pr-2">{fmtRub(s.revenue_rub)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
