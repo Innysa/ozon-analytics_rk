@@ -513,9 +513,39 @@ function TabButton({ active, onClick, label }: { active: boolean; onClick: () =>
   );
 }
 
+interface CampaignAutoDayRow {
+  date: string;
+  impressions: number;
+  clicks: number;
+  spendRub: number;
+  orders: number;
+  revenueRub: number;
+}
+
+// The campaign-detail endpoint's auto_daily only carries totals + a
+// last-two-days comparison; the actual per-day breakdown (what Ozon's own
+// cabinet shows for a campaign) comes from the already-existing
+// /advertising/daily-statistics listing, filtered to this campaign, summed
+// across its SKUs per date — a campaign row here should read like Ozon's own
+// day-by-day table, not just a single total.
+function aggregateAutoDailyByDate(rows: AdvertisingDailyStatistic[]): CampaignAutoDayRow[] {
+  const byDate = new Map<string, CampaignAutoDayRow>();
+  for (const r of rows) {
+    const acc = byDate.get(r.date) ?? { date: r.date, impressions: 0, clicks: 0, spendRub: 0, orders: 0, revenueRub: 0 };
+    acc.impressions += r.impressions ?? 0;
+    acc.clicks += r.clicks ?? 0;
+    acc.spendRub += r.spend_rub ?? 0;
+    acc.orders += r.orders ?? 0;
+    acc.revenueRub += r.revenue_rub ?? 0;
+    byDate.set(r.date, acc);
+  }
+  return [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
 function CampaignRow({ storeId, campaign }: { storeId: string; campaign: AdvertisingCampaign }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
+  const [autoDailyRows, setAutoDailyRows] = useState<AdvertisingDailyStatistic[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const toggle = () => {
@@ -523,9 +553,16 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
     setExpanded(next);
     if (next && detail === null && !loading) {
       setLoading(true);
-      api
-        .get<CampaignDetail>(`/stores/${storeId}/advertising/campaigns/${campaign.id}/detail`)
-        .then(setDetail)
+      Promise.all([
+        api.get<CampaignDetail>(`/stores/${storeId}/advertising/campaigns/${campaign.id}/detail`),
+        api.get<{ items: AdvertisingDailyStatistic[]; total: number }>(
+          `/stores/${storeId}/advertising/daily-statistics?campaign_id=${campaign.id}`
+        ),
+      ])
+        .then(([detailResult, dailyResult]) => {
+          setDetail(detailResult);
+          setAutoDailyRows(dailyResult.items);
+        })
         .finally(() => setLoading(false));
     }
   };
@@ -616,30 +653,7 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
                       Период автосбора: {detail.auto_daily.period_start} — {detail.auto_daily.period_end}
                     </div>
 
-                    {detail.auto_daily.daily_comparison ? (
-                      <div>
-                        <h5 className="mb-1 text-xs font-semibold text-slate-600">
-                          Сравнение {detail.auto_daily.daily_comparison.date_today} с{" "}
-                          {detail.auto_daily.daily_comparison.date_yesterday}
-                        </h5>
-                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                          <ComparisonStat label="Расход" comparison={detail.auto_daily.daily_comparison.spend_rub} format={fmtRub} />
-                          <ComparisonStat
-                            label="Показы"
-                            comparison={detail.auto_daily.daily_comparison.impressions}
-                            format={(v) => v.toLocaleString("ru-RU")}
-                          />
-                          <ComparisonStat
-                            label="Клики"
-                            comparison={detail.auto_daily.daily_comparison.clicks}
-                            format={(v) => v.toLocaleString("ru-RU")}
-                          />
-                          <ComparisonStat label="Выручка" comparison={detail.auto_daily.daily_comparison.revenue_rub} format={fmtRub} />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-xs italic text-slate-500">{detail.auto_daily.daily_comparison_unavailable_reason}</div>
-                    )}
+                    <CampaignAutoDailyTable rows={autoDailyRows ?? []} />
                   </div>
                 )}
               </div>
@@ -648,6 +662,49 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
         </tr>
       )}
     </>
+  );
+}
+
+function CampaignAutoDailyTable({ rows }: { rows: AdvertisingDailyStatistic[] }) {
+  const byDate = aggregateAutoDailyByDate(rows);
+  if (byDate.length === 0) {
+    return <div className="text-xs text-slate-500">Нет данных по дням.</div>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 text-xs text-slate-500">
+            <th className="py-1">Дата</th>
+            <th>Показы</th>
+            <th>Клики</th>
+            <th>CTR</th>
+            <th>Расход</th>
+            <th>Заказы</th>
+            <th>Выручка</th>
+            <th>ДРР</th>
+          </tr>
+        </thead>
+        <tbody>
+          {byDate.map((d) => {
+            const ctr = d.impressions > 0 ? (d.clicks / d.impressions) * 100 : null;
+            const drr = d.revenueRub > 0 ? (d.spendRub / d.revenueRub) * 100 : null;
+            return (
+              <tr key={d.date} className="border-b border-slate-100">
+                <td className="py-1">{d.date}</td>
+                <td>{d.impressions.toLocaleString("ru-RU")}</td>
+                <td>{d.clicks.toLocaleString("ru-RU")}</td>
+                <td>{fmtPct(ctr)}</td>
+                <td>{fmtRub(d.spendRub)}</td>
+                <td>{d.orders.toLocaleString("ru-RU")}</td>
+                <td>{fmtRub(d.revenueRub)}</td>
+                <td>{fmtPct(drr)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
