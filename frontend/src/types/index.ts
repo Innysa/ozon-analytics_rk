@@ -32,9 +32,15 @@ export interface Product {
   id: string;
   store_id: string;
   ozon_sku: string;
+  ozon_product_id: number | null;
   offer_id: string | null;
   name: string;
   image_url: string | null;
+  price_rub: number | null;
+  old_price_rub: number | null;
+  fbo_stock: number | null;
+  fbs_stock: number | null;
+  is_archived: boolean;
 }
 
 export interface ReviewAIAnalysis {

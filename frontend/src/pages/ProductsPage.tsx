@@ -35,6 +35,24 @@ export function ProductsPage() {
     }
   };
 
+  const syncFromOzon = async () => {
+    if (!currentStore) return;
+    setNotice("Синхронизация с Ozon...");
+    try {
+      const run = await api.post<{ status: string; error_message: string | null; items_created: number; items_skipped_duplicate: number }>(
+        `/stores/${currentStore.id}/sync/ozon-products`
+      );
+      if (run.status === "failed") {
+        setNotice(`Синхронизация не удалась: ${run.error_message}`);
+      } else {
+        setNotice(`Синхронизация завершена: новых товаров ${run.items_created}, обновлено ${run.items_skipped_duplicate}.`);
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка синхронизации");
+    }
+  };
+
   const uploadSearchQueries = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -57,6 +75,9 @@ export function ProductsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold text-slate-800">Товары — {currentStore.name}</h1>
         <div className="flex flex-wrap gap-2">
+          <button onClick={syncFromOzon} className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
+            Синхронизировать с Ozon
+          </button>
           <label className="cursor-pointer rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium hover:bg-slate-200">
             Загрузить аналитику карточек (CSV/XLSX)
             <input type="file" accept=".csv,.xlsx" className="hidden" onChange={uploadAnalytics} />
@@ -93,8 +114,16 @@ export function ProductsPage() {
                 <div className="flex h-12 w-12 items-center justify-center rounded bg-slate-100 text-xs text-slate-400">нет фото</div>
               )}
               <div>
-                <div className="text-sm font-medium text-slate-800">{p.name}</div>
+                <div className="text-sm font-medium text-slate-800">
+                  {p.name}
+                  {p.is_archived && <span className="ml-1 text-xs font-normal text-slate-400">(архив)</span>}
+                </div>
                 <div className="text-xs text-slate-500">SKU {p.ozon_sku}</div>
+                {p.price_rub != null && (
+                  <div className="text-xs text-slate-500">
+                    {p.price_rub.toLocaleString("ru-RU")} ₽ · FBO {p.fbo_stock ?? 0} · FBS {p.fbs_stock ?? 0}
+                  </div>
+                )}
               </div>
             </Link>
           ))}

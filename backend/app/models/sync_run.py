@@ -16,6 +16,7 @@ class SyncStatus(str, enum.Enum):
 class SyncSourceType(str, enum.Enum):
     OZON_API = "ozon_api"  # Ozon Seller API (reviews)
     OZON_ADVERTISING_API = "ozon_advertising_api"  # Ozon Performance API (campaigns)
+    OZON_PRODUCTS_API = "ozon_products_api"  # Ozon Seller API (product list/info, stocks)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 

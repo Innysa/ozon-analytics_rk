@@ -1,0 +1,188 @@
+"""Tests for the Ozon product/inventory schemas and client methods used by
+the /sync/ozon-products endpoint. Fixtures are trimmed excerpts of real
+payloads captured from a live store — /v3/product/list wraps its page in a
+top-level "result" object while /v3/product/info/list does not, which is
+easy to get backwards without a live payload to check against."""
+from contextlib import contextmanager
+from unittest.mock import MagicMock
+
+from tests.conftest import login
+
+from app.services.ozon.client import OzonCredentials, OzonSellerClient
+from app.services.ozon.schemas import OzonProductInfoListResponse, OzonProductListResponse
+
+PRODUCT_LIST_PAYLOAD = {
+    "result": {
+        "items": [
+            {
+                "product_id": 957538170,
+                "offer_id": "ковер/мех/сер/200",
+                "has_fbo_stocks": True,
+                "has_fbs_stocks": True,
+                "archived": False,
+                "is_discounted": False,
+                "quants": [],
+                "sku": 1492106823,
+            },
+            {
+                "product_id": 969279265,
+                "offer_id": "ковер/ванна/сер/1U",
+                "has_fbo_stocks": False,
+                "has_fbs_stocks": False,
+                "archived": False,
+                "is_discounted": False,
+                "quants": [],
+                "sku": 1501997508,
+            },
+        ],
+        "total": 152,
+        "last_id": "WzUzMzA1MDg3MDIsNTMzMDUwODcwMl0=",
+    }
+}
+
+PRODUCT_INFO_PAYLOAD = {
+    "items": [
+        {
+            "id": 5330508572,
+            "name": "деталь чемодана",
+            "offer_id": "чем27",
+            "is_archived": False,
+            "price": "20.00",
+            "old_price": "100.00",
+            "currency_code": "RUB",
+            "primary_image": ["https://ir.ozone.ru/s3/multimedia-1-w/12115017932.jpg"],
+            "stocks": {
+                "has_stock": False,
+                "stocks": [{"present": 0, "reserved": 0, "sku": 4936624632, "source": "fbs"}],
+            },
+            "sku": 4936624632,
+        }
+    ]
+}
+
+
+def _mock_post(json_body: dict):
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = json_body
+    response.text = str(json_body)
+    return response
+
+
+def test_product_list_response_parses_nested_result_wrapper():
+    parsed = OzonProductListResponse.model_validate(PRODUCT_LIST_PAYLOAD)
+
+    assert parsed.result.total == 152
+    assert parsed.result.last_id == "WzUzMzA1MDg3MDIsNTMzMDUwODcwMl0="
+    assert len(parsed.result.items) == 2
+    assert parsed.result.items[0].product_id == 957538170
+    assert parsed.result.items[0].sku == 1492106823
+    assert parsed.result.items[0].has_fbo_stocks is True
+    assert parsed.result.items[1].has_fbs_stocks is False
+
+
+def test_product_info_response_has_no_result_wrapper():
+    """Unlike /v3/product/list, /v3/product/info/list returns items at the
+    top level — a schema that expected a "result" key here would silently
+    parse to an empty item list instead of failing loudly."""
+    parsed = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)
+
+    assert len(parsed.items) == 1
+    item = parsed.items[0]
+    assert item.id == 5330508572
+    assert item.sku == 4936624632
+    assert item.offer_id == "чем27"
+    assert item.price == "20.00"
+    assert item.old_price == "100.00"
+    assert item.primary_image == ["https://ir.ozone.ru/s3/multimedia-1-w/12115017932.jpg"]
+    assert item.stocks is not None
+    assert item.stocks.stocks[0].source == "fbs"
+    assert item.stocks.stocks[0].present == 0
+
+
+def test_list_products_sends_last_id_and_parses_result():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(PRODUCT_LIST_PAYLOAD))
+
+    page = client.list_products(last_id="prev-cursor")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/product/list"
+    assert sent_kwargs["json"]["last_id"] == "prev-cursor"
+    assert page.result.total == 152
+
+
+def test_get_products_info_sends_requested_ids():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(PRODUCT_INFO_PAYLOAD))
+
+    info = client.get_products_info([5330508572])
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/product/info/list"
+    assert sent_kwargs["json"]["product_id"] == [5330508572]
+    assert info.items[0].name == "деталь чемодана"
+
+
+def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_with_users, monkeypatch):
+    """End-to-end: /sync/ozon-products should page through /v3/product/list
+    until last_id stops advancing, then fetch details for every collected id
+    via /v3/product/info/list and upsert a Product row per item, aggregating
+    stocks by source."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    put_resp = client.put(
+        f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"}
+    )
+    assert put_resp.status_code == 200
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)
+
+    calls = {"list_products": 0}
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+
+        def _list_products(*, last_id=""):
+            calls["list_products"] += 1
+            return empty_response if last_id else list_response
+
+        fake.list_products.side_effect = _list_products
+        fake.get_products_info.return_value = info_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "success"
+    assert body["items_created"] == 1  # info_response only has one item
+
+    # Paged until last_id stopped advancing (initial call + one follow-up).
+    assert calls["list_products"] == 2
+
+    products_resp = client.get(f"/api/stores/{d['store_a'].id}/products")
+    assert products_resp.status_code == 200
+    products = products_resp.json()
+    assert len(products) == 1
+    product = products[0]
+    assert product["ozon_sku"] == "4936624632"
+    assert product["offer_id"] == "чем27"
+    assert float(product["price_rub"]) == 20.0
+    assert float(product["old_price_rub"]) == 100.0
+    assert product["fbs_stock"] == 0
+    assert product["fbo_stock"] == 0
+    assert product["is_archived"] is False
+
+    # Re-running the sync must update the existing row, not duplicate it.
+    resp2 = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp2.status_code == 200
+    assert resp2.json()["items_skipped_duplicate"] == 1
+    products_resp2 = client.get(f"/api/stores/{d['store_a'].id}/products")
+    assert len(products_resp2.json()) == 1
