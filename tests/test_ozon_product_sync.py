@@ -1,8 +1,10 @@
 """Tests for the Ozon product/inventory schemas and client methods used by
-the /sync/ozon-products endpoint. Fixtures are trimmed excerpts of real
-payloads captured from a live store — /v3/product/list wraps its page in a
-top-level "result" object while /v3/product/info/list does not, which is
-easy to get backwards without a live payload to check against."""
+app.services.product_sync.sync_store_products (shared by the manual
+/sync/ozon-products endpoint and the nightly scheduled job). Fixtures are
+trimmed excerpts of real payloads captured from a live store —
+/v3/product/list wraps its page in a top-level "result" object while
+/v3/product/info/list does not, which is easy to get backwards without a
+live payload to check against."""
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
@@ -154,9 +156,9 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
         fake.get_products_info.return_value = info_response
         yield fake
 
-    import app.api.routes.sync as sync_module
+    import app.services.product_sync as product_sync_module
 
-    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+    monkeypatch.setattr(product_sync_module, "OzonSellerClient", fake_client_cm)
 
     resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
     assert resp.status_code == 200, resp.text

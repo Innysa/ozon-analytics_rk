@@ -55,6 +55,15 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # Nightly automatic "Синхронизировать с Ozon" for products/stocks (see
+    # app.services.scheduler), on top of the manual button. Time is in UTC;
+    # the default (01:00 UTC = 04:00 MSK) lands well outside business hours
+    # for a Russian seller. Set PRODUCT_SYNC_ENABLED=false to turn it off
+    # entirely (e.g. for a second app instance that shouldn't double-run it).
+    PRODUCT_SYNC_ENABLED: bool = True
+    PRODUCT_SYNC_HOUR_UTC: int = 1
+    PRODUCT_SYNC_MINUTE_UTC: int = 0
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

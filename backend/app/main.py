@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -24,11 +25,20 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.services.scheduler import shutdown_scheduler, start_scheduler
 
 configure_logging()
 settings = get_settings()
 
-app = FastAPI(title=settings.APP_NAME)
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    start_scheduler()  # nightly Ozon product/stock sync (app.services.scheduler)
+    yield
+    shutdown_scheduler()
+
+
+app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
