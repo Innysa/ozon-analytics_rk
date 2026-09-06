@@ -209,7 +209,13 @@ class OzonPerformanceClient:
     ) -> str:
         """Requests an async daily-statistics report for up to 10 campaigns
         (Ozon's own hard limit — enforced by the caller, see
-        advertising_daily_sync_service). Returns the report UUID to poll."""
+        advertising_daily_sync_service). Returns the report UUID to poll.
+
+        date_from/date_to must be ISO "YYYY-MM-DD" strings — confirmed via a
+        real account's curl test. A "DD.MM.YYYY" value is rejected outright
+        with {"error": "bad request parameter: dateFrom"}; this client does
+        not reformat the strings it's given, so getting this wrong is a
+        caller bug, not something this method can paper over."""
         data = self._post(
             "/api/client/statistics",
             {

@@ -237,7 +237,9 @@ def test_default_date_range_is_last_n_days_when_not_specified(db_session, two_st
     sync_advertising_daily_statistics(db_session, store_id=d["store_a"].id, client=client)
 
     assert "date_from" in captured and "date_to" in captured
-    # DD.MM.YYYY format, as required by Ozon's API
+    # ISO (YYYY-MM-DD) — confirmed live: Ozon rejects DD.MM.YYYY here with
+    # {"error": "bad request parameter: dateFrom"} even though that's the
+    # date format used inside the downloaded report's own filename.
     import re
-    assert re.match(r"^\d{2}\.\d{2}\.\d{4}$", captured["date_from"])
-    assert re.match(r"^\d{2}\.\d{2}\.\d{4}$", captured["date_to"])
+    assert re.match(r"^\d{4}-\d{2}-\d{2}$", captured["date_from"])
+    assert re.match(r"^\d{4}-\d{2}-\d{2}$", captured["date_to"])

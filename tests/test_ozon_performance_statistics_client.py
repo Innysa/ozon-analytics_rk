@@ -33,14 +33,17 @@ def test_create_statistics_report_returns_uuid():
     client = _client()
     client._client.post = MagicMock(return_value=_mock_response(200, {"UUID": "abc-123", "vendor": False}))
 
-    uuid = client.create_statistics_report(["1", "2"], "01.09.2026", "07.09.2026")
+    # ISO (YYYY-MM-DD), not DD.MM.YYYY — the client passes dates through
+    # as-is and does not reformat them; getting the format right is the
+    # caller's job (see advertising_daily_sync_service).
+    uuid = client.create_statistics_report(["1", "2"], "2026-09-01", "2026-09-07")
 
     assert uuid == "abc-123"
     sent_path, sent_kwargs = client._client.post.call_args
     assert sent_path[0] == "/api/client/statistics"
     assert sent_kwargs["json"]["campaigns"] == ["1", "2"]
-    assert sent_kwargs["json"]["dateFrom"] == "01.09.2026"
-    assert sent_kwargs["json"]["dateTo"] == "07.09.2026"
+    assert sent_kwargs["json"]["dateFrom"] == "2026-09-01"
+    assert sent_kwargs["json"]["dateTo"] == "2026-09-07"
     assert sent_kwargs["json"]["groupBy"] == "DATE"
 
 
@@ -55,7 +58,7 @@ def test_create_statistics_report_raises_busy_on_confirmed_error_text():
     )
 
     with pytest.raises(OzonPerformanceReportBusy):
-        client.create_statistics_report(["1"], "01.09.2026", "07.09.2026")
+        client.create_statistics_report(["1"], "2026-09-01", "2026-09-07")
 
 
 def test_create_statistics_report_auth_error():
@@ -63,7 +66,7 @@ def test_create_statistics_report_auth_error():
     client._client.post = MagicMock(return_value=_mock_response(401, {"message": "unauthorized"}))
 
     with pytest.raises(OzonPerformanceAuthError):
-        client.create_statistics_report(["1"], "01.09.2026", "07.09.2026")
+        client.create_statistics_report(["1"], "2026-09-01", "2026-09-07")
 
 
 def test_get_statistics_report_status_in_progress():

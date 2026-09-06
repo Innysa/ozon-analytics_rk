@@ -33,6 +33,15 @@ real account before this was built):
      app.services.advertising_daily_statistic_parser for the exact layout,
      encoding handling, and "Всего" totals-row skip.
 
+  6. dateFrom/dateTo in the POST /api/client/statistics body must be ISO
+     (YYYY-MM-DD) — a DD.MM.YYYY value is rejected outright with
+     {"error": "bad request parameter: dateFrom"}. Confirmed the hard way:
+     an early version of this module sent DD.MM.YYYY (matching the ZIP
+     filename's own date format, which is a separate, still-unconfirmed
+     detail — see the parser's docstring) and every batch failed at the
+     request step on a real account before a curl test nailed down that the
+     two date formats are not the same.
+
 Default date range (when the caller doesn't pass one — e.g. the daily
 scheduler): the last ADVERTISING_STATS_DEFAULT_LOOKBACK_DAYS days. Re-pulling
 a short trailing window on every run (instead of only "yesterday") means a
@@ -158,8 +167,13 @@ def sync_advertising_daily_statistics(
     today = datetime.now(timezone.utc).date()
     resolved_date_to = date_to or today
     resolved_date_from = date_from or (resolved_date_to - timedelta(days=settings.ADVERTISING_STATS_DEFAULT_LOOKBACK_DAYS - 1))
-    date_from_str = resolved_date_from.strftime("%d.%m.%Y")
-    date_to_str = resolved_date_to.strftime("%d.%m.%Y")
+    # POST /api/client/statistics rejects "bad request parameter: dateFrom"
+    # for a DD.MM.YYYY value — confirmed live: a real account's own curl test
+    # only succeeded with ISO (YYYY-MM-DD). Do not "fix" this back to
+    # DD.MM.YYYY without a fresh confirmed counter-example — this exact
+    # mistake already shipped once.
+    date_from_str = resolved_date_from.isoformat()
+    date_to_str = resolved_date_to.isoformat()
 
     campaigns = (
         db.query(AdvertisingCampaign)
