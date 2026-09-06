@@ -124,6 +124,22 @@ def test_get_products_info_sends_requested_ids():
     assert info.items[0].name == "деталь чемодана"
 
 
+def test_get_products_info_by_offer_id_sends_requested_offer_ids():
+    """Same endpoint as get_products_info(), filtered by offer_id — used as
+    a fallback for products Ozon reports as sku=0 when queried by
+    product_id (see sync_ozon_products)."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(PRODUCT_INFO_PAYLOAD))
+
+    info = client.get_products_info_by_offer_id(["чем27"])
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/product/info/list"
+    assert sent_kwargs["json"]["offer_id"] == ["чем27"]
+    assert "product_id" not in sent_kwargs["json"]
+    assert info.items[0].name == "деталь чемодана"
+
+
 def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_with_users, monkeypatch):
     """End-to-end: /sync/ozon-products should page through /v3/product/list
     until last_id stops advancing, then fetch details for every collected id
@@ -240,3 +256,144 @@ def test_stale_sku_zero_row_is_corrected_in_place_not_duplicated(client, two_sto
     products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
     assert len(products) == 1
     assert products[0]["ozon_sku"] == "4936624632"
+
+
+def test_sku_zero_by_product_id_is_resolved_via_offer_id_fallback(client, two_stores_with_users, monkeypatch):
+    """End-to-end regression test for the reported real-world case: a "нет
+    на складе" product (not yet delivered to an Ozon warehouse) comes back
+    with sku=0 when /v3/product/info/list is queried by product_id, even
+    though Ozon has already assigned it a real SKU (visible in Ozon's own
+    "Аналитика" section). Re-querying the same endpoint by offer_id must
+    resolve the real sku instead of the product being skipped."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    offer_id = "мус/вед/бел1/3"
+    real_sku = 5716615794
+
+    list_payload = {
+        "result": {
+            "items": [
+                {
+                    "product_id": 111222333, "offer_id": offer_id, "has_fbo_stocks": False,
+                    "has_fbs_stocks": False, "archived": False, "is_discounted": False, "quants": [],
+                    "sku": 0,
+                }
+            ],
+            "total": 1, "last_id": "",
+        }
+    }
+    zero_sku_info_payload = {
+        "items": [
+            {
+                "id": 111222333, "name": "Мусорное ведро для кухни и туалета с крышкой 11 л",
+                "offer_id": offer_id, "is_archived": False, "price": "990.00", "old_price": "1200.00",
+                "currency_code": "RUB", "primary_image": [], "stocks": {"has_stock": False, "stocks": []},
+                "sku": 0,
+            }
+        ]
+    }
+    resolved_info_payload = {
+        "items": [
+            {
+                "id": 111222333, "name": "Мусорное ведро для кухни и туалета с крышкой 11 л",
+                "offer_id": offer_id, "is_archived": False, "price": "990.00", "old_price": "1200.00",
+                "currency_code": "RUB", "primary_image": [], "stocks": {"has_stock": False, "stocks": []},
+                "sku": real_sku,
+            }
+        ]
+    }
+
+    list_response = OzonProductListResponse.model_validate(list_payload)
+    zero_sku_info_response = OzonProductInfoListResponse.model_validate(zero_sku_info_payload)
+    resolved_info_response = OzonProductInfoListResponse.model_validate(resolved_info_payload)
+
+    calls = {"get_products_info": 0, "get_products_info_by_offer_id": 0}
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.return_value = list_response
+
+        def _get_products_info(product_ids):
+            calls["get_products_info"] += 1
+            return zero_sku_info_response
+
+        def _get_products_info_by_offer_id(offer_ids):
+            calls["get_products_info_by_offer_id"] += 1
+            assert offer_ids == [offer_id]  # only the zero-sku subset is retried
+            return resolved_info_response
+
+        fake.get_products_info.side_effect = _get_products_info
+        fake.get_products_info_by_offer_id.side_effect = _get_products_info_by_offer_id
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items_created"] == 1
+    assert calls["get_products_info_by_offer_id"] == 1
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 1
+    assert products[0]["ozon_sku"] == str(real_sku)
+    assert products[0]["offer_id"] == offer_id
+    assert products[0]["name"] == "Мусорное ведро для кухни и туалета с крышкой 11 л"
+
+
+def test_sku_still_zero_after_offer_id_fallback_is_skipped(client, two_stores_with_users, monkeypatch):
+    """If the offer_id fallback still comes back with sku=0/missing, the
+    product must genuinely be skipped (no row created) rather than stored
+    with an invalid sku."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    offer_id = "truly-unassigned"
+    list_payload = {
+        "result": {
+            "items": [
+                {
+                    "product_id": 999, "offer_id": offer_id, "has_fbo_stocks": False,
+                    "has_fbs_stocks": False, "archived": False, "is_discounted": False, "quants": [],
+                    "sku": 0,
+                }
+            ],
+            "total": 1, "last_id": "",
+        }
+    }
+    zero_info_payload = {
+        "items": [
+            {
+                "id": 999, "name": "Товар без SKU", "offer_id": offer_id, "is_archived": False,
+                "price": None, "old_price": None, "currency_code": "RUB", "primary_image": [],
+                "stocks": None, "sku": 0,
+            }
+        ]
+    }
+
+    list_response = OzonProductListResponse.model_validate(list_payload)
+    zero_info_response = OzonProductInfoListResponse.model_validate(zero_info_payload)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.return_value = list_response
+        fake.get_products_info.return_value = zero_info_response
+        fake.get_products_info_by_offer_id.return_value = zero_info_response  # still sku=0
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items_created"] == 0
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 0

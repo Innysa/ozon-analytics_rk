@@ -214,6 +214,19 @@ class OzonSellerClient:
         data = self._post("/v3/product/info/list", {"product_id": product_ids})
         return OzonProductInfoListResponse.model_validate(data)
 
+    def get_products_info_by_offer_id(self, offer_ids: list[str]) -> OzonProductInfoListResponse:
+        """Same endpoint as get_products_info(), filtered by offer_id instead
+        of product_id — /v3/product/info/list accepts either. Used as a
+        fallback for products Ozon reports as sku=0 ("no SKU assigned yet")
+        when queried by product_id: for a product that is "нет на складе"
+        (not yet delivered to an Ozon warehouse) but already has a real SKU
+        visible in Ozon's own "Аналитика" section, querying by product_id
+        can still come back with sku=0, while the same product queried by
+        offer_id returns the real, already-assigned SKU. See
+        app.api.routes.sync's sync_ozon_products for where this is used."""
+        data = self._post("/v3/product/info/list", {"offer_id": offer_ids})
+        return OzonProductInfoListResponse.model_validate(data)
+
     def get_product_queries(
         self,
         *,

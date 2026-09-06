@@ -180,7 +180,14 @@ def sync_ozon_products(
 ) -> dict:
     """Pulls the seller's product catalog (offer_id/sku/price/stocks) from
     Ozon Seller API: /v3/product/list for the id list, then /v3/product/info/list
-    in batches for the actual details, since list responses only carry ids."""
+    in batches for the actual details, since list responses only carry ids.
+
+    A product queried by product_id can come back with sku=0 even though a
+    real SKU is already assigned (confirmed live: a "нет на складе" product,
+    not yet delivered to an Ozon warehouse, still had a real SKU visible in
+    Ozon's own "Аналитика" section) — such items get one extra batched
+    lookup of the same endpoint by offer_id instead, which resolves the real
+    sku. Only ever applied to the zero-sku subset, not every product."""
     creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
     if not creds:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon")
@@ -232,66 +239,96 @@ def sync_ozon_products(
                     break
                 last_id = page.result.last_id
 
+            def _upsert(item, sku: str) -> None:
+                nonlocal created, updated
+                fbo_stock = fbs_stock = 0
+                if item.stocks:
+                    for stock in item.stocks.stocks:
+                        if stock.source == "fbo":
+                            fbo_stock += stock.present or 0
+                        elif stock.source == "fbs":
+                            fbs_stock += stock.present or 0
+
+                image_url = item.primary_image[0] if item.primary_image else None
+                price = _to_decimal(item.price)
+                old_price = _to_decimal(item.old_price)
+
+                product = existing_by_product_id.get(item.id) or existing_by_sku.get(sku)
+                if product:
+                    product.ozon_sku = sku  # may correct a stale sku (e.g. 0 -> a newly assigned real sku)
+                    product.ozon_product_id = item.id
+                    product.offer_id = item.offer_id
+                    product.name = item.name or product.name
+                    product.image_url = image_url or product.image_url
+                    product.price_rub = price
+                    product.old_price_rub = old_price
+                    product.fbo_stock = fbo_stock
+                    product.fbs_stock = fbs_stock
+                    product.is_archived = bool(item.is_archived)
+                    updated += 1
+                else:
+                    product = Product(
+                        store_id=ctx.store_id,
+                        ozon_sku=sku,
+                        ozon_product_id=item.id,
+                        offer_id=item.offer_id,
+                        name=item.name or f"Товар SKU {sku}",
+                        image_url=image_url,
+                        price_rub=price,
+                        old_price_rub=old_price,
+                        fbo_stock=fbo_stock,
+                        fbs_stock=fbs_stock,
+                        is_archived=bool(item.is_archived),
+                    )
+                    db.add(product)
+                    created += 1
+                existing_by_product_id[item.id] = product
+                existing_by_sku[sku] = product
+
+            # Confirmed on a real account: /v3/product/info/list queried by
+            # product_id can hand back sku=0 ("no SKU assigned yet") for a
+            # product that is "нет на складе" (not yet delivered to an Ozon
+            # warehouse), even though a real SKU is already assigned and
+            # visible in Ozon's own "Аналитика" section — e.g. offer_id
+            # "мус/вед/бел1/3" (sku 5716615794) reproduced this exactly.
+            # Re-querying the SAME endpoint by offer_id instead of
+            # product_id resolves the real sku for such products. Only the
+            # zero-sku subset is retried this way (not every product), so a
+            # normal sync isn't slowed down by it.
+            zero_sku_items = []
             for batch_start in range(0, len(product_ids), PRODUCT_INFO_BATCH_SIZE):
                 batch = product_ids[batch_start : batch_start + PRODUCT_INFO_BATCH_SIZE]
                 info = client.get_products_info(batch)
                 for item in info.items:
                     fetched += 1
-                    # Ozon uses sku=0 (not null) as its own sentinel for "no
-                    # SKU assigned yet" (e.g. a product not yet in an active
-                    # FBO/FBS scheme) — confirmed the hard way when a stored
-                    # ozon_sku="0" reached POST /v1/analytics/product-queries
-                    # /details and Ozon rejected the whole batch with
-                    # "Skus[N]: value must be greater than 0". A real Ozon
-                    # SKU is always a positive integer, so 0 is never a
-                    # legitimate value to store here.
-                    if not item.sku:
-                        continue
-                    sku = str(item.sku)
+                    if item.sku:
+                        _upsert(item, str(item.sku))
+                    elif item.offer_id:
+                        zero_sku_items.append(item)
+                    # else: sku=0 AND no offer_id to retry with — nothing more to try.
 
-                    fbo_stock = fbs_stock = 0
-                    if item.stocks:
-                        for stock in item.stocks.stocks:
-                            if stock.source == "fbo":
-                                fbo_stock += stock.present or 0
-                            elif stock.source == "fbs":
-                                fbs_stock += stock.present or 0
+            if zero_sku_items:
+                logger.info(
+                    "Товары: %d товар(ов) вернулись с sku=0 по product_id — уточняю по offer_id",
+                    len(zero_sku_items),
+                )
+                offer_ids = [item.offer_id for item in zero_sku_items]
+                resolved_by_offer_id = {}
+                for batch_start in range(0, len(offer_ids), PRODUCT_INFO_BATCH_SIZE):
+                    batch = offer_ids[batch_start : batch_start + PRODUCT_INFO_BATCH_SIZE]
+                    retry_info = client.get_products_info_by_offer_id(batch)
+                    for retry_item in retry_info.items:
+                        if retry_item.offer_id:
+                            resolved_by_offer_id[retry_item.offer_id] = retry_item
 
-                    image_url = item.primary_image[0] if item.primary_image else None
-                    price = _to_decimal(item.price)
-                    old_price = _to_decimal(item.old_price)
-
-                    product = existing_by_product_id.get(item.id) or existing_by_sku.get(sku)
-                    if product:
-                        product.ozon_sku = sku  # may correct a stale sku (e.g. 0 -> a newly assigned real sku)
-                        product.ozon_product_id = item.id
-                        product.offer_id = item.offer_id
-                        product.name = item.name or product.name
-                        product.image_url = image_url or product.image_url
-                        product.price_rub = price
-                        product.old_price_rub = old_price
-                        product.fbo_stock = fbo_stock
-                        product.fbs_stock = fbs_stock
-                        product.is_archived = bool(item.is_archived)
-                        updated += 1
-                    else:
-                        product = Product(
-                            store_id=ctx.store_id,
-                            ozon_sku=sku,
-                            ozon_product_id=item.id,
-                            offer_id=item.offer_id,
-                            name=item.name or f"Товар SKU {sku}",
-                            image_url=image_url,
-                            price_rub=price,
-                            old_price_rub=old_price,
-                            fbo_stock=fbo_stock,
-                            fbs_stock=fbs_stock,
-                            is_archived=bool(item.is_archived),
-                        )
-                        db.add(product)
-                        created += 1
-                    existing_by_product_id[item.id] = product
-                    existing_by_sku[sku] = product
+                for item in zero_sku_items:
+                    resolved = resolved_by_offer_id.get(item.offer_id)
+                    if resolved and resolved.sku:
+                        _upsert(resolved, str(resolved.sku))
+                    # else: still sku=0/missing even by offer_id — genuinely
+                    # unresolved for now; left for search_query_details_sync
+                    # _service's own named diagnostic to surface if this row
+                    # is ever fed into that sync.
         run.status = SyncStatus.SUCCESS
     except OzonAuthError as exc:
         run.status = SyncStatus.FAILED
