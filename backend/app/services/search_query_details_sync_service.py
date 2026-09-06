@@ -14,6 +14,16 @@ app.services.ozon.client's own module docstring for the full write-up):
      sends date_from at 00:00:00Z and date_to at 23:59:59Z for the resolved
      day range.
 
+  1b. date_to cannot be "today" — confirmed live: a real run with
+      date_to=today failed on every batch with the same error
+      ("ProductQueriesDetails error: ... getPremiumAnalyticsPeriod rpc
+      error: code = InvalidArgument desc = There is no data for the
+      specified period"), while the same account's own confirmed working
+      curl test used a date_to 2 days before the day it was run. Ozon's
+      analytics aggregation evidently lags "today" by at least a day or two.
+      This module therefore never defaults date_to to today — see
+      settings.SEARCH_QUERY_STATS_DATA_LAG_DAYS.
+
   2. Both `limit_by_sku` (max 15) and `page_size` (max 100) are required
      together. This module always sends Ozon's own confirmed maxima
      (settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU /
@@ -103,6 +113,16 @@ def _batched(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _is_positive_sku(value: str | None) -> bool:
+    """Mirrors Ozon's own validation for this endpoint ("Skus[N]: value
+    must be greater than 0") — a real Ozon SKU is always a positive
+    integer; 0 is Ozon's own sentinel for "no SKU assigned yet"."""
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _to_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -143,7 +163,10 @@ def sync_search_query_details(
     outcome = SyncOutcome()
 
     today = datetime.now(timezone.utc).date()
-    resolved_date_to = date_to or today
+    # Never default to "today" — Ozon's analytics aggregation lags behind it
+    # (see this module's docstring, point 1b) and rejects a period ending
+    # today with "There is no data for the specified period".
+    resolved_date_to = date_to or (today - timedelta(days=settings.SEARCH_QUERY_STATS_DATA_LAG_DAYS))
     resolved_date_from = date_from or (
         resolved_date_to - timedelta(days=settings.SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS - 1)
     )
@@ -157,8 +180,27 @@ def sync_search_query_details(
         outcome.errors.append("Нет товаров для запроса статистики поисковых запросов — сначала синхронизируйте товары.")
         return outcome
 
-    product_by_sku = {p.ozon_sku: p for p in products}
+    # Defensive, not redundant: Ozon's own product-info API can hand back
+    # sku=0 as a "no SKU assigned yet" sentinel (see the fix in
+    # app.api.routes.sync's product sync for the confirmed root cause), and
+    # a store synced before that fix can still have such a row sitting in
+    # Product. Ozon's own validation for this endpoint rejects the entire
+    # batch containing one ("Skus[N]: value must be greater than 0"), so a
+    # single bad row would otherwise silently fail every other product in
+    # its batch too.
+    valid_products = [p for p in products if _is_positive_sku(p.ozon_sku)]
+    skipped_invalid = len(products) - len(valid_products)
+    if skipped_invalid:
+        outcome.errors.append(
+            f"Пропущено {skipped_invalid} товар(ов) с некорректным SKU (0/пусто) — "
+            f"повторите синхронизацию товаров, чтобы очистить эти записи."
+        )
+
+    product_by_sku = {p.ozon_sku: p for p in valid_products}
     skus = list(product_by_sku.keys())
+    if not skus:
+        outcome.errors.append("Нет товаров с корректным SKU для запроса статистики поисковых запросов.")
+        return outcome
 
     existing_keys = {
         (s.ozon_sku, s.query_text)

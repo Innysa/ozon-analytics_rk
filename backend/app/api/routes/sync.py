@@ -225,7 +225,15 @@ def sync_ozon_products(
                 info = client.get_products_info(batch)
                 for item in info.items:
                     fetched += 1
-                    if item.sku is None:
+                    # Ozon uses sku=0 (not null) as its own sentinel for "no
+                    # SKU assigned yet" (e.g. a product not yet in an active
+                    # FBO/FBS scheme) — confirmed the hard way when a stored
+                    # ozon_sku="0" reached POST /v1/analytics/product-queries
+                    # /details and Ozon rejected the whole batch with
+                    # "Skus[N]: value must be greater than 0". A real Ozon
+                    # SKU is always a positive integer, so 0 is never a
+                    # legitimate value to store here.
+                    if not item.sku:
                         continue
                     sku = str(item.sku)
 

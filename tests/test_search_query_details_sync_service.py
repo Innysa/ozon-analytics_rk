@@ -59,6 +59,54 @@ def _make_product(db_session, store_id: str, sku: str):
     return product
 
 
+def test_default_date_to_lags_behind_today_not_equal_to_it(db_session, two_stores_with_users, monkeypatch):
+    """Regression test: a real run that defaulted date_to to literal "today"
+    failed on every batch with Ozon's "There is no data for the specified
+    period" — the confirmed working curl test used a date_to 2 days before
+    the day it was run. The default must lag behind today by
+    SEARCH_QUERY_STATS_DATA_LAG_DAYS, never equal it."""
+    import app.services.search_query_details_sync_service as svc
+
+    class _FixedDatetime(svc.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return svc.datetime(2026, 9, 6, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(svc, "datetime", _FixedDatetime)
+
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+    client = FakeOzonSellerClient([{"items": [], "total": 0, "page_count": 1}])
+
+    sync_search_query_details(db_session, store_id=d["store_a"].id, client=client)
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["date_to"] == "2026-09-04T23:59:59Z"
+    assert "2026-09-06" not in client.calls[0]["date_to"]
+
+
+def test_sku_zero_is_filtered_out_and_reported(db_session, two_stores_with_users):
+    """Regression test: Ozon's own product-info API can hand back sku=0 as a
+    "no SKU assigned yet" sentinel, which used to end up stored as
+    Product.ozon_sku="0" and then sent straight to Ozon, which rejected the
+    whole batch with "Skus[N]: value must be greater than 0". A sku=0 (or
+    otherwise non-positive) product must be filtered out before batching,
+    and the skip must be visible in outcome.errors rather than silent."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+    _make_product(db_session, d["store_a"].id, "0")
+
+    client = FakeOzonSellerClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["skus"] == ["2953864771"]
+    assert outcome.created == 1
+    assert any("0" in e and "SKU" in e for e in outcome.errors)
+
+
 def test_no_products_reports_a_clear_error(db_session, two_stores_with_users):
     d = two_stores_with_users
     client = FakeOzonSellerClient()

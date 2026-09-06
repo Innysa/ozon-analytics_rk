@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     SEARCH_QUERY_STATS_LIMIT_BY_SKU: int = 15
     SEARCH_QUERY_STATS_PAGE_SIZE: int = 100
     SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    # Ozon's "getPremiumAnalyticsPeriod" has not finished aggregating the
+    # most recent day(s) when this was field-tested: a request with
+    # date_to="today" failed live with "InvalidArgument: There is no data
+    # for the specified period", while the same account's own confirmed
+    # working curl test used date_to 2 days before the day it was run. This
+    # default reflects that one observed data point (a 2-day lag was
+    # sufficient), not a documented Ozon SLA — raise it if "no data for the
+    # specified period" recurs.
+    SEARCH_QUERY_STATS_DATA_LAG_DAYS: int = 2
     SEARCH_QUERY_STATS_SCHEDULER_ENABLED: bool = True
     SEARCH_QUERY_STATS_SCHEDULER_HOUR_UTC: int = 4  # once a day, off-peak, staggered after advertising's own job
 
