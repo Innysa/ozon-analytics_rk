@@ -21,6 +21,9 @@ export function Sidebar() {
         <NavLink to="/advertising" className={linkClass}>
           Реклама
         </NavLink>
+        <NavLink to="/search-positions" className={linkClass}>
+          Позиции в поиске
+        </NavLink>
         <NavLink to="/ai-settings" className={linkClass}>
           Настройки ответов
         </NavLink>

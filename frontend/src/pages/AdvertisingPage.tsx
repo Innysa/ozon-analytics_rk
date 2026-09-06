@@ -1,6 +1,7 @@
-import { ChangeEvent, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
+import { useResizableColumns } from "../hooks/useResizableColumns";
 import { useStore } from "../store/StoreContext";
 import type {
   AdvertisingAnalytics,
@@ -44,44 +45,6 @@ function defaultStatsDateTo(): string {
   return isoDate(new Date());
 }
 
-// Resizable columns (drag the right edge of a header cell, like a
-// spreadsheet) for the automatically-collected daily statistics table —
-// campaign names and SKUs otherwise get clipped/wrapped awkwardly at a fixed
-// width. Session-only state (not persisted) — deliberately simple.
-function useResizableColumns(defaults: number[]) {
-  const [widths, setWidths] = useState<number[]>(defaults);
-  const drag = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!drag.current) return;
-      const { index, startX, startWidth } = drag.current;
-      const next = Math.max(50, startWidth + (e.clientX - startX));
-      setWidths((prev) => {
-        if (prev[index] === next) return prev;
-        const copy = [...prev];
-        copy[index] = next;
-        return copy;
-      });
-    };
-    const onUp = () => {
-      drag.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, []);
-
-  const startResize = (index: number) => (e: ReactMouseEvent) => {
-    e.preventDefault();
-    drag.current = { index, startX: e.clientX, startWidth: widths[index] };
-  };
-
-  return { widths, startResize };
-}
 
 export function AdvertisingPage() {
   const { currentStore } = useStore();

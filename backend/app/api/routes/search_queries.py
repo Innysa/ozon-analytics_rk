@@ -13,12 +13,15 @@ from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
 from app.schemas.common import ImportSummary
 from app.schemas.search_query import (
+    QueryCompetitorsReportOut,
     SearchQueryAnalyticsOut,
+    SearchQueryPositionListResponse,
     SearchQueryStatisticListResponse,
     SearchQueryStatisticOut,
 )
 from app.services.audit import record_audit
-from app.services.search_query_analytics_service import compute_search_query_analytics
+from app.services.search_query_analytics_service import compute_search_query_analytics, compute_search_query_positions
+from app.services.search_query_competitors_service import parse_query_competitors_report
 from app.services.search_query_import import import_search_query_statistics_from_file
 
 router = APIRouter(prefix="/api/stores/{store_id}/search-queries", tags=["search-queries"])
@@ -134,3 +137,39 @@ def search_queries_summary(
     return compute_search_query_analytics(
         db, store_id=ctx.store_id, product_id=product_id, period_start=period_start, period_end=period_end
     )
+
+
+@router.get("/positions", response_model=SearchQueryPositionListResponse)
+def search_query_positions(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+    product_id: str | None = None,
+    query_text: str | None = None,
+) -> SearchQueryPositionListResponse:
+    """Powers the "Позиции в поиске" tab: current position vs. the previous
+    uploaded snapshot for every (SKU, query) pair, with a green/red change
+    indicator computed by compute_search_query_positions. Uses the same
+    SearchQueryStatistic history as /search-queries — every upload already
+    adds a new dated snapshot instead of overwriting, so no separate table
+    was needed just to track position over time."""
+    return compute_search_query_positions(db, store_id=ctx.store_id, product_id=product_id, query_text=query_text)
+
+
+@router.post("/competitors/preview", response_model=QueryCompetitorsReportOut)
+async def preview_query_competitors(
+    file: UploadFile,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+) -> QueryCompetitorsReportOut:
+    """Lower-priority companion feature: parses Ozon's "Результаты по
+    запросу" export (one query's full search-result page, competitors
+    included) and returns it directly — nothing is written to the database.
+    Deliberately not integrated with /positions' history/highlighting logic;
+    see search_query_competitors_service's module docstring for why."""
+    if not file.filename or not file.filename.lower().endswith(_ALLOWED_EXT):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Поддерживаются только файлы .csv и .xlsx")
+
+    content = await file.read()
+    try:
+        return parse_query_competitors_report(filename=file.filename, content=content)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

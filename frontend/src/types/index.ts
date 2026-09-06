@@ -470,3 +470,60 @@ export interface SearchQueryAnalytics {
   top_queries_by_searches: TopQueryItem[];
   top_queries_by_orders: TopQueryItem[];
 }
+
+// One (SKU, query) pair's most recent position vs. the snapshot before it —
+// see backend app.schemas.search_query.SearchQueryPositionOut. Built from
+// the same SearchQueryStatistic history as SearchQueryStatistic above; no
+// separate "positions" data source.
+export interface SearchQueryPosition {
+  ozon_sku: string;
+  offer_id: string | null;
+  product_id: string | null;
+  product_name: string | null;
+  query_text: string;
+  report_date: string;
+  position: number | null;
+  previous_report_date: string | null;
+  previous_position: number | null;
+  position_change: number | null;
+  position_change_direction: "up" | "down" | null;
+  people_searched: number | null;
+  people_saw: number | null;
+  ordered_units_by_query: number | null;
+}
+
+export interface SearchQueryPositionListResponse {
+  items: SearchQueryPosition[];
+  total: number;
+}
+
+// "Результаты по запросу" — a stateless preview of one query's full search
+// result page with competitors (see backend
+// app.schemas.search_query.QueryCompetitorsReportOut). Never persisted;
+// deliberately separate from SearchQueryPosition's history/highlighting.
+export interface QueryCompetitorRow {
+  position: number;
+  ozon_product_id: number | null;
+  product_name: string | null;
+  seller_name: string | null;
+  overall_score: number | null;
+  status: string | null;
+  cpc_bid_rub: number | null;
+  strategy: string | null;
+  cpo_bid_text: string | null;
+  relevance_pct: number | null;
+  reviews_text: string | null;
+  price_rub: number | null;
+  popularity_score: number | null;
+  ozon_promotions: string | null;
+  delivery_term: string | null;
+  price_index_pct: number | null;
+}
+
+export interface QueryCompetitorsReport {
+  query_text: string;
+  region: string | null;
+  generated_at: string | null;
+  positions_in_results: number | null;
+  rows: QueryCompetitorRow[];
+}
