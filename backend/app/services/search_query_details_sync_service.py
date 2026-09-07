@@ -86,6 +86,7 @@ query_positions) compares against.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -98,6 +99,8 @@ from app.models.search_query_statistic import SearchQueryStatistic
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError
 from app.services.product_merge import merge_duplicate_products, pick_survivor
+
+logger = logging.getLogger(__name__)
 
 _SOURCE = "ozon_seller_api"
 
@@ -301,7 +304,24 @@ def sync_search_query_details(
         .all()
     }
 
+    total_batches = -(-len(skus) // settings.SEARCH_QUERY_STATS_SKU_BATCH_SIZE)  # ceil div, for the log line only
     for batch_num, sku_batch in enumerate(_batched(skus, settings.SEARCH_QUERY_STATS_SKU_BATCH_SIZE), start=1):
+        # TEMPORARY diagnostic logging (see task: "получено 0, создано 0,
+        # обновлено 0" on every batch despite HTTP 200) — logs the exact
+        # request this module sends and Ozon's raw response, so a live run
+        # can show whether Ozon is genuinely returning an empty items array
+        # for this date range/skus, or a differently-shaped body this
+        # parsing code doesn't recognize. Deliberately logged at WARNING,
+        # not INFO: this deployment doesn't configure a log level, so
+        # Python's logging falls back to its "handler of last resort" (stderr,
+        # WARNING+ only) — an INFO call here would silently never appear in
+        # `docker compose logs`. Remove once the root cause is confirmed and
+        # fixed.
+        logger.warning(
+            "Позиции в поиске: батч %d/%d, sku=%s, date_from=%s, date_to=%s, limit_by_sku=%d, page_size=%d",
+            batch_num, total_batches, sku_batch, date_from_str, date_to_str,
+            settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU, settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+        )
         try:
             data = client.get_product_query_details(
                 date_from=date_from_str,
@@ -315,6 +335,19 @@ def sync_search_query_details(
             continue
 
         items = data.get("items") or []
+        if not items:
+            # Full raw body — safe to log in full here (no per-row PII/
+            # financial data to worry about when there are no rows).
+            logger.warning(
+                "Позиции в поиске: батч %d — Ozon вернул 0 items. Полный ответ: %s",
+                batch_num, json.dumps(data, ensure_ascii=False),
+            )
+        else:
+            logger.warning(
+                "Позиции в поиске: батч %d — получено %d items (total=%s, page_count=%s). Первая строка: %s",
+                batch_num, len(items), data.get("total"), data.get("page_count"),
+                json.dumps(items[0], ensure_ascii=False),
+            )
         # Diagnostic, not a guess at a fix: the SKU batch size is sized to
         # avoid ever needing pagination (see this module's docstring) — if
         # Ozon still reports more pages than fit in one response, surface it
@@ -397,5 +430,29 @@ def sync_search_query_details(
                 outcome.created += 1
 
         db.commit()
+
+    if outcome.fetched == 0 and not outcome.errors:
+        # Every batch returned HTTP 200 with an empty items array — not an
+        # error Ozon reports explicitly, so nothing above would otherwise
+        # surface it. Most likely causes, in order of likelihood: (1) Ozon
+        # genuinely has no search-query data for these SKUs in
+        # [date_from, date_to] — either the store has too little search
+        # traffic, or the window is too recent/too short for Ozon's own
+        # aggregation lag (see SEARCH_QUERY_STATS_DATA_LAG_DAYS); (2) the
+        # account's Ozon plan doesn't unlock this data for the requested
+        # period (Premium/Premium Plus reportedly get a longer history —
+        # unconfirmed). See this run's own log output (batch-level raw
+        # response is logged above) to tell these apart.
+        outcome.errors.append(
+            f"Ozon вернул 0 строк за весь период {resolved_date_from.isoformat()}..{resolved_date_to.isoformat()} "
+            f"по всем {len(skus)} SKU, хотя ответ был успешным (HTTP 200) — это не ошибка запроса. Возможные причины: "
+            f"(1) у этих товаров действительно нет данных по поисковым запросам за этот период в кабинете Ozon; "
+            f"(2) период слишком короткий/слишком свежий — Ozon отстаёт с агрегацией на несколько дней; "
+            f"(3) тариф магазина не открывает эти данные за такой период. Проверьте вручную отчёт "
+            f"«Аналитика → Товары в поиске → Запросы моего товара» в кабинете Ozon за этот же период — если там "
+            f"данные есть, а тут нет, откройте подробный лог этого запуска (сырой ответ Ozon логируется на уровне "
+            f"WARNING). Также можно повторить синхронизацию с явно широким периодом: "
+            f"POST /sync/ozon-search-query-statistics?date_from=ГГГГ-ММ-ДД&date_to=ГГГГ-ММ-ДД."
+        )
 
     return outcome

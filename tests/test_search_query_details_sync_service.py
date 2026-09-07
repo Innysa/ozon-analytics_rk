@@ -366,3 +366,35 @@ def test_page_count_over_one_is_reported_as_a_diagnostic(db_session, two_stores_
 
     assert outcome.created == 1
     assert any("страниц" in e for e in outcome.errors)
+
+
+def test_all_batches_returning_zero_items_is_reported_as_a_diagnostic(db_session, two_stores_with_users):
+    """Regression test: Ozon can return HTTP 200 with an empty items array
+    for every batch (no per-item error, no exception) — before this
+    diagnostic, that silently produced outcome.errors == [] and a SUCCESS
+    run reporting fetched=created=updated=0 with no explanation at all,
+    exactly the reported symptom. A genuinely empty result across the whole
+    run must be surfaced, not silently treated as a normal success."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = FakeOzonSellerClient([{"items": [], "total": 0, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.fetched == 0
+    assert outcome.created == 0
+    assert any("0 строк" in e for e in outcome.errors)
+
+
+def test_nonzero_result_is_not_flagged_as_the_all_empty_diagnostic(db_session, two_stores_with_users):
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = FakeOzonSellerClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.errors == []
