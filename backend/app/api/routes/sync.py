@@ -21,6 +21,7 @@ from app.services.audit import record_audit
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
+from app.services.product_merge import merge_duplicate_products, pick_survivor
 from app.services.search_query_details_sync_service import sync_search_query_details
 from app.services.ozon_performance.client import OzonPerformanceClient
 from app.services.ozon_performance.client import PerformanceCredentials as OzonPerfCredentials
@@ -254,7 +255,25 @@ def sync_ozon_products(
                 price = _to_decimal(item.price)
                 old_price = _to_decimal(item.old_price)
 
-                product = existing_by_product_id.get(item.id) or existing_by_sku.get(sku)
+                by_id = existing_by_product_id.get(item.id)
+                by_sku = existing_by_sku.get(sku)
+                product = by_id or by_sku
+                if by_id and by_sku and by_id.id != by_sku.id:
+                    # Same real-world product tracked under two rows — the
+                    # historic sku=0 duplicate-row bug (see
+                    # app.services.product_merge's module docstring: a
+                    # placeholder sku=0 row and a real-sku row for the same
+                    # offer_id/product_id, saved at different times). Merging
+                    # here, before the plain field assignment below, is what
+                    # avoids violating uq_product_store_sku (store_id,
+                    # ozon_sku) when `sku` gets written onto the survivor —
+                    # confirmed live for offer_id "мус/вед/бел1/3".
+                    keep, remove = pick_survivor(db, by_id, by_sku)
+                    removed_sku, removed_product_id = remove.ozon_sku, remove.ozon_product_id
+                    merge_duplicate_products(db, keep=keep, remove=remove)
+                    existing_by_sku.pop(removed_sku, None)
+                    existing_by_product_id.pop(removed_product_id, None)
+                    product = keep
                 if product:
                     product.ozon_sku = sku  # may correct a stale sku (e.g. 0 -> a newly assigned real sku)
                     product.ozon_product_id = item.id
@@ -340,6 +359,21 @@ def sync_ozon_products(
     except OzonAPIError as exc:
         run.status = SyncStatus.PARTIAL if created or updated else SyncStatus.FAILED
         error_message = str(exc)
+    except Exception as exc:
+        # Anything else — e.g. a duplicate-key IntegrityError not already
+        # prevented by product_merge — leaves this run's pending changes in
+        # an indeterminate state. Roll them back rather than risk a
+        # half-applied transaction; without this, the failed write would
+        # leave the session unusable (PendingRollbackError) for every
+        # statement below, including the very code that's supposed to mark
+        # this run FAILED — so the run would stay stuck "running" forever
+        # instead. created/updated are still reported as a diagnostic of
+        # how far the run got, even though rollback means none of it was
+        # actually persisted.
+        db.rollback()
+        run.status = SyncStatus.FAILED
+        error_message = f"Внутренняя ошибка: {exc}"
+        logger.exception("Товары: непредвиденная ошибка синхронизации каталога, store_id=%s", ctx.store_id)
 
     if skipped_invalid_sku:
         skip_note = (
@@ -356,18 +390,35 @@ def sync_ozon_products(
     run.items_created = created
     run.items_skipped_duplicate = updated  # "duplicates" here means products already known and refreshed
     run.error_message = error_message
-    db.flush()
-    record_audit(
-        db,
-        action="sync_finished",
-        user_id=user.id,
-        store_id=ctx.store_id,
-        target_type="sync_run",
-        target_id=run.id,
-        result="success" if run.status == SyncStatus.SUCCESS else "failure",
-        message=error_message,
-    )
-    db.commit()
+    try:
+        db.flush()
+        record_audit(
+            db,
+            action="sync_finished",
+            user_id=user.id,
+            store_id=ctx.store_id,
+            target_type="sync_run",
+            target_id=run.id,
+            result="success" if run.status == SyncStatus.SUCCESS else "failure",
+            message=error_message,
+        )
+        db.commit()
+    except Exception as exc:
+        # A failure right here (e.g. a still-unforeseen duplicate-key
+        # violation) must not leave `run` stuck at "running": roll back the
+        # broken transaction first — required before the session can be used
+        # again at all — then persist a FAILED status in a fresh one.
+        db.rollback()
+        logger.exception("Товары: не удалось сохранить результат синхронизации, store_id=%s", ctx.store_id)
+        run.status = SyncStatus.FAILED
+        run.finished_at = datetime.now(timezone.utc)
+        run.error_message = (
+            f"{error_message}; Не удалось сохранить результат синхронизации: {exc}"
+            if error_message
+            else f"Не удалось сохранить результат синхронизации: {exc}"
+        )
+        db.flush()
+        db.commit()
     return _serialize(run)
 
 
@@ -491,28 +542,44 @@ def _run_advertising_daily_statistics_sync(
                 SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
             )
         except OzonPerformanceAuthError as exc:
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = str(exc)
         except OzonPerformanceAPIError as exc:
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = str(exc)
         except Exception as exc:  # a SyncRun must never be left stuck "running" forever
+            # sync_advertising_daily_statistics() commits per batch inside
+            # itself — if that commit fails, the session is left in a
+            # "pending rollback" state, and every statement below (including
+            # the one meant to record this failure) would itself raise
+            # PendingRollbackError instead of a clean FAILED status.
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = f"Внутренняя ошибка: {exc}"
             logger.exception("Реклама: непредвиденная ошибка автосинхронизации статистики, store_id=%s", store_id)
 
         run.finished_at = datetime.now(timezone.utc)
         run.error_message = error_message
-        record_audit(
-            db,
-            action="sync_finished",
-            store_id=store_id,
-            target_type="sync_run",
-            target_id=run.id,
-            result="success" if run.status == SyncStatus.SUCCESS else "failure",
-            message=error_message,
-        )
-        db.commit()
+        try:
+            record_audit(
+                db,
+                action="sync_finished",
+                store_id=store_id,
+                target_type="sync_run",
+                target_id=run.id,
+                result="success" if run.status == SyncStatus.SUCCESS else "failure",
+                message=error_message,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Реклама: не удалось сохранить результат синхронизации, store_id=%s", store_id)
+            run.status = SyncStatus.FAILED
+            run.error_message = error_message
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
     finally:
         db.close()
 
@@ -587,28 +654,45 @@ def _run_search_query_details_sync(
                 SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
             )
         except OzonAuthError as exc:
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = str(exc)
         except OzonAPIError as exc:
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = str(exc)
         except Exception as exc:  # a SyncRun must never be left stuck "running" forever
+            # sync_search_query_details() commits after every batch inside
+            # itself — if that commit fails (e.g. a duplicate-key
+            # IntegrityError), the session is left in a "pending rollback"
+            # state, and every statement below — including the one meant to
+            # record this very failure — would itself raise
+            # PendingRollbackError instead of a clean FAILED status.
+            db.rollback()
             run.status = SyncStatus.FAILED
             error_message = f"Внутренняя ошибка: {exc}"
             logger.exception("Позиции в поиске: непредвиденная ошибка автосинхронизации статистики, store_id=%s", store_id)
 
         run.finished_at = datetime.now(timezone.utc)
         run.error_message = error_message
-        record_audit(
-            db,
-            action="sync_finished",
-            store_id=store_id,
-            target_type="sync_run",
-            target_id=run.id,
-            result="success" if run.status == SyncStatus.SUCCESS else "failure",
-            message=error_message,
-        )
-        db.commit()
+        try:
+            record_audit(
+                db,
+                action="sync_finished",
+                store_id=store_id,
+                target_type="sync_run",
+                target_id=run.id,
+                result="success" if run.status == SyncStatus.SUCCESS else "failure",
+                message=error_message,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Позиции в поиске: не удалось сохранить результат синхронизации, store_id=%s", store_id)
+            run.status = SyncStatus.FAILED
+            run.error_message = error_message
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
     finally:
         db.close()
 

@@ -158,6 +158,54 @@ def test_zero_sku_product_is_resolved_via_offer_id_before_sync(db_session, two_s
     assert product.ozon_sku == "5716615794"  # corrected in place, benefiting the wider catalog too
 
 
+def test_zero_sku_resolution_merges_conflicting_existing_product(db_session, two_stores_with_users):
+    """Regression test for a real production crash: a stale ozon_sku="0"
+    placeholder product and a SEPARATE row that already holds the resolved
+    real sku can both exist for the same product — the historic sku=0
+    duplicate-row bug (see app.services.product_merge's module docstring).
+    Writing the resolved sku straight onto the placeholder would collide
+    with the other row under uq_product_store_sku (confirmed live for
+    offer_id "мус/вед/бел1/3", sku 5716615794) — this must merge the two
+    rows (including reassigning the placeholder's own history) instead of
+    crashing."""
+    d = two_stores_with_users
+    offer_id = "мус/вед/бел1/3"
+    real_sku = 5716615794
+
+    placeholder = _make_product(db_session, d["store_a"].id, "0", name="Плейсхолдер", offer_id=offer_id)
+    real_row = _make_product(
+        db_session, d["store_a"].id, str(real_sku),
+        name="Мусорное ведро для кухни и туалета с крышкой 11 л",
+    )
+    # Attached to the LOSING row (invalid sku always loses — see
+    # product_merge.pick_survivor) to prove the merge reassigns it rather
+    # than discarding it.
+    old_stat = SearchQueryStatistic(
+        store_id=d["store_a"].id, ozon_sku="старый-ключ", query_text="старый запрос",
+        period_start=date(2026, 7, 1), period_end=date(2026, 7, 31),
+        source="manual_upload", product_id=placeholder.id,
+    )
+    db_session.add(old_stat)
+    db_session.commit()
+
+    resolved_item = {**_SAMPLE_ITEM, "sku": real_sku}
+    client = FakeOzonSellerClient(
+        responses=[{"items": [resolved_item], "total": 1, "page_count": 1}],
+        offer_id_lookup_responses=[[{"offer_id": offer_id, "sku": real_sku}]],
+    )
+
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.errors == []
+    assert client.calls[0]["skus"] == [str(real_sku)]  # deduplicated, not sent twice
+
+    db_session.expire_all()
+    assert db_session.query(Product).filter(Product.store_id == d["store_a"].id).count() == 1
+    assert db_session.get(SearchQueryStatistic, old_stat.id).product_id == real_row.id
+
+
 def test_zero_sku_product_without_offer_id_is_not_retried(db_session, two_stores_with_users):
     """No offer_id means nothing to retry with — must be reported immediately,
     without attempting a lookup call."""

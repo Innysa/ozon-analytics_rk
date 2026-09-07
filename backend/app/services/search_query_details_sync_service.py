@@ -97,6 +97,7 @@ from app.models.product import Product
 from app.models.search_query_statistic import SearchQueryStatistic
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError
+from app.services.product_merge import merge_duplicate_products, pick_survivor
 
 _SOURCE = "ozon_seller_api"
 
@@ -118,7 +119,7 @@ def _batched(items: list[str], size: int) -> list[list[str]]:
 
 
 def _resolve_zero_sku_products(
-    client: OzonSellerClient, invalid_products: list[Product]
+    db: Session, store_id: str, client: OzonSellerClient, invalid_products: list[Product]
 ) -> tuple[list[Product], list[Product]]:
     """Same fallback as app.api.routes.sync's sync_ozon_products: a product
     queried by product_id can come back with sku=0 ("no SKU assigned yet")
@@ -131,9 +132,18 @@ def _resolve_zero_sku_products(
     skipped by this sync forever. Only the zero-sku subset is retried, so a
     normal run with a clean catalog isn't slowed down by it.
 
-    Returns (resolved, still_invalid). Each resolved Product has its
-    ozon_sku corrected in place (not yet flushed/committed — the caller owns
-    that) so the corrected catalog also benefits, not just this one sync."""
+    A resolved sku can collide with a SEPARATE Product row that already
+    holds it (the historic sku=0 duplicate-row bug — see
+    app.services.product_merge's module docstring) — writing it onto the
+    placeholder unchanged would violate uq_product_store_sku, exactly the
+    IntegrityError seen live for this same offer_id. Detected and merged via
+    product_merge before the write, same as sync_ozon_products.
+
+    Returns (resolved, still_invalid). Each resolved Product (either the
+    corrected placeholder, or the pre-existing row it was merged into) has
+    the confirmed real ozon_sku set in place (not yet flushed/committed —
+    the caller owns that) so the corrected catalog also benefits, not just
+    this one sync."""
     retryable = [p for p in invalid_products if p.offer_id]
     still_invalid = [p for p in invalid_products if not p.offer_id]
     if not retryable:
@@ -154,11 +164,22 @@ def _resolve_zero_sku_products(
     resolved: list[Product] = []
     for product in retryable:
         real_sku = resolved_by_offer_id.get(product.offer_id)
-        if real_sku:
-            product.ozon_sku = real_sku
-            resolved.append(product)
-        else:
+        if not real_sku:
             still_invalid.append(product)
+            continue
+
+        conflicting = (
+            db.query(Product)
+            .filter(Product.store_id == store_id, Product.ozon_sku == real_sku, Product.id != product.id)
+            .first()
+        )
+        survivor = product
+        if conflicting:
+            keep, remove = pick_survivor(db, product, conflicting)
+            merge_duplicate_products(db, keep=keep, remove=remove)
+            survivor = keep
+        survivor.ozon_sku = real_sku
+        resolved.append(survivor)
     return resolved, still_invalid
 
 
@@ -241,7 +262,7 @@ def sync_search_query_details(
     valid_products = [p for p in products if _is_positive_sku(p.ozon_sku)]
     invalid_products = [p for p in products if not _is_positive_sku(p.ozon_sku)]
     if invalid_products:
-        resolved, invalid_products = _resolve_zero_sku_products(client, invalid_products)
+        resolved, invalid_products = _resolve_zero_sku_products(db, store_id, client, invalid_products)
         if resolved:
             db.flush()  # persist corrected ozon_sku so it's usable below and in the wider catalog
             valid_products.extend(resolved)

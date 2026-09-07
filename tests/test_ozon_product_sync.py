@@ -397,3 +397,140 @@ def test_sku_still_zero_after_offer_id_fallback_is_skipped(client, two_stores_wi
 
     products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
     assert len(products) == 0
+
+
+def test_duplicate_rows_for_same_product_are_merged_on_conflict(client, two_stores_with_users, monkeypatch, db_session):
+    """Regression test for a real production crash: a stale ozon_sku="0"
+    placeholder row (matched by product_id) and a SEPARATE row that already
+    holds the real sku (matched by sku) can both exist for the same product —
+    the historic sku=0 duplicate-row bug (see app.services.product_merge's
+    module docstring). Correcting the placeholder's sku in place used to
+    collide with the other row under uq_product_store_sku, crashing with
+    psycopg.errors.UniqueViolation (confirmed live for offer_id
+    "мус/вед/бел1/3", real sku 5716615794). Syncing must merge the two rows
+    instead — including reassigning the placeholder's own related data (e.g.
+    a review) onto the surviving row — not crash."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    from app.models.product import Product
+    from app.models.review import Review, ReviewSource, ReviewStatus
+
+    offer_id = "мус/вед/бел1/3"
+    real_sku = 5716615794
+    product_id = 111222333
+
+    placeholder = Product(
+        store_id=d["store_a"].id, ozon_sku="0", ozon_product_id=product_id,
+        offer_id=offer_id, name="Мусорное ведро (плейсхолдер)",
+    )
+    real_row = Product(
+        store_id=d["store_a"].id, ozon_sku=str(real_sku),
+        name="Мусорное ведро для кухни и туалета с крышкой 11 л",
+    )
+    db_session.add_all([placeholder, real_row])
+    db_session.flush()
+    # Attached to the LOSING row (invalid sku always loses — see
+    # pick_survivor) to prove the merge reassigns related data rather than
+    # discarding it when the placeholder happens to carry history.
+    review = Review(
+        store_id=d["store_a"].id, product_id=placeholder.id, ozon_review_id="rev-1",
+        source=ReviewSource.OZON_API, rating=5, status=ReviewStatus.NEW,
+    )
+    db_session.add(review)
+    db_session.commit()
+
+    list_payload = {
+        "result": {
+            "items": [
+                {
+                    "product_id": product_id, "offer_id": offer_id, "has_fbo_stocks": False,
+                    "has_fbs_stocks": False, "archived": False, "is_discounted": False, "quants": [],
+                    "sku": real_sku,
+                }
+            ],
+            "total": 1, "last_id": "",
+        }
+    }
+    info_payload = {
+        "items": [
+            {
+                "id": product_id, "name": "Мусорное ведро для кухни и туалета с крышкой 11 л",
+                "offer_id": offer_id, "is_archived": False, "price": "990.00", "old_price": "1200.00",
+                "currency_code": "RUB", "primary_image": [], "stocks": {"has_stock": False, "stocks": []},
+                "sku": real_sku,
+            }
+        ]
+    }
+    list_response = OzonProductListResponse.model_validate(list_payload)
+    info_response = OzonProductInfoListResponse.model_validate(info_payload)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.return_value = list_response
+        fake.get_products_info.return_value = info_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "success"  # must not crash or get stuck running
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 1  # the two duplicate rows were merged into one
+    assert products[0]["ozon_sku"] == str(real_sku)
+    surviving_id = products[0]["id"]
+
+    db_session.expire_all()
+    assert db_session.query(Product).count() == 1
+    assert db_session.query(Review).filter(Review.ozon_review_id == "rev-1").one().product_id == surviving_id
+
+
+def test_final_commit_failure_leaves_run_failed_not_stuck_running(client, two_stores_with_users, monkeypatch, db_session):
+    """Regression test for the other half of the reported production bug:
+    a SyncRun must never be left at status="running" forever, and no
+    PendingRollbackError should leak out of the request, if persisting the
+    run's final status fails for any reason (this used to happen for
+    exactly the uq_product_store_sku violation the other tests in this
+    module now prevent at the source, but this test covers the finalize
+    step's own safety net regardless of cause)."""
+    d = two_stores_with_users
+    login(client, "owner_a@example.com", "password123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    empty_list_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.return_value = empty_list_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    real_commit = db_session.commit
+    calls = {"n": 0}
+
+    def flaky_commit():
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1st = the "sync_started" commit; this is the finalize commit
+            raise Exception("duplicate key value violates unique constraint \"uq_product_store_sku\"")
+        return real_commit()
+
+    monkeypatch.setattr(db_session, "commit", flaky_commit)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert "результат синхронизации" in body["error_message"]
+
+    runs = client.get(f"/api/stores/{d['store_a'].id}/sync/runs").json()
+    assert runs[0]["status"] == "failed"  # not stuck "running"
