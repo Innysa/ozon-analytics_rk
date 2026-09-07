@@ -20,6 +20,14 @@ Usage (inside the running container):
     docker compose exec app python backend/scripts/debug_search_query_details.py \\
         --store-id <id> --date-from 2026-06-01 --date-to 2026-08-31 --sku 5716615794
 
+    # test one specific product by offer_id (looks up its stored ozon_sku in
+    # the DB and prints it for cross-checking against a manually-known-good
+    # sku from Ozon's own cabinet export — a mismatch here, not the API
+    # request itself, is the single most likely reason a sku that has real
+    # data in a manual XLSX export still comes back empty from this app):
+    docker compose exec app python backend/scripts/debug_search_query_details.py \\
+        --store-id <id> --offer-id "пол/обув/4/чер.дер/2" --date-from 2026-08-09 --date-to 2026-09-05
+
 Prints, per batch: the exact date_from/date_to/skus/limit_by_sku/page_size
 sent, then Ozon's complete raw JSON response.
 """
@@ -49,6 +57,7 @@ def main() -> None:
     parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — как в реальном автосборе")
     parser.add_argument("--date-to", default=None, help="ГГГГ-ММ-ДД, по умолчанию — как в реальном автосборе")
     parser.add_argument("--sku", action="append", default=None, help="Конкретный SKU (можно повторить); по умолчанию — все товары магазина")
+    parser.add_argument("--offer-id", default=None, help="Найти товар по offer_id в БД и использовать его сохранённый ozon_sku (для сверки с ручным экспортом)")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -62,7 +71,23 @@ def main() -> None:
         api_key = decrypt_secret(creds.api_key_encrypted)
         print(f"Client-Id: {client_id}")
 
-        if args.sku:
+        if args.offer_id:
+            product = db.query(Product).filter(Product.store_id == args.store_id, Product.offer_id == args.offer_id).first()
+            if not product:
+                print(f"В БД этого магазина НЕТ товара с offer_id={args.offer_id!r} — сверить не с чем.")
+                return
+            print(
+                f"Найден в БД по offer_id={args.offer_id!r}: id={product.id}, "
+                f"ozon_sku={product.ozon_sku!r}, ozon_product_id={product.ozon_product_id!r}, "
+                f"name={product.name!r}, is_archived={product.is_archived} "
+                f"-- СВЕРЬТЕ ozon_sku с колонкой SKU в ручном XLSX-экспорте Ozon для этого же товара; "
+                f"расхождение здесь и есть причина 0 строк, а не сам API-запрос."
+            )
+            skus = [product.ozon_sku] if product.ozon_sku and product.ozon_sku != "0" else []
+            if not skus:
+                print("У найденного товара нет валидного ozon_sku (0/пусто) — синхронизируйте каталог (POST /sync/ozon-products) сначала.")
+                return
+        elif args.sku:
             skus = args.sku
         else:
             products = (
@@ -72,7 +97,7 @@ def main() -> None:
             )
             skus = [p.ozon_sku for p in products if p.ozon_sku and p.ozon_sku != "0"]
         if not skus:
-            print("Нет товаров с валидным SKU для этого магазина (и --sku не передан).")
+            print("Нет товаров с валидным SKU для этого магазина (и --sku/--offer-id не переданы).")
             return
         print(f"SKU ({len(skus)}): {skus}")
 
