@@ -59,7 +59,13 @@ is blocked, so the contract was verified externally, not by this process):
 Both methods return the raw parsed JSON dict rather than a validated
 schema — the response shape (item field names, `total`/`page_count`) is
 confirmed by the manual test, but not exhaustively enough to justify a
-pydantic model yet.
+pydantic model yet. For get_product_query_details() specifically, a
+verbatim raw response from a real account confirmed the per-row array is
+under the top-level key "queries", NOT "items" — the response also always
+includes a separate "items": [] field that is never the real data (see
+app.services.search_query_details_sync_service._extract_query_rows, which
+is what actually parses this). get_product_queries()'s own response shape
+has not been separately re-verified against this finding.
 
 Every request carries the target store's own Client-Id / Api-Key headers —
 callers must never share credentials across stores.

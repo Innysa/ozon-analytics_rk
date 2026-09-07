@@ -643,3 +643,59 @@ def test_persistent_rate_limit_during_per_sku_retry_is_reported_distinctly(db_se
 
     rows = {r.ozon_sku for r in db_session.query(SearchQueryStatistic).filter(SearchQueryStatistic.store_id == d["store_a"].id)}
     assert rows == {"111", "333"}
+
+
+def test_rows_are_read_from_the_confirmed_real_queries_key(db_session, two_stores_with_users):
+    """THE actual root cause of "получено 0, создано 0, обновлено 0" on
+    every run, found only after batching/rate-limiting/date-range had
+    already been ruled out: a verbatim raw response from a real account
+    proved Ozon's real shape wraps the per-row data in "queries", not
+    "items" — "items" is a separate field that is ALWAYS an empty list.
+    This is the exact shape (trimmed) from that raw response."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    real_shape_response = {
+        "analytics_period": {"date_from": "2026-08-09 00:00:00 +0000 UTC", "date_to": "2026-09-05 23:59:59 +0000 UTC"},
+        "queries": [
+            {
+                "sku": 2953864771, "currency": "RUB", "gmv": 70950.84, "order_count": 20,
+                "position": 82, "query": "обувница", "view_conversion": 3.11,
+                "query_index": 1, "unique_search_users": 191276, "unique_view_users": 24000,
+            },
+        ],
+        "total": 30,
+        "page_count": 1,
+        "items": [],  # confirmed live: always empty, never the real data
+    }
+    client = FakeOzonSellerClient([real_shape_response])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.fetched == 1
+    assert outcome.created == 1
+    assert outcome.errors == []
+
+    row = db_session.query(SearchQueryStatistic).filter(SearchQueryStatistic.store_id == d["store_a"].id).one()
+    assert row.ozon_sku == "2953864771"
+    assert row.query_text == "обувница"
+    assert float(row.position_ozon) == 82
+
+
+def test_response_with_queries_empty_and_items_empty_is_reported_as_all_zero(db_session, two_stores_with_users):
+    """A genuinely empty result in the confirmed real shape (queries: [],
+    items: []) must still trigger the existing "0 rows, HTTP 200"
+    diagnostic — the fix for the wrong-key bug must not accidentally
+    suppress this legitimate case."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = FakeOzonSellerClient([{"analytics_period": {}, "queries": [], "total": 0, "page_count": 1, "items": []}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.fetched == 0
+    assert outcome.created == 0
+    assert any("0 строк" in e for e in outcome.errors)

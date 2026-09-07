@@ -100,6 +100,28 @@ app.services.ozon.client's own module docstring for the full write-up):
       "no data") rather than folding it into a generic error — a plain
       re-run later should recover it.
 
+  3d. THE ACTUAL ROOT CAUSE of "получено 0, создано 0, обновлено 0" on
+      every run, found only after 3b/3c had already been fixed and the
+      symptom still didn't go away: a verbatim raw response finally proved
+      Ozon's real shape is
+
+          {"analytics_period": {"date_from": ..., "date_to": ...},
+           "queries": [{"sku": ..., "query": ..., "position": ..., ...}, ...],
+           "total": N, "page_count": N, "items": []}
+
+      — the per-row data is under "queries". "items" is a separate field
+      that is ALWAYS an empty list; it is not a truncated or paginated
+      view of the same data, just an always-empty field this endpoint
+      apparently always includes. Every parsing point in this module used
+      to read only "items" (an assumption inherited from other Ozon list
+      endpoints' shape, never actually verified against this endpoint's own
+      raw bytes) — meaning fetched/created/updated stayed 0 regardless of
+      batching, rate limits, or date range, since none of those fixes
+      touched the one line that was reading the wrong field. See
+      _extract_query_rows, used everywhere this module reads response rows
+      (it also still checks "items" as a fallback, in case Ozon's shape
+      ever changes again — but "queries" is the confirmed-live key).
+
   4. Whether Ozon allows only 1 request in flight per account at a time (as
      is confirmed for the unrelated Performance API statistics-report flow)
      is NOT confirmed for this endpoint. Batches are still processed
@@ -244,6 +266,25 @@ def _resolve_zero_sku_products(
     return resolved, still_invalid
 
 
+def _extract_query_rows(data: dict) -> list[dict]:
+    """CONFIRMED LIVE (a verbatim raw response, not a guess): Ozon's real
+    response shape for /v1/analytics/product-queries/details is
+
+        {"analytics_period": {...}, "queries": [...], "total": N,
+         "page_count": N, "items": []}
+
+    — the per-row data is under "queries"; "items" is a SEPARATE field that
+    is always an empty list (vestigial, or meant for a different response
+    shape this endpoint doesn't currently use). Every previous fix in this
+    module's history that assumed "items" held the rows was reading that
+    always-empty field, which is why the sync kept reporting 0 rows even
+    once every other suspected cause (batching, rate limits, date range)
+    was ruled out. "items" is kept as a fallback, not removed, in case Ozon
+    ever changes the shape back or this varies by account/API version — but
+    "queries" is the confirmed-real key and is checked first."""
+    return data.get("queries") or data.get("items") or []
+
+
 def _is_period_rejected_error(exc: OzonAPIError) -> bool:
     """Ozon's specific InvalidArgument rejection of the requested date range
     itself (gRPC code 3, from the internal getPremiumAnalyticsPeriod RPC) —
@@ -342,7 +383,7 @@ def _retry_empty_batch_per_sku(
     batch individually (same dates/limits) and merge whatever comes back.
     A no-op if the group response already had rows, or the batch was only
     ever 1 SKU (nothing left to split)."""
-    if (data.get("items") or []) or len(sku_batch) <= 1:
+    if _extract_query_rows(data) or len(sku_batch) <= 1:
         return data
 
     logger.warning(
@@ -379,7 +420,7 @@ def _retry_empty_batch_per_sku(
         except OzonAPIError as exc:
             errors.append(f"Батч {batch_num}, SKU {sku} (повтор по одному после пустого группового ответа): {exc}")
             continue
-        single_items = single.get("items") or []
+        single_items = _extract_query_rows(single)
         logger.warning(
             "Позиции в поиске: батч %d, SKU %s по отдельности -> %d items",
             batch_num, sku, len(single_items),
@@ -387,7 +428,7 @@ def _retry_empty_batch_per_sku(
         merged_items.extend(single_items)
 
     merged = dict(data)
-    merged["items"] = merged_items
+    merged["queries"] = merged_items
     return merged
 
 
@@ -557,13 +598,14 @@ def sync_search_query_details(
     }
 
     def _process_batch(batch_num: int, sku_batch: list[str], data: dict) -> None:
-        # TEMPORARY diagnostic logging (see task: "получено 0, создано 0,
-        # обновлено 0" on every batch despite HTTP 200) — logs Ozon's raw
-        # response so a live run can show whether Ozon is genuinely
-        # returning an empty items array, or a differently-shaped body this
-        # parsing code doesn't recognize. Remove once the root cause here is
-        # confirmed and fixed.
-        items = data.get("items") or []
+        # Diagnostic logging kept from the investigation that found the real
+        # root cause of "получено 0, создано 0, обновлено 0" on every batch
+        # despite HTTP 200: Ozon's real response puts the rows under
+        # "queries", not "items" ("items" is a separate, always-empty field
+        # — see _extract_query_rows). Left in place (not removed now that
+        # the cause is fixed) since it's still useful if Ozon's shape ever
+        # changes again.
+        items = _extract_query_rows(data)
         if not items:
             # Full raw body — safe to log in full here (no per-row PII/
             # financial data to worry about when there are no rows).
