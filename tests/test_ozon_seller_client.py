@@ -2,9 +2,11 @@
 call. Regression coverage for a bug found on a real deployment: Ozon rejects
 review/list with limit=1 ("value must be inside range [20, 100]"), so the
 lightweight check_connection() probe must use a value Ozon actually accepts."""
+import time
 from unittest.mock import MagicMock
 
 from app.services.ozon.client import OzonCredentials, OzonSellerClient
+from app.services.ozon.exceptions import OzonRateLimited
 
 
 def _mock_post(status_code: int, json_body: dict):
@@ -106,3 +108,45 @@ def test_get_product_queries_reports_feature_unavailable_on_404():
         assert False, "expected OzonFeatureUnavailable"
     except OzonFeatureUnavailable:
         pass
+
+
+def test_post_retries_on_429_and_succeeds_once_ozon_stops_limiting(monkeypatch):
+    """Regression test for a real production finding: the search-query-
+    details sync's per-SKU fallback (see
+    app.services.search_query_details_sync_service) fires many individual
+    requests in a row when a grouped batch comes back empty, and Ozon starts
+    returning 429 mid-burst. _post()'s own retry (tenacity, exponential
+    backoff) must transparently ride this out rather than surface a 429 to
+    the caller on the first hit."""
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)  # skip the real 1/2/4/8s waits in tests
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        side_effect=[
+            _mock_post(429, {"message": "too many requests"}),
+            _mock_post(429, {"message": "too many requests"}),
+            _mock_post(200, {"reviews": [], "has_next": False}),
+        ]
+    )
+
+    result = client.check_connection()
+
+    assert result["ok"] is True
+    assert client._client.post.call_count == 3
+
+
+def test_post_gives_up_after_max_attempts_on_persistent_429(monkeypatch):
+    """If Ozon keeps rate-limiting past every retry attempt, _post() must
+    eventually give up and raise OzonRateLimited rather than retry forever —
+    bumped from 3 to 5 attempts (4 waits: 1, 2, 4, 8s) after 3 was confirmed
+    too impatient live for the per-SKU fallback's request burst."""
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(429, {"message": "too many requests"}))
+
+    try:
+        client._post("/v1/review/list", {"limit": 20})
+        assert False, "expected OzonRateLimited"
+    except OzonRateLimited:
+        pass
+
+    assert client._client.post.call_count == 5

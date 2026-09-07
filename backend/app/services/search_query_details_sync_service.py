@@ -87,6 +87,19 @@ app.services.ozon.client's own module docstring for the full write-up):
       SKU limit is 1, or the grouped response is just unreliable for some
       other undocumented reason.
 
+  3c. CONFIRMED LIVE as a direct consequence of 3b: firing many individual
+      per-SKU requests in a row (whenever grouped batches keep coming back
+      empty) can trigger Ozon's rate limiting (429 Too Many Requests)
+      mid-burst. app.services.ozon.client.OzonSellerClient._post() already
+      retries any 429 with exponential backoff (bumped from 3 to 5 attempts
+      — 4 waits of 1, 2, 4, 8s — after 3 was confirmed too impatient for
+      this specific burst pattern), so a transient 429 is invisible to this
+      module in the common case. If Ozon is STILL rate-limiting after all of
+      that, _retry_empty_batch_per_sku reports that specific SKU as
+      uncollected for THIS run with a distinct message (rate-limited, not
+      "no data") rather than folding it into a generic error — a plain
+      re-run later should recover it.
+
   4. Whether Ozon allows only 1 request in flight per account at a time (as
      is confirmed for the unrelated Performance API statistics-report flow)
      is NOT confirmed for this endpoint. Batches are still processed
@@ -142,7 +155,7 @@ from app.core.config import get_settings
 from app.models.product import Product
 from app.models.search_query_statistic import SearchQueryStatistic
 from app.services.ozon.client import OzonSellerClient
-from app.services.ozon.exceptions import OzonAPIError
+from app.services.ozon.exceptions import OzonAPIError, OzonRateLimited
 from app.services.product_merge import merge_duplicate_products, pick_survivor
 
 logger = logging.getLogger(__name__)
@@ -349,6 +362,20 @@ def _retry_empty_batch_per_sku(
                 limit_by_sku=limit_by_sku,
                 page_size=page_size,
             )
+        except OzonRateLimited as exc:
+            # OzonSellerClient._post() already retries a 429 internally with
+            # exponential backoff (currently 4 waits: 1, 2, 4, 8s) before
+            # ever raising this — reaching here means Ozon kept rate-limiting
+            # through all of that, confirmed live during a burst of many
+            # single-SKU fallback requests in a row. Worth its own message:
+            # this SKU is uncollected for RATE-LIMITING, not because it
+            # genuinely has no data — a plain re-run later should recover it.
+            errors.append(
+                f"Батч {batch_num}, SKU {sku}: Ozon продолжает отвечать 429 Too Many Requests даже после "
+                f"повторов с задержкой — этот SKU не собран в этом запуске из-за ограничения скорости "
+                f"Ozon (не из-за отсутствия данных). Повторите синхронизацию позже."
+            )
+            continue
         except OzonAPIError as exc:
             errors.append(f"Батч {batch_num}, SKU {sku} (повтор по одному после пустого группового ответа): {exc}")
             continue

@@ -125,7 +125,15 @@ class OzonSellerClient:
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(3),
+        # 5 attempts -> 4 waits of 1, 2, 4, 8s (wait_exponential caps at
+        # max=8) before finally giving up — bumped up from 3 (only 2 waits,
+        # ~3s total) after this was confirmed too impatient live: the
+        # search-query-details sync's per-SKU fallback retry (see
+        # app.services.search_query_details_sync_service) fires many
+        # individual requests in a row when a grouped batch comes back
+        # empty, and Ozon started rate-limiting mid-burst with 3 attempts'
+        # worth of patience not being enough to ride it out.
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=1, max=8),
         retry=retry_if_exception_type(OzonRateLimited),
     )

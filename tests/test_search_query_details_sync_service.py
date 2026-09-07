@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from app.models.product import Product
 from app.models.search_query_statistic import SearchQueryStatistic
-from app.services.ozon.exceptions import OzonAPIError
+from app.services.ozon.exceptions import OzonAPIError, OzonRateLimited
 from app.services.search_query_details_sync_service import sync_search_query_details
 
 _SAMPLE_ITEM = {
@@ -110,6 +110,30 @@ class GroupVsSingleClient:
         if len(skus) != 1:
             return {"items": [], "total": 0, "page_count": 1}
         sku = skus[0]
+        item = {**_SAMPLE_ITEM, "sku": int(sku), "query": f"запрос-{sku}"}
+        return {"items": [item], "total": 1, "page_count": 1}
+
+
+class GroupEmptyWithPersistentRateLimitClient:
+    """Simulates a real production follow-on to GroupVsSingleClient: the
+    grouped batch comes back empty (triggering the per-SKU fallback), and
+    while retrying individually most SKUs succeed, but Ozon keeps returning
+    429 for one specific SKU even after OzonSellerClient._post()'s own
+    internal retry/backoff would have already been exhausted (simulated
+    here by raising OzonRateLimited directly, as if _post already gave up)."""
+
+    def __init__(self, rate_limited_sku: str):
+        self.rate_limited_sku = rate_limited_sku
+        self.calls: list[list[str]] = []
+
+    def get_product_query_details(self, *, date_from, date_to, skus=None, limit_by_sku=15, page_size=100):
+        skus = list(skus or [])
+        self.calls.append(skus)
+        if len(skus) != 1:
+            return {"items": [], "total": 0, "page_count": 1}
+        sku = skus[0]
+        if sku == self.rate_limited_sku:
+            raise OzonRateLimited("Ozon вернул 429 Too Many Requests")
         item = {**_SAMPLE_ITEM, "sku": int(sku), "query": f"запрос-{sku}"}
         return {"items": [item], "total": 1, "page_count": 1}
 
@@ -585,3 +609,37 @@ def test_per_sku_retry_still_empty_falls_through_to_the_all_zero_diagnostic(db_s
     assert len(client.calls) == 3  # 1 group attempt + 2 individual retries
     assert outcome.created == 0
     assert any("0 строк" in e for e in outcome.errors)
+
+
+def test_persistent_rate_limit_during_per_sku_retry_is_reported_distinctly(db_session, two_stores_with_users, monkeypatch):
+    """Regression test for a real production finding: firing many
+    individual per-SKU requests in a row (the fallback above) can trigger
+    Ozon's rate limiting (429) mid-burst. OzonSellerClient._post() already
+    retries a 429 internally with backoff — if Ozon is STILL rate-limiting
+    after that (simulated here by the fake client raising OzonRateLimited
+    directly), the affected SKU must be reported as uncollected for THIS
+    run specifically because of rate-limiting, not folded into a generic
+    error or mistaken for "no data" — and every other SKU in the batch must
+    still be collected normally."""
+    from app.core import config as config_module
+    config_module.get_settings.cache_clear()
+    monkeypatch.setenv("SEARCH_QUERY_STATS_SKU_BATCH_SIZE", "3")
+    config_module.get_settings.cache_clear()
+
+    d = two_stores_with_users
+    for sku in ["111", "2953864771", "333"]:
+        _make_product(db_session, d["store_a"].id, sku)
+
+    client = GroupEmptyWithPersistentRateLimitClient(rate_limited_sku="2953864771")
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    config_module.get_settings.cache_clear()
+
+    assert outcome.created == 2  # "111" and "333" still collected
+    assert any("429" in e and "2953864771" in e for e in outcome.errors)
+    assert any("ограничения скорости" in e for e in outcome.errors)
+
+    rows = {r.ozon_sku for r in db_session.query(SearchQueryStatistic).filter(SearchQueryStatistic.store_id == d["store_a"].id)}
+    assert rows == {"111", "333"}
