@@ -26,16 +26,29 @@ app.services.ozon.client's own module docstring for the full write-up):
 
   1c. Ozon ALSO rejects a date range it considers too long/too far in the
       past — with the exact SAME error text as 1b — confirmed live: a
-      30-day window ending 2 days ago succeeded, but an explicit 92-day
-      window ending 7 days ago (2026-06-01..2026-08-31, requested to debug
-      why the automatic sync kept reporting fetched=created=updated=0) was
-      rejected outright as an InvalidArgument, not just returned empty. The
-      exact allowed bound is NOT documented anywhere this app can reach
-      (docs.ozon.ru/dev.ozon.ru/seller-edu.ozon.ru are all network-blocked
-      from this environment; public web search surfaces only "Premium/
-      Premium Plus get a longer period", no day count) and plausibly varies
-      by account tier anyway. Rather than hardcode a guessed number, this
-      module discovers the actual accepted window empirically per run (see
+      30-day window ending 2 days ago succeeded (HTTP 200, just happened to
+      have no rows for the account tested), but an explicit 92-day window
+      ending 7 days ago (2026-06-01..2026-08-31, requested to debug why the
+      automatic sync kept reporting fetched=created=updated=0) was rejected
+      outright as an InvalidArgument, not just returned empty.
+
+      CONFIRMED (Ozon Seller's own in-app "База знаний" help widget, on the
+      "Поисковые запросы" analytics page — this app's own network can't
+      reach docs.ozon.ru/dev.ozon.ru/seller-edu.ozon.ru at all, so this came
+      from a screenshot, not a fetch): with Premium Plus, the seller can
+      "Выбрать период для показа статистики — последние 28 дней или
+      календарный месяц в течение последнего года". settings.
+      SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS is set to this confirmed
+      28-day figure. A specific past calendar month is a separately allowed
+      period *shape* this module doesn't request (it only ever asks for a
+      rolling N-day window ending near "today").
+
+      Not fully closed, though: the UI's documented preset and the API's
+      own enforced boundary need not be identical (30 days apparently still
+      fit above), and an account without Premium Plus may have a smaller,
+      undocumented allowance. As a defensive fallback for both cases, this
+      module ALSO discovers the actual accepted window empirically per run
+      when the confirmed default still gets rejected (see
       _fetch_with_period_shrink): it keeps date_to fixed and halves the span
       until Ozon accepts it or settings.SEARCH_QUERY_STATS_MIN_PERIOD_DAYS is
       reached, and records in SyncOutcome.errors whichever spans were

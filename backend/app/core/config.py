@@ -80,7 +80,15 @@ class Settings(BaseSettings):
     SEARCH_QUERY_STATS_SKU_BATCH_SIZE: int = 6
     SEARCH_QUERY_STATS_LIMIT_BY_SKU: int = 15
     SEARCH_QUERY_STATS_PAGE_SIZE: int = 100
-    SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    # CONFIRMED (Ozon Seller's own in-app "База знаний" help widget, on the
+    # "Поисковые запросы" analytics page): with a Premium Plus subscription
+    # the seller can "Выбрать период для показа статистики — последние 28
+    # дней или календарный месяц в течение последнего года" — i.e. the
+    # rolling-window option this app uses is capped at 28 days (a specific
+    # past calendar month is a separately allowed shape this app doesn't
+    # request). This matches the empirical finding below: a 30-day window
+    # succeeded, a 92-day one didn't — the true boundary sits at 28.
+    SEARCH_QUERY_STATS_DEFAULT_LOOKBACK_DAYS: int = 28
     # Ozon's "getPremiumAnalyticsPeriod" has not finished aggregating the
     # most recent day(s) when this was field-tested: a request with
     # date_to="today" failed live with "InvalidArgument: There is no data
@@ -93,17 +101,21 @@ class Settings(BaseSettings):
     # Ozon also rejects a date range it considers too long/too far in the
     # past for this endpoint with the SAME "InvalidArgument: There is no
     # data for the specified period" error (confirmed live: a 30-day window
-    # ending 2 days ago succeeded, but a 92-day window ending 7 days ago was
-    # rejected outright — no per-row result, an outright validation error) —
-    # this is a documented-nowhere-reachable Premium/Premium-Plus period
-    # limit, not a real absence of data. Ozon's own docs sites are unreachable
-    # from this app's network, and no third-party source states an exact day
-    # count either, so rather than hardcode a guessed number, the sync
-    # discovers the actual accepted window empirically per run (see
-    # search_query_details_sync_service._fetch_with_period_shrink): it keeps
-    # date_to fixed and halves the span until Ozon accepts it or this floor
-    # is reached. Below this floor a further shrink stops helping much and
-    # the error is almost certainly something else, so it's surfaced as-is.
+    # ending 2 days ago succeeded — HTTP 200, just happened to have no rows
+    # — but an explicit 92-day window ending 7 days ago was rejected
+    # outright, an actual validation error with no per-row result at all).
+    # This lines up with the 28-day figure now confirmed above
+    # (DEFAULT_LOOKBACK_DAYS) — 30 apparently still fits under whatever the
+    # real API-enforced boundary is (the UI's documented 28-day preset and
+    # the API's own hard limit need not be identical), while 92 clearly
+    # doesn't. As a defensive fallback for accounts without Premium Plus
+    # (which may have a smaller allowance than 28, undocumented) or in case
+    # the real API boundary is tighter than the UI number, the sync also
+    # discovers the actual accepted window empirically per run when needed
+    # (see search_query_details_sync_service._fetch_with_period_shrink): it
+    # keeps date_to fixed and halves the span until Ozon accepts it or this
+    # floor is reached. Below this floor a further shrink stops helping much
+    # and the error is almost certainly something else, so it's surfaced as-is.
     SEARCH_QUERY_STATS_MIN_PERIOD_DAYS: int = 3
     SEARCH_QUERY_STATS_SCHEDULER_ENABLED: bool = True
     SEARCH_QUERY_STATS_SCHEDULER_HOUR_UTC: int = 4  # once a day, off-peak, staggered after advertising's own job
