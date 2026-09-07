@@ -542,9 +542,11 @@ interface CampaignAutoDayRow {
   date: string;
   impressions: number;
   clicks: number;
+  ctrPct: number | null;
   spendRub: number;
   orders: number;
   revenueRub: number;
+  drrPct: number | null;
 }
 
 // The campaign-detail endpoint's auto_daily only carries totals + a
@@ -554,7 +556,7 @@ interface CampaignAutoDayRow {
 // across its SKUs per date — a campaign row here should read like Ozon's own
 // day-by-day table, not just a single total.
 function aggregateAutoDailyByDate(rows: AdvertisingDailyStatistic[]): CampaignAutoDayRow[] {
-  const byDate = new Map<string, CampaignAutoDayRow>();
+  const byDate = new Map<string, Omit<CampaignAutoDayRow, "ctrPct" | "drrPct">>();
   for (const r of rows) {
     const acc = byDate.get(r.date) ?? { date: r.date, impressions: 0, clicks: 0, spendRub: 0, orders: 0, revenueRub: 0 };
     acc.impressions += r.impressions ?? 0;
@@ -564,7 +566,119 @@ function aggregateAutoDailyByDate(rows: AdvertisingDailyStatistic[]): CampaignAu
     acc.revenueRub += r.revenue_rub ?? 0;
     byDate.set(r.date, acc);
   }
-  return [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+  return [...byDate.values()]
+    .map((acc) => ({
+      ...acc,
+      ctrPct: acc.impressions > 0 ? (acc.clicks / acc.impressions) * 100 : null,
+      drrPct: acc.revenueRub > 0 ? (acc.spendRub / acc.revenueRub) * 100 : null,
+    }))
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+// --- Anomaly highlighting for the per-day auto-collected table -------------
+// "Anomaly" here means a metric moved sharply vs. the previous day (or, when
+// there's no previous day / the move vs. it is small, vs. the campaign's own
+// average) — day-to-day noise on small numbers is deliberately not flagged
+// (minBaseline) so a jump from 1 to 3 clicks doesn't light up as "+200%".
+
+type MetricKey = "impressions" | "clicks" | "ctrPct" | "spendRub" | "orders" | "revenueRub" | "drrPct";
+
+const DEVIATION_THRESHOLD_PCT = 40;
+
+interface MetricConfig {
+  minBaseline: number;
+  // Which direction of a large move is "good" for this metric — colors the
+  // highlight green when the move matches it, red when it doesn't. null
+  // means neither direction is inherently good/bad (just worth noting).
+  goodDirection: "up" | "down" | null;
+}
+
+const METRIC_CONFIG: Record<MetricKey, MetricConfig> = {
+  impressions: { minBaseline: 50, goodDirection: null },
+  clicks: { minBaseline: 3, goodDirection: "up" },
+  ctrPct: { minBaseline: 0.5, goodDirection: "up" },
+  spendRub: { minBaseline: 20, goodDirection: "down" },
+  orders: { minBaseline: 1, goodDirection: "up" },
+  revenueRub: { minBaseline: 50, goodDirection: "up" },
+  drrPct: { minBaseline: 1, goodDirection: "down" },
+};
+
+interface Deviation {
+  direction: "up" | "down";
+  label: string;
+}
+
+function deviationAgainst(value: number, baseline: number | null, baselineLabel: string, minBaseline: number): Deviation | null {
+  if (baseline === null) return null;
+  if (baseline < minBaseline) {
+    // Baseline itself is ~zero — a plain percentage would be meaningless
+    // (or a divide-by-zero); only flag a clear appearance-from-nothing.
+    if (baseline === 0 && value >= minBaseline) {
+      return { direction: "up", label: `рост с нуля (${baselineLabel})` };
+    }
+    return null;
+  }
+  const pct = ((value - baseline) / baseline) * 100;
+  if (Math.abs(pct) < DEVIATION_THRESHOLD_PCT) return null;
+  const sign = pct > 0 ? "+" : "";
+  return { direction: pct > 0 ? "up" : "down", label: `${sign}${Math.round(pct)}% ${baselineLabel}` };
+}
+
+function classifyMetric(metric: MetricKey, value: number | null, previous: number | null, avg: number | null): Deviation | null {
+  if (value === null) return null;
+  const { minBaseline } = METRIC_CONFIG[metric];
+  const devPrev = previous === null ? null : deviationAgainst(value, previous, "к пред. дню", minBaseline);
+  return devPrev ?? deviationAgainst(value, avg, "к среднему по кампании", minBaseline);
+}
+
+function average(values: number[]): number | null {
+  return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+interface AnnotatedDayRow extends CampaignAutoDayRow {
+  deviations: Partial<Record<MetricKey, Deviation>>;
+}
+
+const ALL_METRICS: MetricKey[] = ["impressions", "clicks", "ctrPct", "spendRub", "orders", "revenueRub", "drrPct"];
+
+function annotateWithAnomalies(rowsDesc: CampaignAutoDayRow[]): AnnotatedDayRow[] {
+  const rowsAsc = [...rowsDesc].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const averages = Object.fromEntries(
+    ALL_METRICS.map((m) => [m, average(rowsAsc.map((r) => r[m]).filter((v): v is number => v !== null))])
+  ) as Record<MetricKey, number | null>;
+
+  const annotatedAsc: AnnotatedDayRow[] = rowsAsc.map((row, i) => {
+    const previousRow = i > 0 ? rowsAsc[i - 1] : null;
+    const deviations: Partial<Record<MetricKey, Deviation>> = {};
+    for (const m of ALL_METRICS) {
+      const dev = classifyMetric(m, row[m], previousRow ? previousRow[m] : null, averages[m]);
+      if (dev) deviations[m] = dev;
+    }
+    // The specific pattern called out explicitly: spend jumped but clicks
+    // didn't follow — make that visible in the tooltip, not just "spend up".
+    if (deviations.spendRub?.direction === "up" && deviations.clicks?.direction !== "up") {
+      deviations.spendRub = { ...deviations.spendRub, label: `${deviations.spendRub.label}, без роста кликов` };
+    }
+    return { ...row, deviations };
+  });
+
+  const byDate = new Map(annotatedAsc.map((r) => [r.date, r]));
+  return rowsDesc.map((r) => byDate.get(r.date)!);
+}
+
+function anomalyCellClass(direction: "up" | "down", goodDirection: "up" | "down" | null): string {
+  if (goodDirection === null) return "bg-amber-50 text-amber-700";
+  return direction === goodDirection ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700";
+}
+
+function AnomalyCell({ value, deviation, goodDirection }: { value: string; deviation: Deviation | undefined; goodDirection: "up" | "down" | null }) {
+  if (!deviation) return <td>{value}</td>;
+  const arrow = deviation.direction === "up" ? "▲" : "▼";
+  return (
+    <td className={`rounded px-1 ${anomalyCellClass(deviation.direction, goodDirection)}`} title={deviation.label}>
+      {value} {arrow}
+    </td>
+  );
 }
 
 function CampaignRow({ storeId, campaign }: { storeId: string; campaign: AdvertisingCampaign }) {
@@ -683,6 +797,7 @@ function CampaignAutoDailyTable({ rows }: { rows: AdvertisingDailyStatistic[] })
   if (byDate.length === 0) {
     return <div className="text-xs text-slate-500">Нет данных по дням.</div>;
   }
+  const annotated = annotateWithAnomalies(byDate);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
@@ -699,24 +814,44 @@ function CampaignAutoDailyTable({ rows }: { rows: AdvertisingDailyStatistic[] })
           </tr>
         </thead>
         <tbody>
-          {byDate.map((d) => {
-            const ctr = d.impressions > 0 ? (d.clicks / d.impressions) * 100 : null;
-            const drr = d.revenueRub > 0 ? (d.spendRub / d.revenueRub) * 100 : null;
-            return (
-              <tr key={d.date} className="border-b border-slate-100">
-                <td className="py-1">{d.date}</td>
-                <td>{d.impressions.toLocaleString("ru-RU")}</td>
-                <td>{d.clicks.toLocaleString("ru-RU")}</td>
-                <td>{fmtPct(ctr)}</td>
-                <td>{fmtRub(d.spendRub)}</td>
-                <td>{d.orders.toLocaleString("ru-RU")}</td>
-                <td>{fmtRub(d.revenueRub)}</td>
-                <td>{fmtPct(drr)}</td>
-              </tr>
-            );
-          })}
+          {annotated.map((d) => (
+            <tr key={d.date} className="border-b border-slate-100">
+              <td className="py-1">{d.date}</td>
+              <AnomalyCell
+                value={d.impressions.toLocaleString("ru-RU")}
+                deviation={d.deviations.impressions}
+                goodDirection={METRIC_CONFIG.impressions.goodDirection}
+              />
+              <AnomalyCell
+                value={d.clicks.toLocaleString("ru-RU")}
+                deviation={d.deviations.clicks}
+                goodDirection={METRIC_CONFIG.clicks.goodDirection}
+              />
+              <AnomalyCell value={fmtPct(d.ctrPct)} deviation={d.deviations.ctrPct} goodDirection={METRIC_CONFIG.ctrPct.goodDirection} />
+              <AnomalyCell
+                value={fmtRub(d.spendRub)}
+                deviation={d.deviations.spendRub}
+                goodDirection={METRIC_CONFIG.spendRub.goodDirection}
+              />
+              <AnomalyCell
+                value={d.orders.toLocaleString("ru-RU")}
+                deviation={d.deviations.orders}
+                goodDirection={METRIC_CONFIG.orders.goodDirection}
+              />
+              <AnomalyCell
+                value={fmtRub(d.revenueRub)}
+                deviation={d.deviations.revenueRub}
+                goodDirection={METRIC_CONFIG.revenueRub.goodDirection}
+              />
+              <AnomalyCell value={fmtPct(d.drrPct)} deviation={d.deviations.drrPct} goodDirection={METRIC_CONFIG.drrPct.goodDirection} />
+            </tr>
+          ))}
         </tbody>
       </table>
+      <div className="mt-1 text-xs text-slate-400">
+        Подсветка = отклонение ≥ {DEVIATION_THRESHOLD_PCT}% к предыдущему дню (или к среднему по кампании) — наведите
+        на значение, чтобы увидеть, насколько именно.
+      </div>
     </div>
   );
 }
