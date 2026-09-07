@@ -224,6 +224,7 @@ def sync_ozon_products(
     }
 
     fetched = created = updated = 0
+    skipped_invalid_sku: list[str] = []
     error_message = None
     try:
         with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
@@ -339,6 +340,16 @@ def sync_ozon_products(
     except OzonAPIError as exc:
         run.status = SyncStatus.PARTIAL if created or updated else SyncStatus.FAILED
         error_message = str(exc)
+
+    if skipped_invalid_sku:
+        skip_note = (
+            f"Пропущено товаров с некорректным SKU (0/пусто) после повторного запроса по offer_id: "
+            f"{len(skipped_invalid_sku)} ({', '.join(skipped_invalid_sku[:10])}"
+            f"{'…' if len(skipped_invalid_sku) > 10 else ''})"
+        )
+        error_message = f"{error_message}; {skip_note}" if error_message else skip_note
+        if run.status == SyncStatus.SUCCESS:
+            run.status = SyncStatus.PARTIAL if (created or updated) else SyncStatus.FAILED
 
     run.finished_at = datetime.now(timezone.utc)
     run.items_fetched = fetched
