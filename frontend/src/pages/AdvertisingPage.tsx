@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
 import type {
+  AdvertisingAiReview,
+  AdvertisingAiReviewInsight,
+  AdvertisingAiReviewListResponse,
   AdvertisingAnalytics,
   AdvertisingCampaign,
   AdvertisingDailyStatistic,
@@ -51,6 +54,8 @@ export function AdvertisingPage() {
   const [perfStatus, setPerfStatus] = useState<PerformanceCredentialsStatus | null>(null);
   const [analytics, setAnalytics] = useState<AdvertisingAnalytics | null>(null);
   const [statistics, setStatistics] = useState<AdvertisingStatistic[]>([]);
+  const [aiReviews, setAiReviews] = useState<AdvertisingAiReview[] | null>(null);
+  const [generatingAiReview, setGeneratingAiReview] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncingStats, setSyncingStats] = useState(false);
@@ -65,6 +70,9 @@ export function AdvertisingPage() {
     api
       .get<{ items: AdvertisingStatistic[]; total: number }>(`/stores/${currentStore.id}/advertising/statistics`)
       .then((d) => setStatistics(d.items.slice(0, 50)));
+    api
+      .get<AdvertisingAiReviewListResponse>(`/stores/${currentStore.id}/advertising/ai-review`)
+      .then((d) => setAiReviews(d.items));
   };
 
   useEffect(load, [currentStore]);
@@ -154,6 +162,21 @@ export function AdvertisingPage() {
     }
   };
 
+  const generateAiReview = async () => {
+    if (!currentStore) return;
+    setGeneratingAiReview(true);
+    setNotice("Формирование AI-обзора рекламных кампаний...");
+    try {
+      await api.post<AdvertisingAiReview>(`/stores/${currentStore.id}/advertising/ai-review/generate`);
+      setNotice("AI-обзор сформирован.");
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка формирования AI-обзора");
+    } finally {
+      setGeneratingAiReview(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -197,6 +220,14 @@ export function AdvertisingPage() {
           >
             {syncingStats ? "Сбор статистики..." : "Обновить статистику (авто)"}
           </button>
+          <button
+            onClick={generateAiReview}
+            disabled={generatingAiReview}
+            className="rounded-md bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-200 disabled:opacity-50"
+            title="Сформировать AI-обзор рекламных кампаний по уже собранной статистике (расход, показы, клики, CTR) — не требует новой синхронизации"
+          >
+            {generatingAiReview ? "Формирование обзора..." : "Обновить AI-обзор"}
+          </button>
         </div>
       </div>
 
@@ -212,6 +243,8 @@ export function AdvertisingPage() {
       )}
 
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
+
+      <AdvertisingAiReviewSection reviews={aiReviews} />
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
         ДРР и ROAS ниже рассчитаны этим приложением (расход / продажи и продажи / расход, суммарно по загруженным
@@ -333,6 +366,110 @@ export function AdvertisingPage() {
         <div className="text-slate-500">Загрузка кампаний...</div>
       ) : (
         <CampaignsSection storeId={currentStore.id} campaigns={campaigns} />
+      )}
+    </div>
+  );
+}
+
+const AI_ASSESSMENT_STYLES: Record<AdvertisingAiReviewInsight["assessment"], string> = {
+  strong: "bg-green-100 text-green-700",
+  weak: "bg-red-100 text-red-700",
+  neutral: "bg-slate-100 text-slate-600",
+};
+const AI_ASSESSMENT_LABELS: Record<AdvertisingAiReviewInsight["assessment"], string> = {
+  strong: "Сильная",
+  weak: "Слабая",
+  neutral: "Нейтральная",
+};
+
+function AdvertisingAiReviewSection({ reviews }: { reviews: AdvertisingAiReview[] | null }) {
+  const [showHistory, setShowHistory] = useState(false);
+
+  if (reviews === null) {
+    return <div className="text-sm text-slate-500">Загрузка AI-обзора...</div>;
+  }
+  if (reviews.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-violet-300 bg-violet-50 p-4 text-sm text-violet-800">
+        AI-обзор рекламных кампаний ещё не сформирован. Он собирается автоматически раз в день (после сбора статистики
+        рекламы), либо нажмите «Обновить AI-обзор» выше — но сначала должна быть собрана статистика рекламы (кнопка
+        «Обновить статистику (авто)» или загрузка CSV/XLSX).
+      </div>
+    );
+  }
+
+  const [latest, ...history] = reviews;
+
+  return (
+    <div className="space-y-3 rounded-md border border-violet-200 bg-violet-50/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-violet-800">AI-обзор рекламных кампаний</h3>
+        <span className="text-xs text-slate-500">
+          Период: {latest.period_start} — {latest.period_end}
+          {latest.model_used ? ` · модель: ${latest.model_used}` : ""}
+        </span>
+      </div>
+      <p className="text-sm text-slate-700">{latest.overview}</p>
+
+      {latest.insights.length > 0 && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-slate-600">По кампаниям</h4>
+          <ul className="space-y-1 text-sm">
+            {latest.insights.map((i) => (
+              <li key={i.ozon_campaign_id} className="flex items-start gap-2">
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${AI_ASSESSMENT_STYLES[i.assessment]}`}>
+                  {AI_ASSESSMENT_LABELS[i.assessment]}
+                </span>
+                <span>
+                  <strong>{i.campaign_name}</strong>
+                  {i.note ? ` — ${i.note}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {latest.anomalies.length > 0 && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-slate-600">Аномалии и тренды</h4>
+          <ul className="list-disc space-y-0.5 pl-4 text-sm text-slate-700">
+            {latest.anomalies.map((a, idx) => (
+              <li key={idx}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {latest.recommendations.length > 0 && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-slate-600">Рекомендации</h4>
+          <ul className="list-disc space-y-0.5 pl-4 text-sm text-slate-700">
+            {latest.recommendations.map((r, idx) => (
+              <li key={idx}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="pt-1">
+          <button onClick={() => setShowHistory((v) => !v)} className="text-xs font-medium text-violet-700 underline">
+            {showHistory ? "Скрыть историю обзоров" : `Показать историю обзоров (${history.length})`}
+          </button>
+          {showHistory && (
+            <ul className="mt-2 space-y-2 border-t border-violet-200 pt-2">
+              {history.map((r) => (
+                <li key={r.id} className="text-xs text-slate-600">
+                  <span className="font-medium text-slate-700">
+                    {r.period_start} — {r.period_end}:
+                  </span>{" "}
+                  {r.overview}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

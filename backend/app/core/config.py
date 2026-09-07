@@ -120,6 +120,23 @@ class Settings(BaseSettings):
     SEARCH_QUERY_STATS_SCHEDULER_ENABLED: bool = True
     SEARCH_QUERY_STATS_SCHEDULER_HOUR_UTC: int = 4  # once a day, off-peak, staggered after advertising's own job
 
+    # Automatic AI-generated advertising-campaign review (see
+    # app.services.advertising_ai_review_service) — analyzes the same daily
+    # statistics ADVERTISING_STATS_* above already collects (spend,
+    # impressions, clicks, CTR; orders/ДРР deliberately excluded for now,
+    # see that module's own docstring) using the same AIProvider as review
+    # analysis. LOOKBACK_DAYS is an editorial choice (enough days for a
+    # spend/CTR trend to be visible), not an Ozon-side limit like the
+    # SEARCH_QUERY_STATS_* ones above.
+    ADVERTISING_AI_REVIEW_LOOKBACK_DAYS: int = 14
+    ADVERTISING_AI_REVIEW_SCHEDULER_ENABLED: bool = True
+    # This app has no job-chaining/orchestration — every scheduled sync is an
+    # independent daily cron job (see app.services.advertising_ai_review_
+    # scheduler's own docstring). HOUR_UTC:30 is chosen to run after BOTH the
+    # 3:00 advertising-stats sync and the 4:00 search-query-stats sync, as a
+    # fixed daily slot rather than a literal "run right after" trigger.
+    ADVERTISING_AI_REVIEW_SCHEDULER_HOUR_UTC: int = 4
+
     CORS_ORIGINS: str = "http://localhost:5173"
 
     @property

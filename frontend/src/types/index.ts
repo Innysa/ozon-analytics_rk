@@ -344,6 +344,34 @@ export interface CampaignAutoDailyDetail {
   daily_comparison_unavailable_reason: string | null;
 }
 
+// AI-generated advertising-campaign review (see backend
+// app.services.advertising_ai_review_service) — one per (store, period),
+// generated automatically once a day or on demand. Deliberately has no
+// ДРР/ROAS/orders field — the input data doesn't include them yet.
+export interface AdvertisingAiReviewInsight {
+  ozon_campaign_id: string;
+  campaign_name: string;
+  assessment: "strong" | "weak" | "neutral";
+  note: string;
+}
+
+export interface AdvertisingAiReview {
+  id: string;
+  period_start: string;
+  period_end: string;
+  campaigns_analyzed: number;
+  overview: string;
+  insights: AdvertisingAiReviewInsight[];
+  anomalies: string[];
+  recommendations: string[];
+  model_used: string | null;
+  created_at: string;
+}
+
+export interface AdvertisingAiReviewListResponse {
+  items: AdvertisingAiReview[];
+}
+
 export interface CampaignDetail {
   campaign_id: string;
   has_data: boolean;

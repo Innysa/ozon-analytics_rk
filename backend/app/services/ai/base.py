@@ -9,9 +9,15 @@ added without touching callers.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 
 from app.models.store_ai_settings import StoreAISettings
-from app.services.ai.schemas import AnalyzeReviewOutcome, ConnectionCheckResult, GenerateReplyOutcome
+from app.services.ai.schemas import (
+    AnalyzeAdvertisingOutcome,
+    AnalyzeReviewOutcome,
+    ConnectionCheckResult,
+    GenerateReplyOutcome,
+)
 
 
 class AIProvider(ABC):
@@ -76,4 +82,31 @@ class AIProvider(ABC):
 
     @abstractmethod
     def check_connection(self) -> ConnectionCheckResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def analyze_advertising_campaigns(
+        self,
+        *,
+        store_name: str | None,
+        period_start: date,
+        period_end: date,
+        campaigns: list[dict],
+    ) -> AnalyzeAdvertisingOutcome:
+        """Analyze aggregated per-campaign advertising metrics and produce a
+        structured overview: which campaigns look strong/weak, anomalies or
+        trends worth flagging (e.g. spend rising with flat clicks, a
+        dropping CTR), and general recommendations.
+
+        `campaigns` is a list of dicts, one per campaign that has at least
+        one day of auto-collected statistics in the period (see
+        app.services.advertising_ai_review_service._aggregate_campaigns for
+        the exact shape): ozon_campaign_id, name, campaign_type, state,
+        daily_budget_rub, total_spend_rub, total_impressions, total_clicks,
+        ctr_pct, and a `daily` list of per-day {date, spend_rub,
+        impressions, clicks} for trend-spotting.
+
+        Orders, ДРР and ROAS are deliberately NOT part of the input (see the
+        service module's own docstring for why) — must not be asked about
+        or fabricated in the output."""
         raise NotImplementedError

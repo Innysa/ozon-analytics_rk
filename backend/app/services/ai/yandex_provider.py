@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date
 
 import httpx
 
@@ -28,9 +29,17 @@ from app.core.config import Settings
 from app.core.pii_mask import mask_pii
 from app.models.store_ai_settings import StoreAISettings
 from app.services.ai.base import AIProvider
-from app.services.ai.prompts import build_analyze_prompt, build_repair_prompt, build_rewrite_prompt
+from app.services.ai.prompts import (
+    build_advertising_analysis_prompt,
+    build_advertising_repair_prompt,
+    build_analyze_prompt,
+    build_repair_prompt,
+    build_rewrite_prompt,
+)
 from app.services.ai.schemas import (
+    AdvertisingAnalysisResult,
     AIUsage,
+    AnalyzeAdvertisingOutcome,
     AnalyzeReviewOutcome,
     ConnectionCheckResult,
     GenerateReplyOutcome,
@@ -180,6 +189,38 @@ class YandexAIProvider(AIProvider):
             return GenerateReplyOutcome(reply_text=raw_text.strip(), usage=usage, success=True)
         except Exception as exc:
             return GenerateReplyOutcome(reply_text=None, usage=AIUsage(model=self._model), success=False, error_message=str(exc))
+
+    def analyze_advertising_campaigns(
+        self,
+        *,
+        store_name: str | None,
+        period_start: date,
+        period_end: date,
+        campaigns: list[dict],
+    ) -> AnalyzeAdvertisingOutcome:
+        prompt = build_advertising_analysis_prompt(
+            store_name=store_name, period_start=period_start, period_end=period_end, campaigns=campaigns
+        )
+        try:
+            raw_text, usage = self._call(prompt, max_output_tokens=1200)
+            try:
+                parsed = self._parse_json_result(raw_text)
+                result = AdvertisingAnalysisResult.model_validate(parsed)
+            except Exception:
+                repair_text, repair_usage = self._call(build_advertising_repair_prompt(raw_text))
+                usage = AIUsage(
+                    model=usage.model,
+                    prompt_tokens=(usage.prompt_tokens or 0) + (repair_usage.prompt_tokens or 0),
+                    completion_tokens=(usage.completion_tokens or 0) + (repair_usage.completion_tokens or 0),
+                    latency_ms=(usage.latency_ms or 0) + (repair_usage.latency_ms or 0),
+                )
+                parsed = self._parse_json_result(repair_text)
+                result = AdvertisingAnalysisResult.model_validate(parsed)
+            return AnalyzeAdvertisingOutcome(result=result, usage=usage, success=True)
+        except Exception as exc:
+            return AnalyzeAdvertisingOutcome(
+                result=None, usage=AIUsage(model=self._model), success=False, error_message=str(exc)
+            )
 
     def check_connection(self) -> ConnectionCheckResult:
         try:

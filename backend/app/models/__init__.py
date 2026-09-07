@@ -15,6 +15,7 @@ from app.models.audit_log import AuditLog
 from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
+from app.models.advertising_ai_review import AdvertisingAiReview
 from app.models.product_card_statistic import ProductCardStatistic
 from app.models.search_query_statistic import SearchQueryStatistic
 
@@ -36,6 +37,7 @@ __all__ = [
     "AdvertisingCampaign",
     "AdvertisingStatistic",
     "AdvertisingDailyStatistic",
+    "AdvertisingAiReview",
     "ProductCardStatistic",
     "SearchQueryStatistic",
 ]

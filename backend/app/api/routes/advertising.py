@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, get_current_user, require_store_role
 from app.db.session import get_db
+from app.models.advertising_ai_review import AdvertisingAiReview
 from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
@@ -14,6 +16,9 @@ from app.models.product import Product
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
 from app.schemas.advertising import (
+    AdvertisingAiReviewInsightOut,
+    AdvertisingAiReviewListResponse,
+    AdvertisingAiReviewOut,
     AdvertisingAnalyticsOut,
     AdvertisingCampaignOut,
     AdvertisingDailyStatisticListResponse,
@@ -23,8 +28,10 @@ from app.schemas.advertising import (
     CampaignDetailOut,
 )
 from app.schemas.common import ImportSummary
+from app.services.advertising_ai_review_service import generate_advertising_ai_review
 from app.services.advertising_analytics_service import compute_advertising_analytics, compute_campaign_detail
 from app.services.advertising_import import import_advertising_statistics_from_file
+from app.services.ai.factory import get_ai_provider
 from app.services.audit import record_audit
 
 router = APIRouter(prefix="/api/stores/{store_id}/advertising", tags=["advertising"])
@@ -253,3 +260,66 @@ def advertising_analytics(
     date_to: date | None = None,
 ) -> AdvertisingAnalyticsOut:
     return compute_advertising_analytics(db, store_id=ctx.store_id, product_id=product_id, date_from=date_from, date_to=date_to)
+
+
+def _serialize_ai_review(r: AdvertisingAiReview) -> AdvertisingAiReviewOut:
+    return AdvertisingAiReviewOut(
+        id=r.id,
+        period_start=r.period_start,
+        period_end=r.period_end,
+        campaigns_analyzed=r.campaigns_analyzed,
+        overview=r.overview,
+        insights=[AdvertisingAiReviewInsightOut(**i) for i in json.loads(r.insights_json)] if r.insights_json else [],
+        anomalies=json.loads(r.anomalies_json) if r.anomalies_json else [],
+        recommendations=json.loads(r.recommendations_json) if r.recommendations_json else [],
+        model_used=r.model_used,
+        created_at=r.created_at,
+    )
+
+
+@router.get("/ai-review", response_model=AdvertisingAiReviewListResponse)
+def list_ai_reviews(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+) -> AdvertisingAiReviewListResponse:
+    """History of AI-generated advertising-campaign overviews (see
+    app.services.advertising_ai_review_service), newest first. Generated
+    automatically once a day (app.services.advertising_ai_review_scheduler)
+    or on demand via POST .../ai-review/generate."""
+    rows = (
+        db.query(AdvertisingAiReview)
+        .filter(AdvertisingAiReview.store_id == ctx.store_id)
+        .order_by(AdvertisingAiReview.period_end.desc())
+        .limit(30)
+        .all()
+    )
+    return AdvertisingAiReviewListResponse(items=[_serialize_ai_review(r) for r in rows])
+
+
+@router.post("/ai-review/generate", response_model=AdvertisingAiReviewOut)
+def generate_ai_review_now(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> AdvertisingAiReviewOut:
+    """Triggers one AI-review generation immediately, without waiting for
+    the daily scheduled run. Runs synchronously (a single AI call, not
+    Ozon's own async report flow) so this returns the finished review
+    directly rather than a SyncRun to poll. date_from/date_to default to the
+    last ADVERTISING_AI_REVIEW_LOOKBACK_DAYS days ending yesterday, same as
+    the scheduled run — pass them explicitly to review an earlier window."""
+    ai_provider = get_ai_provider()
+    outcome = generate_advertising_ai_review(db, store_id=ctx.store_id, ai_provider=ai_provider, date_from=date_from, date_to=date_to)
+    if not outcome.saved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="; ".join(outcome.errors) or "Не удалось сформировать AI-обзор рекламы",
+        )
+    review = (
+        db.query(AdvertisingAiReview)
+        .filter(AdvertisingAiReview.store_id == ctx.store_id)
+        .order_by(AdvertisingAiReview.period_end.desc())
+        .first()
+    )
+    return _serialize_ai_review(review)

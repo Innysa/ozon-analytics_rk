@@ -47,3 +47,32 @@ class GenerateReplyOutcome(BaseModel):
 class ConnectionCheckResult(BaseModel):
     ok: bool
     message: str
+
+
+class AdvertisingCampaignInsight(BaseModel):
+    """One campaign's place in the overall advertising-review verdict."""
+
+    ozon_campaign_id: str
+    campaign_name: str
+    assessment: Literal["strong", "weak", "neutral"]
+    note: str = ""
+
+
+class AdvertisingAnalysisResult(BaseModel):
+    """The structured JSON contract every AIProvider must return for
+    analyze_advertising_campaigns(). Deliberately has no ДРР/ROAS/orders
+    field — the input never includes them (see
+    app.services.advertising_ai_review_service's module docstring), so
+    there is nothing for the model to (mis)report here either."""
+
+    overview: str
+    insights: list[AdvertisingCampaignInsight] = Field(default_factory=list)
+    anomalies: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class AnalyzeAdvertisingOutcome(BaseModel):
+    result: AdvertisingAnalysisResult | None
+    usage: AIUsage
+    success: bool
+    error_message: str | None = None

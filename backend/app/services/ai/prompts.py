@@ -6,6 +6,8 @@ live here rather than duplicated per-provider.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from app.models.store_ai_settings import StoreAISettings
 
 REPLY_RULES = """\
@@ -108,6 +110,70 @@ def build_repair_prompt(broken_output: str) -> str:
 ---
 Верни ИСПРАВЛЕННЫЙ ответ, СТРОГО в виде валидного JSON того же формата, без какого-либо текста вне JSON.
 {JSON_CONTRACT}
+"""
+
+
+ADVERTISING_JSON_CONTRACT = """\
+Верни ТОЛЬКО валидный JSON без markdown-разметки, без пояснений вне JSON, строго такой формы:
+{
+  "overview": "2-4 предложения — общая картина по рекламе магазина за период",
+  "insights": [
+    {"ozon_campaign_id": "...", "campaign_name": "...", "assessment": "strong | weak | neutral", "note": "1-2 предложения, почему"}
+  ],
+  "anomalies": ["конкретная аномалия или тренд, например «резкий рост расхода без роста кликов у кампании X»"],
+  "recommendations": ["конкретная рекомендация по действию"]
+}
+Заказы, ДРР и ROAS в данных ниже отсутствуют — не упоминай их и не пытайся оценить рентабельность кампаний,
+опирайся только на расход, показы, клики и CTR.
+"""
+
+
+def _format_campaign_for_prompt(c: dict) -> str:
+    daily_lines = "\n".join(
+        f"    {d['date']}: расход {d['spend_rub']} ₽, показы {d['impressions']}, клики {d['clicks']}"
+        for d in c.get("daily", [])
+    )
+    return f"""\
+- {c['name']} (ozon_campaign_id={c['ozon_campaign_id']}, тип={c.get('campaign_type') or 'не указан'}, \
+статус={c.get('state') or 'не указан'}, дневной бюджет={c.get('daily_budget_rub') if c.get('daily_budget_rub') is not None else 'не указан'})
+  Итого за период: расход {c['total_spend_rub']} ₽, показы {c['total_impressions']}, клики {c['total_clicks']}, \
+CTR {c['ctr_pct'] if c['ctr_pct'] is not None else 'нет данных'}%
+  По дням:
+{daily_lines or '    нет данных по дням'}"""
+
+
+def build_advertising_analysis_prompt(
+    *,
+    store_name: str | None,
+    period_start: date,
+    period_end: date,
+    campaigns: list[dict],
+) -> str:
+    campaigns_text = "\n".join(_format_campaign_for_prompt(c) for c in campaigns)
+    return f"""\
+Ты — аналитик по рекламе на маркетплейсе Ozon. Магазин: {store_name or "не указан"}.
+Проанализируй автоматически собранную статистику рекламных кампаний за период {period_start.isoformat()} — {period_end.isoformat()}
+(источник — Ozon Performance API, показатели: расход, показы, клики, CTR; заказы и ДРР пока не собираются отдельно и в данных ниже отсутствуют).
+
+Кампании:
+{campaigns_text}
+
+Задача: определи, какие кампании выглядят сильными, какие слабыми, и заметь аномалии/тренды —
+например резкий рост расхода без роста кликов, падающий CTR, кампанию с нулевыми показами при ненулевом бюджете и т.п.
+Не оценивай рентабельность и не упоминай ДРР/ROAS/заказы — этих данных нет.
+
+{ADVERTISING_JSON_CONTRACT}
+"""
+
+
+def build_advertising_repair_prompt(broken_output: str) -> str:
+    return f"""\
+Предыдущий ответ не является валидным JSON нужного формата. Вот он:
+---
+{broken_output}
+---
+Верни ИСПРАВЛЕННЫЙ ответ, СТРОГО в виде валидного JSON того же формата, без какого-либо текста вне JSON.
+{ADVERTISING_JSON_CONTRACT}
 """
 
 

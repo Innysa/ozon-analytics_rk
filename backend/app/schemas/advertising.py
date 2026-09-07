@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -209,6 +210,30 @@ class AdvertisingDailyStatisticOut(BaseModel):
 class AdvertisingDailyStatisticListResponse(BaseModel):
     items: list[AdvertisingDailyStatisticOut]
     total: int
+
+
+class AdvertisingAiReviewInsightOut(BaseModel):
+    ozon_campaign_id: str
+    campaign_name: str
+    assessment: Literal["strong", "weak", "neutral"]
+    note: str = ""
+
+
+class AdvertisingAiReviewOut(BaseModel):
+    id: str
+    period_start: date
+    period_end: date
+    campaigns_analyzed: int
+    overview: str
+    insights: list[AdvertisingAiReviewInsightOut]
+    anomalies: list[str]
+    recommendations: list[str]
+    model_used: str | None
+    created_at: datetime
+
+
+class AdvertisingAiReviewListResponse(BaseModel):
+    items: list[AdvertisingAiReviewOut]
 
 
 class AdvertisingAnalyticsOut(BaseModel):

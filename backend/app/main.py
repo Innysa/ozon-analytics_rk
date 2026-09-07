@@ -25,6 +25,10 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.services.advertising_ai_review_scheduler import (
+    start_advertising_ai_review_scheduler,
+    stop_advertising_ai_review_scheduler,
+)
 from app.services.advertising_daily_scheduler import (
     start_advertising_daily_statistics_scheduler,
     stop_advertising_daily_statistics_scheduler,
@@ -42,9 +46,11 @@ settings = get_settings()
 async def _lifespan(app: FastAPI):
     start_advertising_daily_statistics_scheduler()
     start_search_query_stats_scheduler()
+    start_advertising_ai_review_scheduler()
     yield
     stop_advertising_daily_statistics_scheduler()
     stop_search_query_stats_scheduler()
+    stop_advertising_ai_review_scheduler()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=_lifespan)
