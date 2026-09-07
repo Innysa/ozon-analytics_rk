@@ -72,6 +72,21 @@ app.services.ozon.client's own module docstring for the full write-up):
      than silently dropping the truncated rows — the batch size should be
      lowered via settings if that is ever seen in practice.
 
+  3b. CONFIRMED LIVE this assumption was actually WRONG (or at least
+      unreliable): a debug request for exactly ONE sku (2953864771, real
+      data confirmed independently via a manual XLSX export from Ozon's own
+      cabinet — 769185 impressions etc.) returned 15 real rows, HTTP 200 —
+      but the automatic sync's normal grouped batch (the same sku alongside
+      several others, same date range) came back with items: [] for every
+      batch, silently losing real data with no error at all. Rather than
+      just shrink SEARCH_QUERY_STATS_SKU_BATCH_SIZE and hope, this module
+      self-corrects: any batch of >1 SKUs that comes back with items: [] is
+      automatically retried one SKU at a time (see
+      _retry_empty_batch_per_sku) before being accepted as genuinely empty —
+      this recovers real data regardless of whether Ozon's real per-request
+      SKU limit is 1, or the grouped response is just unreliable for some
+      other undocumented reason.
+
   4. Whether Ozon allows only 1 request in flight per account at a time (as
      is confirmed for the unrelated Performance API statistics-report flow)
      is NOT confirmed for this endpoint. Batches are still processed
@@ -289,6 +304,64 @@ def _fetch_with_period_shrink(
             rejected_spans.append(span_days)
             new_span = max(min_period_days, span_days // 2)
             current_from = date_to - timedelta(days=new_span - 1)
+
+
+def _retry_empty_batch_per_sku(
+    client: OzonSellerClient,
+    *,
+    data: dict,
+    sku_batch: list[str],
+    date_from_str: str,
+    date_to_str: str,
+    limit_by_sku: int,
+    page_size: int,
+    batch_num: int,
+    errors: list[str],
+) -> dict:
+    """CONFIRMED LIVE: a group request for several SKUs can come back with
+    items: [] even though ONE of those exact SKUs, requested ALONE with the
+    identical date range, has real rows (confirmed independently via a
+    manual XLSX export from Ozon's own cabinet). This module's own docstring
+    already flagged batching >1 SKU per request as an unconfirmed
+    assumption (only ever field-tested with 1 SKU) — this is now direct
+    evidence it doesn't reliably work. Rather than silently accept an empty
+    group response as "no data" and lose real rows, retry each SKU in the
+    batch individually (same dates/limits) and merge whatever comes back.
+    A no-op if the group response already had rows, or the batch was only
+    ever 1 SKU (nothing left to split)."""
+    if (data.get("items") or []) or len(sku_batch) <= 1:
+        return data
+
+    logger.warning(
+        "Позиции в поиске: батч %d (%d SKU) вернул 0 items одним запросом — "
+        "SEARCH_QUERY_STATS_SKU_BATCH_SIZE>1 не подтверждён Ozon как надёжный "
+        "(см. докстринг модуля, п. 3b); повторяю каждый SKU по отдельности, "
+        "чтобы не потерять реальные данные.",
+        batch_num, len(sku_batch),
+    )
+    merged_items: list[dict] = []
+    for sku in sku_batch:
+        try:
+            single = client.get_product_query_details(
+                date_from=date_from_str,
+                date_to=date_to_str,
+                skus=[sku],
+                limit_by_sku=limit_by_sku,
+                page_size=page_size,
+            )
+        except OzonAPIError as exc:
+            errors.append(f"Батч {batch_num}, SKU {sku} (повтор по одному после пустого группового ответа): {exc}")
+            continue
+        single_items = single.get("items") or []
+        logger.warning(
+            "Позиции в поиске: батч %d, SKU %s по отдельности -> %d items",
+            batch_num, sku, len(single_items),
+        )
+        merged_items.extend(single_items)
+
+    merged = dict(data)
+    merged["items"] = merged_items
+    return merged
 
 
 def _is_positive_sku(value: str | None) -> bool:
@@ -561,6 +634,13 @@ def sync_search_query_details(
         db.commit()
 
     if first_data is not None:
+        first_data = _retry_empty_batch_per_sku(
+            client, data=first_data, sku_batch=sku_batches[0],
+            date_from_str=date_from_str, date_to_str=date_to_str,
+            limit_by_sku=settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU,
+            page_size=settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+            batch_num=1, errors=outcome.errors,
+        )
         _process_batch(1, sku_batches[0], first_data)
 
     for batch_num, sku_batch in enumerate(sku_batches[1:], start=2):
@@ -580,6 +660,13 @@ def sync_search_query_details(
         except OzonAPIError as exc:
             outcome.errors.append(f"Батч {batch_num} ({len(sku_batch)} SKU): {exc}")
             continue
+        data = _retry_empty_batch_per_sku(
+            client, data=data, sku_batch=sku_batch,
+            date_from_str=date_from_str, date_to_str=date_to_str,
+            limit_by_sku=settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU,
+            page_size=settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+            batch_num=batch_num, errors=outcome.errors,
+        )
         _process_batch(batch_num, sku_batch, data)
 
     if outcome.fetched == 0 and not outcome.errors:

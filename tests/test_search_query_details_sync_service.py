@@ -94,6 +94,26 @@ class PeriodLimitedClient:
         return self.response
 
 
+class GroupVsSingleClient:
+    """Simulates the real production finding this module's fix addresses: a
+    request for MULTIPLE skus together comes back with items: [], but the
+    SAME sku, requested alone with the identical date range, has real rows.
+    Each single-sku call returns a distinct item so tests can tell which
+    sku's retry actually contributed a row."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def get_product_query_details(self, *, date_from, date_to, skus=None, limit_by_sku=15, page_size=100):
+        skus = list(skus or [])
+        self.calls.append(skus)
+        if len(skus) != 1:
+            return {"items": [], "total": 0, "page_count": 1}
+        sku = skus[0]
+        item = {**_SAMPLE_ITEM, "sku": int(sku), "query": f"запрос-{sku}"}
+        return {"items": [item], "total": 1, "page_count": 1}
+
+
 def _make_product(db_session, store_id: str, sku: str, *, name: str | None = None, offer_id: str | None = None):
     product = Product(store_id=store_id, ozon_sku=sku, name=name or f"Товар {sku}", offer_id=offer_id)
     db_session.add(product)
@@ -360,7 +380,10 @@ def test_skus_are_batched_by_configured_size(db_session, two_stores_with_users, 
     for sku in ["1", "2", "3"]:
         _make_product(db_session, d["store_a"].id, sku)
 
-    client = FakeOzonSellerClient([{"items": [], "total": 0, "page_count": 1} for _ in range(2)])
+    # Non-empty responses: an empty one for a >1-sku batch now triggers the
+    # per-sku retry fallback (see test_batch_of_multiple_skus_...), which
+    # would add extra calls unrelated to what this test checks.
+    client = FakeOzonSellerClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1} for _ in range(2)])
     sync_search_query_details(db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 1), date_to=date(2026, 8, 31))
 
     config_module.get_settings.cache_clear()
@@ -489,3 +512,76 @@ def test_period_shrink_only_triggers_on_the_specific_ozon_period_error(db_sessio
 
     assert outcome.created == 0
     assert any("500" in e for e in outcome.errors)
+
+
+def test_batch_of_multiple_skus_returning_empty_is_retried_per_sku(db_session, two_stores_with_users, monkeypatch):
+    """Regression test for a real production finding: a group request for
+    several SKUs came back with items: [] even though ONE of those exact
+    SKUs, requested alone with the same date range, had 15 real rows
+    (confirmed independently via a manual XLSX export from Ozon's own
+    cabinet). This module's own docstring already flagged multi-sku
+    batching as an unconfirmed assumption (only 1 SKU was ever field-tested)
+    — an empty group response for >1 SKU must now be retried one SKU at a
+    time rather than silently accepted as "no data"."""
+    from app.core import config as config_module
+    config_module.get_settings.cache_clear()
+    monkeypatch.setenv("SEARCH_QUERY_STATS_SKU_BATCH_SIZE", "3")
+    config_module.get_settings.cache_clear()
+
+    d = two_stores_with_users
+    for sku in ["111", "2953864771", "333"]:
+        _make_product(db_session, d["store_a"].id, sku)
+
+    client = GroupVsSingleClient()
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    config_module.get_settings.cache_clear()
+
+    assert client.calls[0] == ["111", "2953864771", "333"]  # tried together first
+    assert sorted(client.calls[1:]) == [["111"], ["2953864771"], ["333"]]  # then individually
+    assert outcome.created == 3  # each sku's individual retry recovered its own row
+
+    rows = {r.ozon_sku: r.query_text for r in db_session.query(SearchQueryStatistic).filter(SearchQueryStatistic.store_id == d["store_a"].id)}
+    assert rows == {"111": "запрос-111", "2953864771": "запрос-2953864771", "333": "запрос-333"}
+
+
+def test_single_sku_batch_returning_empty_is_not_retried_again(db_session, two_stores_with_users):
+    """A batch that was already just 1 SKU has nothing left to split —
+    retrying the identical request would just repeat the same empty result."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "111")
+
+    client = FakeOzonSellerClient([{"items": [], "total": 0, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert len(client.calls) == 1  # no retry call added
+    assert outcome.created == 0
+
+
+def test_per_sku_retry_still_empty_falls_through_to_the_all_zero_diagnostic(db_session, two_stores_with_users, monkeypatch):
+    """If even the per-sku retries come back empty, the sync must still
+    report the existing "0 rows, HTTP 200" diagnostic — not silently
+    swallow the fact that nothing was ultimately found."""
+    from app.core import config as config_module
+    config_module.get_settings.cache_clear()
+    monkeypatch.setenv("SEARCH_QUERY_STATS_SKU_BATCH_SIZE", "2")
+    config_module.get_settings.cache_clear()
+
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "111")
+    _make_product(db_session, d["store_a"].id, "222")
+
+    client = FakeOzonSellerClient([{"items": [], "total": 0, "page_count": 1} for _ in range(3)])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    config_module.get_settings.cache_clear()
+
+    assert len(client.calls) == 3  # 1 group attempt + 2 individual retries
+    assert outcome.created == 0
+    assert any("0 строк" in e for e in outcome.errors)
