@@ -100,6 +100,10 @@ from app.services.ozon.exceptions import OzonAPIError
 
 _SOURCE = "ozon_seller_api"
 
+# Same cap as app.api.routes.sync's own product/info/list batching for the
+# identical endpoint — /v3/product/info/list caps ids per request.
+_PRODUCT_INFO_BATCH_SIZE = 100
+
 
 @dataclass
 class SyncOutcome:
@@ -111,6 +115,51 @@ class SyncOutcome:
 
 def _batched(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _resolve_zero_sku_products(
+    client: OzonSellerClient, invalid_products: list[Product]
+) -> tuple[list[Product], list[Product]]:
+    """Same fallback as app.api.routes.sync's sync_ozon_products: a product
+    queried by product_id can come back with sku=0 ("no SKU assigned yet")
+    even though a real SKU is already assigned (confirmed live: offer_id
+    "мус/вед/бел1/3" -> sku 5716615794) — /v3/product/info/list queried by
+    offer_id instead resolves it. This module doesn't call Ozon at all for
+    the product list (it reads Product rows straight from the DB), so a
+    catalog row saved with sku=0 before that fix was applied — or simply not
+    yet re-synced since Ozon assigned it a real sku — would otherwise be
+    skipped by this sync forever. Only the zero-sku subset is retried, so a
+    normal run with a clean catalog isn't slowed down by it.
+
+    Returns (resolved, still_invalid). Each resolved Product has its
+    ozon_sku corrected in place (not yet flushed/committed — the caller owns
+    that) so the corrected catalog also benefits, not just this one sync."""
+    retryable = [p for p in invalid_products if p.offer_id]
+    still_invalid = [p for p in invalid_products if not p.offer_id]
+    if not retryable:
+        return [], invalid_products
+
+    resolved_by_offer_id: dict[str, str] = {}
+    offer_ids = [p.offer_id for p in retryable]
+    for batch_start in range(0, len(offer_ids), _PRODUCT_INFO_BATCH_SIZE):
+        batch = offer_ids[batch_start : batch_start + _PRODUCT_INFO_BATCH_SIZE]
+        try:
+            info = client.get_products_info_by_offer_id(batch)
+        except OzonAPIError:
+            continue  # leave this batch's products in still_invalid below
+        for item in info.items:
+            if item.offer_id and item.sku:
+                resolved_by_offer_id[item.offer_id] = str(item.sku)
+
+    resolved: list[Product] = []
+    for product in retryable:
+        real_sku = resolved_by_offer_id.get(product.offer_id)
+        if real_sku:
+            product.ozon_sku = real_sku
+            resolved.append(product)
+        else:
+            still_invalid.append(product)
+    return resolved, still_invalid
 
 
 def _is_positive_sku(value: str | None) -> bool:
@@ -187,9 +236,15 @@ def sync_search_query_details(
     # Product. Ozon's own validation for this endpoint rejects the entire
     # batch containing one ("Skus[N]: value must be greater than 0"), so a
     # single bad row would otherwise silently fail every other product in
-    # its batch too.
+    # its batch too. Before giving up on them, retry via offer_id — same
+    # fallback as the product catalog sync (see _resolve_zero_sku_products).
     valid_products = [p for p in products if _is_positive_sku(p.ozon_sku)]
     invalid_products = [p for p in products if not _is_positive_sku(p.ozon_sku)]
+    if invalid_products:
+        resolved, invalid_products = _resolve_zero_sku_products(client, invalid_products)
+        if resolved:
+            db.flush()  # persist corrected ozon_sku so it's usable below and in the wider catalog
+            valid_products.extend(resolved)
     if invalid_products:
         # Name each one explicitly (sku/name/offer_id/internal id) rather
         # than just a count — a bare count gave no way to tell which

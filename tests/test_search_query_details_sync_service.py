@@ -6,6 +6,7 @@ onto SearchQueryStatistic, and one batch's failure not aborting the others.
 Uses a fake, duck-typed OzonSellerClient — the client's own request-building
 behavior is already covered by test_ozon_seller_client.py."""
 from datetime import date
+from types import SimpleNamespace
 
 from app.models.product import Product
 from app.models.search_query_statistic import SearchQueryStatistic
@@ -27,9 +28,15 @@ _SAMPLE_ITEM = {
 
 
 class FakeOzonSellerClient:
-    def __init__(self, responses: list[dict] | None = None):
+    def __init__(self, responses: list[dict] | None = None, offer_id_lookup_responses: list[list[dict]] | None = None):
         self.calls: list[dict] = []
         self._responses = responses or []
+        # Each entry is a list of {"offer_id": ..., "sku": ...} dicts, one
+        # entry consumed per get_products_info_by_offer_id() call. Defaults
+        # to an empty match (offer_id not found) if not configured, mirroring
+        # a lookup that fails to resolve anything.
+        self.offer_id_lookup_calls: list[list[str]] = []
+        self._offer_id_lookup_responses = offer_id_lookup_responses or []
 
     def get_product_query_details(self, *, date_from, date_to, skus=None, limit_by_sku=15, page_size=100):
         self.calls.append(
@@ -38,6 +45,11 @@ class FakeOzonSellerClient:
         if self._responses:
             return self._responses.pop(0)
         return {"items": [], "total": 0, "page_count": 1}
+
+    def get_products_info_by_offer_id(self, offer_ids):
+        self.offer_id_lookup_calls.append(list(offer_ids))
+        payload = self._offer_id_lookup_responses.pop(0) if self._offer_id_lookup_responses else []
+        return SimpleNamespace(items=[SimpleNamespace(offer_id=p["offer_id"], sku=p.get("sku")) for p in payload])
 
 
 class ErrorOnceThenOkClient(FakeOzonSellerClient):
@@ -91,7 +103,9 @@ def test_sku_zero_is_filtered_out_and_reported(db_session, two_stores_with_users
     Product.ozon_sku="0" and then sent straight to Ozon, which rejected the
     whole batch with "Skus[N]: value must be greater than 0". A sku=0 (or
     otherwise non-positive) product must be filtered out before batching,
-    and the skip must be visible in outcome.errors rather than silent."""
+    and the skip must be visible in outcome.errors rather than silent — this
+    covers the case where the offer_id fallback (see the tests below) also
+    fails to resolve a real sku, so the product is still genuinely invalid."""
     d = two_stores_with_users
     _make_product(db_session, d["store_a"].id, "2953864771")
     _make_product(db_session, d["store_a"].id, "0", name="Необувница", offer_id="art-42")
@@ -101,13 +115,63 @@ def test_sku_zero_is_filtered_out_and_reported(db_session, two_stores_with_users
         db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
     )
 
+    assert client.offer_id_lookup_calls == [["art-42"]]  # the fallback was attempted...
     assert len(client.calls) == 1
-    assert client.calls[0]["skus"] == ["2953864771"]
+    assert client.calls[0]["skus"] == ["2953864771"]  # ...but only the already-valid sku made it into the request
     assert outcome.created == 1
     # The diagnostic must name the specific product (not just a count) so a
     # seller can actually go check/fix it — a bare "1 товар пропущен" gave
     # no way to tell which product was the culprit.
     assert any("Необувница" in e and "art-42" in e for e in outcome.errors)
+
+
+def test_zero_sku_product_is_resolved_via_offer_id_before_sync(db_session, two_stores_with_users):
+    """Same real-world bug as app.api.routes.sync's sync_ozon_products fix:
+    a product ("мус/вед/бел1/3", real sku 5716615794) can sit in the local
+    catalog with ozon_sku="0" even though Ozon has since assigned it a real
+    SKU. This module reads Product straight from the DB rather than calling
+    Ozon's product list itself, so without this fallback such a row would be
+    skipped by "Позиции в поиске" forever, even after being fixed by a fresh
+    /sync/ozon-products run — the fix must live here too."""
+    d = two_stores_with_users
+    product = _make_product(
+        db_session, d["store_a"].id, "0",
+        name="Мусорное ведро для кухни и туалета с крышкой 11 л", offer_id="мус/вед/бел1/3",
+    )
+
+    resolved_item = {**_SAMPLE_ITEM, "sku": 5716615794}
+    client = FakeOzonSellerClient(
+        responses=[{"items": [resolved_item], "total": 1, "page_count": 1}],
+        offer_id_lookup_responses=[[{"offer_id": "мус/вед/бел1/3", "sku": 5716615794}]],
+    )
+
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert client.offer_id_lookup_calls == [["мус/вед/бел1/3"]]
+    assert client.calls[0]["skus"] == ["5716615794"]  # the resolved sku, not "0"
+    assert outcome.created == 1
+    assert outcome.errors == []  # no longer skipped
+
+    db_session.refresh(product)
+    assert product.ozon_sku == "5716615794"  # corrected in place, benefiting the wider catalog too
+
+
+def test_zero_sku_product_without_offer_id_is_not_retried(db_session, two_stores_with_users):
+    """No offer_id means nothing to retry with — must be reported immediately,
+    without attempting a lookup call."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+    _make_product(db_session, d["store_a"].id, "0", name="Без артикула")
+
+    client = FakeOzonSellerClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert client.offer_id_lookup_calls == []
+    assert any("Без артикула" in e for e in outcome.errors)
 
 
 def test_no_products_reports_a_clear_error(db_session, two_stores_with_users):
