@@ -64,6 +64,36 @@ class ErrorOnceThenOkClient(FakeOzonSellerClient):
         return super().get_product_query_details(**kwargs)
 
 
+_PERIOD_REJECTED_ERROR_TEXT = (
+    'Ozon вернул ошибку 400: {"code":3,"message":"ProductQueriesDetails error: '
+    "service.ProductQueriesDetails.getPremiumAnalyticsPeriod rpc error: code = "
+    'InvalidArgument desc = There is no data for the specified period"}'
+)
+
+
+class PeriodLimitedClient:
+    """Simulates Ozon's real (confirmed live) rejection of a date range it
+    considers too long/too old: any request whose (date_to - date_from) span
+    exceeds max_accepted_days raises the exact error text seen live; a span
+    at or under it succeeds with `response`."""
+
+    def __init__(self, max_accepted_days: int, response: dict):
+        self.max_accepted_days = max_accepted_days
+        self.response = response
+        self.calls: list[dict] = []
+
+    def get_product_query_details(self, *, date_from, date_to, skus=None, limit_by_sku=15, page_size=100):
+        from datetime import datetime as _dt
+
+        d_from = _dt.fromisoformat(date_from.replace("Z", "+00:00")).date()
+        d_to = _dt.fromisoformat(date_to.replace("Z", "+00:00")).date()
+        span = (d_to - d_from).days + 1
+        self.calls.append({"date_from": date_from, "date_to": date_to, "span": span, "skus": list(skus or [])})
+        if span > self.max_accepted_days:
+            raise OzonAPIError(_PERIOD_REJECTED_ERROR_TEXT)
+        return self.response
+
+
 def _make_product(db_session, store_id: str, sku: str, *, name: str | None = None, offer_id: str | None = None):
     product = Product(store_id=store_id, ozon_sku=sku, name=name or f"Товар {sku}", offer_id=offer_id)
     db_session.add(product)
@@ -398,3 +428,64 @@ def test_nonzero_result_is_not_flagged_as_the_all_empty_diagnostic(db_session, t
     )
 
     assert outcome.errors == []
+
+
+def test_period_too_wide_is_shrunk_and_retried_until_accepted(db_session, two_stores_with_users):
+    """Regression test for the reported production bug: Ozon rejects a date
+    range it considers too wide/too old OUTRIGHT (InvalidArgument, not an
+    empty result) — confirmed live: a 30-day window ending 2 days ago
+    worked, but a 92-day window ending 7 days ago (2026-06-01..2026-08-31)
+    was rejected with "There is no data for the specified period". The sync
+    must discover and use the largest accepted window automatically instead
+    of failing the whole run or silently reporting 0 rows."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = PeriodLimitedClient(max_accepted_days=10, response={"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1})
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client,
+        date_from=date(2026, 6, 1), date_to=date(2026, 8, 31),  # the exact 92-day span from the report
+    )
+
+    assert outcome.created == 1
+    assert client.calls[-1]["span"] <= 10  # the request that finally succeeded
+    assert any("сокращён" in e for e in outcome.errors)  # visible to the user, not silent
+
+    row = db_session.query(SearchQueryStatistic).filter(SearchQueryStatistic.store_id == d["store_a"].id).one()
+    assert (row.period_end - row.period_start).days + 1 <= 10
+    assert row.period_end == date(2026, 8, 31)  # date_to stays anchored; only date_from moves
+
+
+def test_period_rejected_even_at_floor_reports_a_clear_error(db_session, two_stores_with_users):
+    """If Ozon rejects the period even at the configured minimum, the sync
+    must give up with a specific, actionable message — not loop forever and
+    not report the generic "got 0 rows" diagnostic, which would be
+    misleading (Ozon never actually returned a successful empty result)."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = PeriodLimitedClient(max_accepted_days=0, response={"items": [], "total": 0, "page_count": 1})
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client,
+        date_from=date(2026, 6, 1), date_to=date(2026, 8, 31),
+    )
+
+    assert outcome.created == 0
+    assert any("ограничение периода/тарифа Ozon" in e for e in outcome.errors)
+    assert not any("0 строк" in e for e in outcome.errors)
+
+
+def test_period_shrink_only_triggers_on_the_specific_ozon_period_error(db_session, two_stores_with_users):
+    """A generic API error (e.g. a 500) on the first batch must not be
+    mistaken for the period-too-wide condition — no shrink/retry, just the
+    existing single-attempt-then-report-error behavior."""
+    d = two_stores_with_users
+    _make_product(db_session, d["store_a"].id, "2953864771")
+
+    client = ErrorOnceThenOkClient([{"items": [_SAMPLE_ITEM], "total": 1, "page_count": 1}])
+    outcome = sync_search_query_details(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 8, 8), date_to=date(2026, 9, 4)
+    )
+
+    assert outcome.created == 0
+    assert any("500" in e for e in outcome.errors)

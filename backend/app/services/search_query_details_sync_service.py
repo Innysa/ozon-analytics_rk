@@ -24,6 +24,23 @@ app.services.ozon.client's own module docstring for the full write-up):
       This module therefore never defaults date_to to today — see
       settings.SEARCH_QUERY_STATS_DATA_LAG_DAYS.
 
+  1c. Ozon ALSO rejects a date range it considers too long/too far in the
+      past — with the exact SAME error text as 1b — confirmed live: a
+      30-day window ending 2 days ago succeeded, but an explicit 92-day
+      window ending 7 days ago (2026-06-01..2026-08-31, requested to debug
+      why the automatic sync kept reporting fetched=created=updated=0) was
+      rejected outright as an InvalidArgument, not just returned empty. The
+      exact allowed bound is NOT documented anywhere this app can reach
+      (docs.ozon.ru/dev.ozon.ru/seller-edu.ozon.ru are all network-blocked
+      from this environment; public web search surfaces only "Premium/
+      Premium Plus get a longer period", no day count) and plausibly varies
+      by account tier anyway. Rather than hardcode a guessed number, this
+      module discovers the actual accepted window empirically per run (see
+      _fetch_with_period_shrink): it keeps date_to fixed and halves the span
+      until Ozon accepts it or settings.SEARCH_QUERY_STATS_MIN_PERIOD_DAYS is
+      reached, and records in SyncOutcome.errors whichever spans were
+      rejected along the way so this is visible to the user, not silent.
+
   2. Both `limit_by_sku` (max 15) and `page_size` (max 100) are required
      together. This module always sends Ozon's own confirmed maxima
      (settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU /
@@ -186,6 +203,81 @@ def _resolve_zero_sku_products(
     return resolved, still_invalid
 
 
+def _is_period_rejected_error(exc: OzonAPIError) -> bool:
+    """Ozon's specific InvalidArgument rejection of the requested date range
+    itself (gRPC code 3, from the internal getPremiumAnalyticsPeriod RPC) —
+    confirmed live with the EXACT SAME message text for two different root
+    causes: date_to="today" (aggregation lag not satisfied — see
+    SEARCH_QUERY_STATS_DATA_LAG_DAYS) and a date range Ozon considers too
+    long/too far in the past (a 92-day window ending 7 days ago was
+    rejected outright; a 30-day window ending 2 days ago was accepted). This
+    is a validation rejection of the window itself, before any per-row data
+    is even considered — a genuinely empty result for a valid window comes
+    back as a normal HTTP 200 with items: [] instead, not this error.
+    Detected by matching the message text since Ozon's error shape here is
+    an opaque passthrough of an internal RPC error ({"code":3,"message":
+    "...There is no data for the specified period"}), not a structured
+    field this app can otherwise rely on."""
+    message = str(exc).lower()
+    return "no data for the specified period" in message or "getpremiumanalyticsperiod" in message
+
+
+def _fetch_with_period_shrink(
+    client: OzonSellerClient,
+    *,
+    date_from: date,
+    date_to: date,
+    skus: list[str],
+    limit_by_sku: int,
+    page_size: int,
+    min_period_days: int,
+    batch_num: int,
+    total_batches: int,
+) -> tuple[dict, date, date, list[int]]:
+    """Ozon's real allowed date range for this endpoint isn't documented
+    anywhere this app can reach (docs.ozon.ru/dev.ozon.ru/seller-edu.ozon.ru
+    are all network-blocked from this environment, and no third-party
+    source states an exact day count either — only that Premium/Premium
+    Plus reportedly unlock "a longer period", with no number given) and
+    plausibly depends on the account's own plan/tier anyway. Rather than
+    hardcode a guessed limit, this discovers the largest ACCEPTED window
+    empirically per run: keeps date_to fixed (closest to "now", where the
+    data actually is) and halves the span, moving date_from forward, until
+    Ozon accepts the request or the span reaches min_period_days — at which
+    point the error is surfaced as-is rather than shrinking indefinitely.
+
+    Returns (data, actual_date_from, actual_date_to, rejected_spans) —
+    rejected_spans lists the span lengths (in days) Ozon turned down before
+    the one that worked (or before giving up), for diagnostics."""
+    current_from = date_from
+    rejected_spans: list[int] = []
+    while True:
+        span_days = (date_to - current_from).days + 1
+        # See this module's other TEMPORARY diagnostic logging for why this
+        # is WARNING, not INFO — this deployment doesn't configure a log
+        # level, so INFO would silently never appear in `docker compose logs`.
+        logger.warning(
+            "Позиции в поиске: батч %d/%d, sku=%s, date_from=%s, date_to=%s (%d дн.), limit_by_sku=%d, page_size=%d",
+            batch_num, total_batches, skus, current_from.isoformat(), date_to.isoformat(), span_days,
+            limit_by_sku, page_size,
+        )
+        try:
+            data = client.get_product_query_details(
+                date_from=f"{current_from.isoformat()}T00:00:00Z",
+                date_to=f"{date_to.isoformat()}T23:59:59Z",
+                skus=skus,
+                limit_by_sku=limit_by_sku,
+                page_size=page_size,
+            )
+            return data, current_from, date_to, rejected_spans
+        except OzonAPIError as exc:
+            if not _is_period_rejected_error(exc) or span_days <= min_period_days:
+                raise
+            rejected_spans.append(span_days)
+            new_span = max(min_period_days, span_days // 2)
+            current_from = date_to - timedelta(days=new_span - 1)
+
+
 def _is_positive_sku(value: str | None) -> bool:
     """Mirrors Ozon's own validation for this endpoint ("Skus[N]: value
     must be greater than 0") — a real Ozon SKU is always a positive
@@ -293,6 +385,53 @@ def sync_search_query_details(
         outcome.errors.append("Нет товаров с корректным SKU для запроса статистики поисковых запросов.")
         return outcome
 
+    sku_batches = _batched(skus, settings.SEARCH_QUERY_STATS_SKU_BATCH_SIZE)
+    total_batches = len(sku_batches)
+
+    # Resolve the actually-usable date window using the first batch, BEFORE
+    # existing_keys is built (it's keyed by period_start/period_end) and
+    # before any row is saved — Ozon can reject the originally-resolved
+    # window outright (see _fetch_with_period_shrink), not just return it
+    # empty, so the real period may only be known after this call.
+    first_data = None
+    try:
+        first_data, resolved_date_from, resolved_date_to, rejected_spans = _fetch_with_period_shrink(
+            client,
+            date_from=resolved_date_from,
+            date_to=resolved_date_to,
+            skus=sku_batches[0],
+            limit_by_sku=settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU,
+            page_size=settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+            min_period_days=settings.SEARCH_QUERY_STATS_MIN_PERIOD_DAYS,
+            batch_num=1,
+            total_batches=total_batches,
+        )
+        if rejected_spans:
+            outcome.errors.append(
+                f"Ozon отклонил запрошенный период как слишком длинный/старый для этой статистики "
+                f"(пробовали {', '.join(f'{s} дн.' for s in rejected_spans)} — ошибка «нет данных за указанный "
+                f"период», это ограничение периода/тарифа Ozon, а не отсутствие данных). Период автоматически "
+                f"сокращён до {resolved_date_from.isoformat()}..{resolved_date_to.isoformat()} "
+                f"({(resolved_date_to - resolved_date_from).days + 1} дн.) — именно за него и сохранена статистика. "
+                f"Для более глубокой истории запрашивайте её отдельными более короткими периодами."
+            )
+    except OzonAPIError as exc:
+        if _is_period_rejected_error(exc):
+            outcome.errors.append(
+                f"Ozon отклоняет любой период для этой статистики вплоть до минимального "
+                f"{settings.SEARCH_QUERY_STATS_MIN_PERIOD_DAYS} дн. с ошибкой «нет данных за указанный период» — "
+                f"это ограничение периода/тарифа Ozon (Premium/Premium Plus) для "
+                f"/v1/analytics/product-queries/details, а не отсутствие данных. Доступны, по всей видимости, "
+                f"только более свежие и/или совсем короткие периоды — уточните точный лимит вашего тарифа в "
+                f"поддержке Ozon, либо запросите статистику вручную за пробный период: "
+                f"POST /sync/ozon-search-query-statistics?date_from=ГГГГ-ММ-ДД&date_to=ГГГГ-ММ-ДД."
+            )
+        else:
+            outcome.errors.append(f"Батч 1 ({len(sku_batches[0])} SKU): {exc}")
+
+    date_from_str = f"{resolved_date_from.isoformat()}T00:00:00Z"
+    date_to_str = f"{resolved_date_to.isoformat()}T23:59:59Z"
+
     existing_keys = {
         (s.ozon_sku, s.query_text)
         for s in db.query(SearchQueryStatistic.ozon_sku, SearchQueryStatistic.query_text)
@@ -304,36 +443,13 @@ def sync_search_query_details(
         .all()
     }
 
-    total_batches = -(-len(skus) // settings.SEARCH_QUERY_STATS_SKU_BATCH_SIZE)  # ceil div, for the log line only
-    for batch_num, sku_batch in enumerate(_batched(skus, settings.SEARCH_QUERY_STATS_SKU_BATCH_SIZE), start=1):
+    def _process_batch(batch_num: int, sku_batch: list[str], data: dict) -> None:
         # TEMPORARY diagnostic logging (see task: "получено 0, создано 0,
-        # обновлено 0" on every batch despite HTTP 200) — logs the exact
-        # request this module sends and Ozon's raw response, so a live run
-        # can show whether Ozon is genuinely returning an empty items array
-        # for this date range/skus, or a differently-shaped body this
-        # parsing code doesn't recognize. Deliberately logged at WARNING,
-        # not INFO: this deployment doesn't configure a log level, so
-        # Python's logging falls back to its "handler of last resort" (stderr,
-        # WARNING+ only) — an INFO call here would silently never appear in
-        # `docker compose logs`. Remove once the root cause is confirmed and
-        # fixed.
-        logger.warning(
-            "Позиции в поиске: батч %d/%d, sku=%s, date_from=%s, date_to=%s, limit_by_sku=%d, page_size=%d",
-            batch_num, total_batches, sku_batch, date_from_str, date_to_str,
-            settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU, settings.SEARCH_QUERY_STATS_PAGE_SIZE,
-        )
-        try:
-            data = client.get_product_query_details(
-                date_from=date_from_str,
-                date_to=date_to_str,
-                skus=sku_batch,
-                limit_by_sku=settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU,
-                page_size=settings.SEARCH_QUERY_STATS_PAGE_SIZE,
-            )
-        except OzonAPIError as exc:
-            outcome.errors.append(f"Батч {batch_num} ({len(sku_batch)} SKU): {exc}")
-            continue
-
+        # обновлено 0" on every batch despite HTTP 200) — logs Ozon's raw
+        # response so a live run can show whether Ozon is genuinely
+        # returning an empty items array, or a differently-shaped body this
+        # parsing code doesn't recognize. Remove once the root cause here is
+        # confirmed and fixed.
         items = data.get("items") or []
         if not items:
             # Full raw body — safe to log in full here (no per-row PII/
@@ -431,28 +547,48 @@ def sync_search_query_details(
 
         db.commit()
 
+    if first_data is not None:
+        _process_batch(1, sku_batches[0], first_data)
+
+    for batch_num, sku_batch in enumerate(sku_batches[1:], start=2):
+        logger.warning(
+            "Позиции в поиске: батч %d/%d, sku=%s, date_from=%s, date_to=%s, limit_by_sku=%d, page_size=%d",
+            batch_num, total_batches, sku_batch, date_from_str, date_to_str,
+            settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU, settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+        )
+        try:
+            data = client.get_product_query_details(
+                date_from=date_from_str,
+                date_to=date_to_str,
+                skus=sku_batch,
+                limit_by_sku=settings.SEARCH_QUERY_STATS_LIMIT_BY_SKU,
+                page_size=settings.SEARCH_QUERY_STATS_PAGE_SIZE,
+            )
+        except OzonAPIError as exc:
+            outcome.errors.append(f"Батч {batch_num} ({len(sku_batch)} SKU): {exc}")
+            continue
+        _process_batch(batch_num, sku_batch, data)
+
     if outcome.fetched == 0 and not outcome.errors:
         # Every batch returned HTTP 200 with an empty items array — not an
         # error Ozon reports explicitly, so nothing above would otherwise
-        # surface it. Most likely causes, in order of likelihood: (1) Ozon
-        # genuinely has no search-query data for these SKUs in
-        # [date_from, date_to] — either the store has too little search
-        # traffic, or the window is too recent/too short for Ozon's own
-        # aggregation lag (see SEARCH_QUERY_STATS_DATA_LAG_DAYS); (2) the
+        # surface it. The period-rejection case (Ozon refusing the window
+        # outright) is handled separately above; reaching here means Ozon
+        # accepted the window but had nothing to return for it. Most likely
+        # causes, in order of likelihood: (1) Ozon genuinely has no
+        # search-query data for these SKUs in [date_from, date_to] — the
+        # store has too little search traffic in this window; (2) the
         # account's Ozon plan doesn't unlock this data for the requested
-        # period (Premium/Premium Plus reportedly get a longer history —
-        # unconfirmed). See this run's own log output (batch-level raw
-        # response is logged above) to tell these apart.
+        # period. See this run's own log output (batch-level raw response is
+        # logged above) to tell these apart.
         outcome.errors.append(
             f"Ozon вернул 0 строк за весь период {resolved_date_from.isoformat()}..{resolved_date_to.isoformat()} "
             f"по всем {len(skus)} SKU, хотя ответ был успешным (HTTP 200) — это не ошибка запроса. Возможные причины: "
             f"(1) у этих товаров действительно нет данных по поисковым запросам за этот период в кабинете Ozon; "
-            f"(2) период слишком короткий/слишком свежий — Ozon отстаёт с агрегацией на несколько дней; "
-            f"(3) тариф магазина не открывает эти данные за такой период. Проверьте вручную отчёт "
+            f"(2) тариф магазина не открывает эти данные за такой период. Проверьте вручную отчёт "
             f"«Аналитика → Товары в поиске → Запросы моего товара» в кабинете Ozon за этот же период — если там "
             f"данные есть, а тут нет, откройте подробный лог этого запуска (сырой ответ Ozon логируется на уровне "
-            f"WARNING). Также можно повторить синхронизацию с явно широким периодом: "
-            f"POST /sync/ozon-search-query-statistics?date_from=ГГГГ-ММ-ДД&date_to=ГГГГ-ММ-ДД."
+            f"WARNING)."
         )
 
     return outcome
