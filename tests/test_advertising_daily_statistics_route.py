@@ -15,14 +15,14 @@ from tests.conftest import login
 
 _HEADER = (
     "SKU;Название товара;День;Цена товара;Тип страницы;Условие показа;Показы;Клики;"
-    "CTR (%);В корзину;Средняя ставка (руб.);Расход, ₽ с НДС;Заказы;Выручка, ₽;"
-    "Заказы модели;Выручка с заказов модели, ₽"
+    "CTR (%);В корзину;Средняя ставка (руб.);Расход, ₽ с НДС;Продано товаров;"
+    "Продажи в продвижении, ₽;ДРР в продвижении, %;ДРР (общий), %"
 )
 
 
 def _zip_for_campaign(ozon_campaign_id: str, day: str = "01.09.2026") -> bytes:
     buf = io.BytesIO()
-    row = f"777;Товар 777;{day};100;PDP;search;500;25;5,0;3;2,50;62,50;2;900,00;0;0"
+    row = f"777;Товар 777;{day};100;PDP;search;500;25;5,0;3;2,50;62,50;2;900,00;6,9;7,2"
     csv_text = "\n".join(["Статистика; период", _HEADER, row])
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"{ozon_campaign_id}_{day}-{day}.csv", csv_text.encode("utf-8-sig"))
@@ -155,6 +155,10 @@ def test_sync_end_to_end_creates_daily_statistics_and_syncrun(client, db_session
     assert items[0]["date"] == "2026-09-01"
     assert items[0]["impressions"] == 500
     assert items[0]["spend_rub"] == 62.50
+    assert items[0]["orders"] == 2
+    assert items[0]["revenue_rub"] == 900.00
+    assert items[0]["drr_promo_pct_ozon"] == 6.9
+    assert items[0]["drr_total_pct_ozon"] == 7.2
 
 
 def test_store_isolation_on_daily_statistics_listing(client, db_session, two_stores_with_users, monkeypatch):

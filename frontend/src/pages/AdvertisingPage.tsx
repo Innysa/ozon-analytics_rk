@@ -810,7 +810,7 @@ function CampaignAutoDailyTable({ rows }: { rows: AdvertisingDailyStatistic[] })
             <th>Расход</th>
             <th>Заказы</th>
             <th>Выручка</th>
-            <th>ДРР</th>
+            <th>ДРР (расчёт)</th>
           </tr>
         </thead>
         <tbody>
@@ -848,9 +848,15 @@ function CampaignAutoDailyTable({ rows }: { rows: AdvertisingDailyStatistic[] })
           ))}
         </tbody>
       </table>
-      <div className="mt-1 text-xs text-slate-400">
-        Подсветка = отклонение ≥ {DEVIATION_THRESHOLD_PCT}% к предыдущему дню (или к среднему по кампании) — наведите
-        на значение, чтобы увидеть, насколько именно.
+      <div className="mt-1 space-y-0.5 text-xs text-slate-400">
+        <div>
+          Подсветка = отклонение ≥ {DEVIATION_THRESHOLD_PCT}% к предыдущему дню (или к среднему по кампании) —
+          наведите на значение, чтобы увидеть, насколько именно.
+        </div>
+        <div>
+          ДРР здесь — расход / выручка за день, суммарно по всем товарам кампании (как и остальные рассчитанные ДРР
+          в этом приложении); построчные проценты, которые Ozon отдаёт в самом отчёте, не усредняются.
+        </div>
       </div>
     </div>
   );

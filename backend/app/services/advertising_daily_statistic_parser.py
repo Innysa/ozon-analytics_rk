@@ -20,6 +20,16 @@ and app.models.advertising_daily_statistic's module docstring):
     fixed row offset. A campaign with zero impressions for the whole period
     still gets a fully-zero data row plus a zero totals row — neither case
     is an error.
+  - "Structure" above (ZIP/CSV/date/encoding shape) was genuinely confirmed
+    against a real account before this shipped. The exact orders/revenue/
+    ДРР column LABELS were not — an earlier version of _COLUMN_MAP guessed
+    "Заказы"/"Выручка, ₽" (copied from the CSV-upload export, a different
+    report) and every row silently parsed with orders=None/revenue_rub=None.
+    A real account's stored raw_payload (which keeps the entire unmapped CSV
+    row, so no new Ozon request was needed to catch this) showed the actual
+    labels are "Продано товаров" / "Продажи в продвижении, ₽" / "ДРР в
+    продвижении, %" / "ДРР (общий), %" — see _COLUMN_MAP and
+    AdvertisingDailyStatistic's module docstring.
 """
 from __future__ import annotations
 
@@ -51,8 +61,21 @@ _COLUMN_MAP = {
     "в корзину": "cart_additions",
     "средняя ставка руб": "avg_bid_rub_ozon",
     "расход с ндс": "spend_rub",
-    "заказы": "orders",
-    "выручка": "revenue_rub",
+    # Confirmed against a real account's raw_payload — the first version of
+    # this map used "заказы"/"выручка" (copied from the unrelated CSV-upload
+    # export's real column names) and every row parsed with orders=None/
+    # revenue_rub=None, because Ozon's actual label for this report is
+    # "Продано товаров" / "Продажи в продвижении, ₽". Do not "simplify"
+    # these back to "заказы"/"выручка" without the same kind of confirmation
+    # — that's exactly the mistake this fixes.
+    "продано товаров": "orders",
+    "продажи в продвижении": "revenue_rub",
+    "дрр в продвижении": "drr_promo_pct_ozon",
+    "дрр общий": "drr_total_pct_ozon",
+    # UNCONFIRMED for this report type — see AdvertisingDailyStatistic's
+    # module docstring. Kept mapped (harmlessly absent if the column isn't
+    # there) rather than removed outright, but don't trust these two without
+    # the same raw_payload confirmation the fields above got.
     "заказы модели": "orders_model",
     "выручка с заказов модели": "revenue_model_rub",
 }

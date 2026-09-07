@@ -203,6 +203,8 @@ class AdvertisingDailyStatisticOut(BaseModel):
     revenue_rub: float | None
     orders_model: int | None
     revenue_model_rub: float | None
+    drr_promo_pct_ozon: float | None
+    drr_total_pct_ozon: float | None
 
     model_config = {"from_attributes": True}
 

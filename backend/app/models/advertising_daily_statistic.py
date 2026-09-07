@@ -27,6 +27,24 @@ app.services.advertising_daily_sync_service for where each is enforced):
     "Итого и среднее" row in product_card_statistic's importer): a campaign
     can genuinely have zero impressions in the period, and Ozon still emits
     a fully-zero total row for it, which is not an error.
+  - orders/revenue_rub/the two ozon-reported ДРР percentages are read from
+    columns "Продано товаров" / "Продажи в продвижении, ₽" / "ДРР в
+    продвижении, %" / "ДРР (общий), %" — confirmed against a real account's
+    raw_payload after the first version of this parser shipped with the
+    wrong guessed labels ("Заказы"/"Выручка, ₽", copied from the unrelated
+    CSV-upload export's real columns) and silently produced orders=None/
+    revenue_rub=None for every row. drr_promo_pct_ozon/drr_total_pct_ozon
+    below are stored exactly as Ozon reports them, per row, and — same rule
+    as AdvertisingStatistic's own drr_promo_pct_ozon/drr_total_pct_ozon —
+    are never recomputed or averaged; the app's own ДРР (spend/revenue,
+    summed first) is what aggregating UI/analytics show instead.
+  - orders_model/revenue_model_rub remain UNCONFIRMED for this report type —
+    they were guessed the same way orders/revenue_rub originally were
+    (copied from the CSV-upload export's "Заказы модели"/"Выручка с заказов
+    модели, ₽" columns) and the account raw_payload that caught the
+    orders/revenue bug didn't confirm or rule these two out either way.
+    They're left mapped (harmlessly None if the column doesn't exist) —
+    don't trust them without the same kind of raw_payload confirmation.
 """
 from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -64,10 +82,12 @@ class AdvertisingDailyStatistic(TimestampMixin, Base):
     cart_additions: Mapped[int | None] = mapped_column(Integer, nullable=True)  # "В корзину"
     avg_bid_rub_ozon: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)  # "Средняя ставка (руб.)"
     spend_rub: Mapped[float | None] = mapped_column(Numeric(14, 4), nullable=True)  # "Расход, ₽ с НДС"
-    orders: Mapped[int | None] = mapped_column(Integer, nullable=True)  # "Заказы"
-    revenue_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # "Выручка, ₽"
-    orders_model: Mapped[int | None] = mapped_column(Integer, nullable=True)  # "Заказы модели"
-    revenue_model_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # "Выручка с заказов модели, ₽"
+    orders: Mapped[int | None] = mapped_column(Integer, nullable=True)  # "Продано товаров"
+    revenue_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # "Продажи в продвижении, ₽"
+    orders_model: Mapped[int | None] = mapped_column(Integer, nullable=True)  # unconfirmed — see module docstring
+    revenue_model_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # unconfirmed — see module docstring
+    drr_promo_pct_ozon: Mapped[float | None] = mapped_column(Numeric(9, 4), nullable=True)  # "ДРР в продвижении, %"
+    drr_total_pct_ozon: Mapped[float | None] = mapped_column(Numeric(9, 4), nullable=True)  # "ДРР (общий), %"
 
     source: Mapped[str] = mapped_column(String(30), nullable=False)  # "ozon_performance_api"
     raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)

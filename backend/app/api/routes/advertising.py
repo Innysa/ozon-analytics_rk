@@ -245,6 +245,8 @@ def list_daily_statistics(
             revenue_rub=to_float(r.revenue_rub),
             orders_model=r.orders_model,
             revenue_model_rub=to_float(r.revenue_model_rub),
+            drr_promo_pct_ozon=to_float(r.drr_promo_pct_ozon),
+            drr_total_pct_ozon=to_float(r.drr_total_pct_ozon),
         )
         for r in rows
     ]

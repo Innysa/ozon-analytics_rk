@@ -16,8 +16,8 @@ from app.services.ozon_performance.schemas import OzonStatisticsReportStatus
 
 _HEADER = (
     "SKU;Название товара;День;Цена товара;Тип страницы;Условие показа;Показы;Клики;"
-    "CTR (%);В корзину;Средняя ставка (руб.);Расход, ₽ с НДС;Заказы;Выручка, ₽;"
-    "Заказы модели;Выручка с заказов модели, ₽"
+    "CTR (%);В корзину;Средняя ставка (руб.);Расход, ₽ с НДС;Продано товаров;"
+    "Продажи в продвижении, ₽;ДРР в продвижении, %;ДРР (общий), %"
 )
 
 
@@ -117,6 +117,39 @@ def test_single_batch_creates_rows(db_session, two_stores_with_users):
     assert row.impressions == 10
     assert float(row.spend_rub) == 1.0
     assert row.campaign_id is not None  # matched back to the AdvertisingCampaign row
+
+
+def test_orders_revenue_and_drr_are_parsed_from_the_real_confirmed_columns(db_session, two_stores_with_users):
+    """Regression test for the real bug: an earlier version of the column map
+    used "Заказы"/"Выручка, ₽" (guessed from the unrelated CSV-upload export)
+    and every row parsed with orders=None/revenue_rub=None even though
+    spend/impressions/clicks worked fine — confirmed on a real account via
+    raw_payload. The real labels are "Продано товаров"/"Продажи в
+    продвижении, ₽"/"ДРР в продвижении, %"/"ДРР (общий), %"."""
+    d = two_stores_with_users
+    _make_running_campaign(db_session, d["store_a"].id, "111")
+    db_session.flush()
+
+    row = "sku111;Товар 111;01.09.2026;100;PDP;search;10;1;1,0;0;1,00;500,00;1;2750,00;4,1;5,0"
+    csv_text = "\n".join(["Статистика; период", _HEADER, row])
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("111_01.09.2026-01.09.2026.csv", csv_text.encode("utf-8-sig"))
+    client = FakeOzonPerformanceClient({"uuid:111": buf.getvalue()})
+
+    sync_advertising_daily_statistics(
+        db_session, store_id=d["store_a"].id, client=client,
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 1),
+    )
+
+    from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
+    row_out = db_session.query(AdvertisingDailyStatistic).filter(
+        AdvertisingDailyStatistic.store_id == d["store_a"].id
+    ).one()
+    assert row_out.orders == 1
+    assert float(row_out.revenue_rub) == 2750.00
+    assert float(row_out.drr_promo_pct_ozon) == 4.1
+    assert float(row_out.drr_total_pct_ozon) == 5.0
 
 
 def test_warns_when_report_has_fewer_days_than_requested(db_session, two_stores_with_users):

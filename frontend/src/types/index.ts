@@ -257,6 +257,11 @@ export interface AdvertisingDailyStatistic {
   revenue_rub: number | null;
   orders_model: number | null;
   revenue_model_rub: number | null;
+  // Ozon's own row-level ДРР, stored as-is (never recomputed) — same rule
+  // as elsewhere in the app: aggregating UI shows a calculated ДРР
+  // (spend/revenue summed first), not an average of these per-row percents.
+  drr_promo_pct_ozon: number | null;
+  drr_total_pct_ozon: number | null;
 }
 
 export interface AdvertisingDailyStatisticListResponse {

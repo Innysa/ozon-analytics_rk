@@ -144,6 +144,8 @@ def _apply_row(stat: AdvertisingDailyStatistic, row: dict, *, product: Product, 
     stat.revenue_rub = row.get("revenue_rub")
     stat.orders_model = row.get("orders_model")
     stat.revenue_model_rub = row.get("revenue_model_rub")
+    stat.drr_promo_pct_ozon = row.get("drr_promo_pct_ozon")
+    stat.drr_total_pct_ozon = row.get("drr_total_pct_ozon")
     stat.raw_payload = row.get("raw_payload")
 
 
