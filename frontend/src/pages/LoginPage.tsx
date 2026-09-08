@@ -11,7 +11,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (!loading && user) return <Navigate to="/reviews" replace />;
+  if (!loading && user) return <Navigate to="/dashboard" replace />;
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -19,7 +19,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      navigate("/reviews");
+      navigate("/dashboard");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Не удалось войти");
     } finally {

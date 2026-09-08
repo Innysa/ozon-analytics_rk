@@ -12,6 +12,7 @@ from app.api.routes import (
     analytics,
     auth,
     change_history,
+    dashboard,
     ozon_connection,
     ozon_performance,
     product_analytics,
@@ -74,6 +75,7 @@ app.include_router(review_upload.router)
 app.include_router(reviews.router)
 app.include_router(ai_settings.router)
 app.include_router(analytics.router)
+app.include_router(dashboard.router)
 app.include_router(products.router)
 app.include_router(product_analytics.router)
 app.include_router(search_queries.router)

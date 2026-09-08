@@ -565,3 +565,45 @@ export interface QueryCompetitorsReport {
   positions_in_results: number | null;
   rows: QueryCompetitorRow[];
 }
+
+// Store-wide daily dashboard (GET /stores/{id}/dashboard) — see backend
+// app.schemas.dashboard's module docstring for why each block is
+// independently has_data and what spend_share_of_revenue_pct means.
+export interface DashboardMetric {
+  current: number;
+  previous: number | null;
+  delta_pct: number | null;
+  direction: "up" | "down" | null;
+}
+
+export interface OrdersRevenueBlock {
+  has_data: boolean;
+  orders: DashboardMetric | null;
+  revenue_rub: DashboardMetric | null;
+  avg_order_value_rub: number | null;
+}
+
+export interface AdvertisingDashboardBlock {
+  has_data: boolean;
+  spend_auto_rub: DashboardMetric | null;
+  spend_manual_rub: DashboardMetric | null;
+  spend_share_of_revenue_pct: number | null;
+}
+
+export interface ReviewsDashboardBlock {
+  has_data: boolean;
+  new_count: DashboardMetric | null;
+  avg_rating_current: number | null;
+  avg_rating_previous: number | null;
+  without_reply_count: number | null;
+}
+
+export interface Dashboard {
+  period_start: string;
+  period_end: string;
+  previous_period_start: string;
+  previous_period_end: string;
+  orders_revenue: OrdersRevenueBlock;
+  advertising: AdvertisingDashboardBlock;
+  reviews: ReviewsDashboardBlock;
+}

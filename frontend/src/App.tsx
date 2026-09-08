@@ -4,6 +4,7 @@ import { StoreProvider, useStore } from "./store/StoreContext";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { LoginPage } from "./pages/LoginPage";
+import { DashboardPage } from "./pages/DashboardPage";
 import { ReviewsPage } from "./pages/ReviewsPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ProductsPage } from "./pages/ProductsPage";
@@ -80,7 +81,8 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route element={<RequireAuth />}>
           <Route element={<StoreScopedRoute />}>
-            <Route path="/" element={<Navigate to="/reviews" replace />} />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/reviews" element={<ReviewsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/products" element={<ProductsPage />} />

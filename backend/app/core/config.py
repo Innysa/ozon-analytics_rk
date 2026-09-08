@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # fixed daily slot rather than a literal "run right after" trigger.
     ADVERTISING_AI_REVIEW_SCHEDULER_HOUR_UTC: int = 4
 
+    # Store-wide daily dashboard (app.services.dashboard_service) — how many
+    # days back the default period covers, compared against the preceding
+    # period of the same length. An editorial choice (a month is the usual
+    # window a seller/owner checks trends over), not an Ozon-side limit.
+    DASHBOARD_DEFAULT_LOOKBACK_DAYS: int = 30
+
     CORS_ORIGINS: str = "http://localhost:5173"
 
     @property

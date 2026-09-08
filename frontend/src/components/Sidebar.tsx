@@ -9,6 +9,9 @@ export function Sidebar() {
   return (
     <nav className="w-56 shrink-0 border-r border-slate-200 bg-white p-3">
       <div className="space-y-1">
+        <NavLink to="/dashboard" className={linkClass}>
+          Дашборд
+        </NavLink>
         <NavLink to="/reviews" className={linkClass}>
           Отзывы
         </NavLink>
