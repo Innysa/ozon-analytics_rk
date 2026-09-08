@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import StoreContext, require_store_role
+from app.api.deps import StoreContext, require_platform_admin_for_store, require_store_role
 from app.core.encryption import decrypt_secret, encrypt_secret, mask_secret
 from app.db.session import get_db
 from app.models.membership import StoreRole
@@ -39,7 +39,7 @@ def get_credentials(ctx: StoreContext = Depends(require_store_role(StoreRole.OWN
 @router.put("/credentials", response_model=OzonCredentialsOut)
 def set_credentials(
     payload: OzonCredentialsIn,
-    ctx: StoreContext = Depends(require_store_role(StoreRole.OWNER)),
+    ctx: StoreContext = Depends(require_platform_admin_for_store),
     db: Session = Depends(get_db),
 ) -> OzonCredentialsOut:
     creds = _get_or_none(db, ctx.store_id)

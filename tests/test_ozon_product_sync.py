@@ -146,7 +146,10 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
     via /v3/product/info/list and upsert a Product row per item, aggregating
     stocks by source."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     put_resp = client.put(
         f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"}
     )
@@ -213,7 +216,10 @@ def test_stale_sku_zero_row_is_corrected_in_place_not_duplicated(client, two_sto
     Matching by Ozon's own stable product_id first must find and correct the
     same row in place."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
 
     from app.models.product import Product
@@ -266,7 +272,10 @@ def test_sku_zero_by_product_id_is_resolved_via_offer_id_fallback(client, two_st
     "Аналитика" section). Re-querying the same endpoint by offer_id must
     resolve the real sku instead of the product being skipped."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
 
     offer_id = "мус/вед/бел1/3"
@@ -350,7 +359,10 @@ def test_sku_still_zero_after_offer_id_fallback_is_skipped(client, two_stores_wi
     product must genuinely be skipped (no row created) rather than stored
     with an invalid sku."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
 
     offer_id = "truly-unassigned"
@@ -411,7 +423,10 @@ def test_duplicate_rows_for_same_product_are_merged_on_conflict(client, two_stor
     instead — including reassigning the placeholder's own related data (e.g.
     a review) onto the surviving row — not crash."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
 
     from app.models.product import Product
@@ -500,7 +515,10 @@ def test_final_commit_failure_leaves_run_failed_not_stuck_running(client, two_st
     module now prevent at the source, but this test covers the finalize
     step's own safety net regardless of cause)."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    # Setting Ozon Seller API credentials is now restricted to the platform
+    # admin (see require_platform_admin_for_store) — a store's own "owner"
+    # role no longer suffices.
+    login(client, "admin@example.com", "adminpass123")
     client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
 
     empty_list_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})

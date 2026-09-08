@@ -99,3 +99,16 @@ def require_store_role(min_role: StoreRole):
         return ctx
 
     return _dep
+
+
+def require_platform_admin_for_store(ctx: StoreContext = Depends(require_store_access)) -> StoreContext:
+    """Stricter than require_store_role(OWNER): only the platform admin account,
+    never a store's own 'owner' membership. Used specifically for managing Ozon
+    API credentials — a store owner may legitimately run day-to-day operations
+    without holding the seller's actual API secrets."""
+    if ctx.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Изменять ключи Ozon может только администратор платформы",
+        )
+    return ctx

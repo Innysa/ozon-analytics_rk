@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { useStore } from "../store/StoreContext";
 import type { OzonCredentialsStatus, PerformanceCredentialsStatus, SyncRun } from "../types";
 
@@ -13,6 +14,7 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 export function OzonSettingsPage() {
+  const { user } = useAuth();
   const { currentStore } = useStore();
   const [status, setStatus] = useState<OzonCredentialsStatus | null>(null);
   const [clientId, setClientId] = useState("");
@@ -119,29 +121,36 @@ export function OzonSettingsPage() {
           </button>
         </div>
 
-        <form onSubmit={saveCredentials} className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-700">Указать новые ключи Seller API</h3>
-          <div>
-            <label className="mb-1 block text-sm text-slate-600">Client-Id</label>
-            <input value={clientId} onChange={(e) => setClientId(e.target.value)} required className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm" />
+        {user?.is_admin ? (
+          <form onSubmit={saveCredentials} className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
+            <h3 className="text-sm font-semibold text-slate-700">Указать новые ключи Seller API</h3>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Client-Id</label>
+              <input value={clientId} onChange={(e) => setClientId(e.target.value)} required className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Api-Key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                required
+                className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+              />
+            </div>
+            <p className="text-xs text-slate-400">
+              Ключи хранятся в базе данных в зашифрованном виде и никогда не отображаются полностью.
+            </p>
+            <button type="submit" className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+              Сохранить ключи
+            </button>
+          </form>
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+            Добавлять и менять ключи Ozon может только администратор платформы. Обратитесь к нему, если ключи нужно
+            задать или обновить.
           </div>
-          <div>
-            <label className="mb-1 block text-sm text-slate-600">Api-Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              required
-              className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
-            />
-          </div>
-          <p className="text-xs text-slate-400">
-            Ключи хранятся в базе данных в зашифрованном виде и никогда не отображаются полностью.
-          </p>
-          <button type="submit" className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-            Сохранить ключи
-          </button>
-        </form>
+        )}
 
         {message && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{message}</div>}
       </section>
@@ -167,29 +176,37 @@ export function OzonSettingsPage() {
           </button>
         </div>
 
-        <form onSubmit={savePerfCredentials} className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-700">Указать новые ключи Performance API</h3>
-          <div>
-            <label className="mb-1 block text-sm text-slate-600">Client-Id</label>
-            <input value={perfClientId} onChange={(e) => setPerfClientId(e.target.value)} required className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm" />
+        {user?.is_admin ? (
+          <form onSubmit={savePerfCredentials} className="space-y-3 rounded-md border border-slate-200 bg-white p-4">
+            <h3 className="text-sm font-semibold text-slate-700">Указать новые ключи Performance API</h3>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Client-Id</label>
+              <input value={perfClientId} onChange={(e) => setPerfClientId(e.target.value)} required className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">Client-Secret</label>
+              <input
+                type="password"
+                value={perfClientSecret}
+                onChange={(e) => setPerfClientSecret(e.target.value)}
+                required
+                className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+              />
+            </div>
+            <p className="text-xs text-slate-400">
+              Отдельная пара ключей от Seller API — создаётся в личном кабинете Ozon в разделе «Продвижение →
+              API-ключи».
+            </p>
+            <button type="submit" className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+              Сохранить ключи
+            </button>
+          </form>
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+            Добавлять и менять ключи Ozon может только администратор платформы. Обратитесь к нему, если ключи нужно
+            задать или обновить.
           </div>
-          <div>
-            <label className="mb-1 block text-sm text-slate-600">Client-Secret</label>
-            <input
-              type="password"
-              value={perfClientSecret}
-              onChange={(e) => setPerfClientSecret(e.target.value)}
-              required
-              className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
-            />
-          </div>
-          <p className="text-xs text-slate-400">
-            Отдельная пара ключей от Seller API — создаётся в личном кабинете Ozon в разделе «Продвижение → API-ключи».
-          </p>
-          <button type="submit" className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-            Сохранить ключи
-          </button>
-        </form>
+        )}
 
         {perfMessage && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{perfMessage}</div>}
       </section>

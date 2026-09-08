@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import StoreContext, require_store_role
+from app.api.deps import StoreContext, require_platform_admin_for_store, require_store_role
 from app.core.encryption import decrypt_secret, encrypt_secret, mask_secret
 from app.db.session import get_db
 from app.models.membership import StoreRole
@@ -43,7 +43,7 @@ def get_performance_credentials(
 @router.put("/credentials", response_model=PerformanceCredentialsOut)
 def set_performance_credentials(
     payload: PerformanceCredentialsIn,
-    ctx: StoreContext = Depends(require_store_role(StoreRole.OWNER)),
+    ctx: StoreContext = Depends(require_platform_admin_for_store),
     db: Session = Depends(get_db),
 ) -> PerformanceCredentialsOut:
     creds = _get_or_none(db, ctx.store_id)

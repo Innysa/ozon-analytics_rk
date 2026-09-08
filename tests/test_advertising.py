@@ -1,7 +1,8 @@
 """Tests for the advertising (Ozon Performance API) architecture: store
-isolation on the new endpoints, owner-only credential management, and
-defensive parsing of Ozon's campaign payload (never fabricate data for
-fields Ozon didn't actually send)."""
+isolation on the new endpoints, platform-admin-only credential management
+(a store's own "owner" role is not enough to set Ozon API keys — see
+require_platform_admin_for_store), and defensive parsing of Ozon's campaign
+payload (never fabricate data for fields Ozon didn't actually send)."""
 from tests.conftest import login
 
 
@@ -41,9 +42,23 @@ def test_manager_cannot_set_performance_credentials(client, db_session, two_stor
     assert resp.status_code == 403
 
 
-def test_owner_can_set_and_never_see_full_performance_secret(client, two_stores_with_users):
+def test_owner_cannot_set_performance_credentials(client, two_stores_with_users):
+    """A store's own "owner" role is no longer enough — only the platform
+    admin account may set Ozon API credentials (see
+    require_platform_admin_for_store)."""
     d = two_stores_with_users
     login(client, "owner_a@example.com", "password123")
+
+    resp = client.put(
+        f"/api/stores/{d['store_a'].id}/ozon/performance/credentials",
+        json={"client_id": "12345678", "client_secret": "top-secret-value"},
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_can_set_and_never_see_full_performance_secret(client, two_stores_with_users):
+    d = two_stores_with_users
+    login(client, "admin@example.com", "adminpass123")
 
     resp = client.put(
         f"/api/stores/{d['store_a'].id}/ozon/performance/credentials",
@@ -60,7 +75,7 @@ def test_seller_credentials_unaffected_by_performance_only_setup(client, two_sto
     """Setting only Performance credentials must not make the Seller API
     credentials endpoint incorrectly report itself as configured."""
     d = two_stores_with_users
-    login(client, "owner_a@example.com", "password123")
+    login(client, "admin@example.com", "adminpass123")
 
     client.put(
         f"/api/stores/{d['store_a'].id}/ozon/performance/credentials",
