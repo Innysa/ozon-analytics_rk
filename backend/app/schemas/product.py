@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProductOut(BaseModel):
@@ -13,8 +13,13 @@ class ProductOut(BaseModel):
     image_url: str | None
     price_rub: Decimal | None
     old_price_rub: Decimal | None
+    cost_price_rub: Decimal | None
     fbo_stock: int | None
     fbs_stock: int | None
     is_archived: bool
 
     model_config = {"from_attributes": True}
+
+
+class ProductCostPriceIn(BaseModel):
+    cost_price_rub: Decimal | None = Field(default=None, ge=0)

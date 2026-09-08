@@ -115,3 +115,88 @@ class OzonProductInfoListResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: list[OzonProductInfoItem] = []
+
+
+# --- Postings / orders (/v2/posting/fbo/list, /v3/posting/fbs/list) -----
+# --- Finance transactions (/v3/finance/transaction/list) -----------------
+#
+# UNCONFIRMED — unlike everything above (verified against real captured
+# payloads before being relied on), these have NOT been called against a
+# real account. The request shape (filter/pagination fields) follows Ozon's
+# published API documentation and is unlikely to be wrong — that part of
+# the contract is stable across sellers. The RESPONSE shape below is
+# deliberately maximally tolerant (every field optional, extra="allow")
+# specifically because past mistakes this session (guessed CSV column
+# names, guessed JSON keys) all happened on the response side, never the
+# request side. Do NOT build a sync/scheduler/UI on top of these fields
+# without first running backend/scripts/debug_orders_finance_api.py against
+# a real store and confirming the actual field names/values it prints.
+
+
+class OzonPostingProductItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    sku: int | None = None
+    offer_id: str | None = None
+    name: str | None = None
+    quantity: int | None = None
+    price: str | None = None
+
+
+class OzonPostingItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    posting_number: str | None = None
+    order_id: int | None = None
+    order_number: str | None = None
+    status: str | None = None
+    in_process_at: str | None = None
+    products: list[OzonPostingProductItem] = []
+    financial_data: dict | None = None
+    analytics_data: dict | None = None
+    cancellation: dict | None = None
+
+
+class OzonPostingListResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    postings: list[OzonPostingItem] = []
+    has_next: bool | None = None
+
+
+class OzonPostingListResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    result: OzonPostingListResult | list[OzonPostingItem] | None = None
+
+
+class OzonFinanceOperationItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    operation_id: int | None = None
+    operation_type: str | None = None
+    operation_type_name: str | None = None
+    operation_date: str | None = None
+    type: str | None = None
+    amount: float | None = None
+    accruals_for_sale: float | None = None
+    sale_commission: float | None = None
+    delivery_charge: float | None = None
+    return_delivery_charge: float | None = None
+    posting: dict | None = None
+    items: list[dict] = []
+    services: list[dict] = []
+
+
+class OzonFinanceTransactionListResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    operations: list[OzonFinanceOperationItem] = []
+    page_count: int | None = None
+    row_count: int | None = None
+
+
+class OzonFinanceTransactionListResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    result: OzonFinanceTransactionListResult | None = None

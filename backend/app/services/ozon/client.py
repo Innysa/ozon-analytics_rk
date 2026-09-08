@@ -67,6 +67,18 @@ app.services.search_query_details_sync_service._extract_query_rows, which
 is what actually parses this). get_product_queries()'s own response shape
 has not been separately re-verified against this finding.
 
+Also present (UNCONFIRMED — see app.services.ozon.schemas's own section on
+these for the full caveat):
+  POST /v2/posting/fbo/list        - list_fbo_postings()
+  POST /v3/posting/fbs/list        - list_fbs_postings()
+  POST /v3/finance/transaction/list - list_finance_transactions()
+Added to support pulling orders/revenue/logistics/commission automatically
+instead of the manual "Аналитика → Товары" CSV upload — but never called
+against a real account from this codebase. Do not wire a sync/scheduler/UI
+on top of these without first running
+backend/scripts/debug_orders_finance_api.py against a real store and
+confirming the actual response shape.
+
 Every request carries the target store's own Client-Id / Api-Key headers —
 callers must never share credentials across stores.
 """
@@ -85,6 +97,8 @@ from app.services.ozon.exceptions import (
     OzonRateLimited,
 )
 from app.services.ozon.schemas import (
+    OzonFinanceTransactionListResponse,
+    OzonPostingListResponse,
     OzonProductInfoListResponse,
     OzonProductListResponse,
     OzonReviewCommentItem,
@@ -284,3 +298,70 @@ class OzonSellerClient:
         if skus:
             body["skus"] = skus
         return self._post("/v1/analytics/product-queries/details", body)
+
+    def list_fbo_postings(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        offset: int = 0,
+        limit: int = 1000,
+    ) -> OzonPostingListResponse:
+        """POST /v2/posting/fbo/list — orders fulfilled from Ozon's own
+        warehouse (FBO). UNCONFIRMED, see this module's own docstring and
+        app.services.ozon.schemas — do not rely on financial_data/
+        analytics_data sub-fields without confirming them first via
+        backend/scripts/debug_orders_finance_api.py. date_from/date_to per
+        Ozon's public docs are full ISO-8601 timestamps, same convention
+        as get_product_query_details()."""
+        body = {
+            "dir": "ASC",
+            "filter": {"since": date_from, "to": date_to},
+            "offset": offset,
+            "limit": limit,
+            "with": {"analytics_data": True, "financial_data": True},
+        }
+        data = self._post("/v2/posting/fbo/list", body)
+        return OzonPostingListResponse.model_validate(data)
+
+    def list_fbs_postings(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        offset: int = 0,
+        limit: int = 1000,
+    ) -> OzonPostingListResponse:
+        """POST /v3/posting/fbs/list — orders fulfilled by the seller (FBS).
+        Same UNCONFIRMED status as list_fbo_postings() — see there."""
+        body = {
+            "dir": "ASC",
+            "filter": {"since": date_from, "to": date_to},
+            "offset": offset,
+            "limit": limit,
+            "with": {"analytics_data": True, "financial_data": True},
+        }
+        data = self._post("/v3/posting/fbs/list", body)
+        return OzonPostingListResponse.model_validate(data)
+
+    def list_finance_transactions(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        page: int = 1,
+        page_size: int = 1000,
+    ) -> OzonFinanceTransactionListResponse:
+        """POST /v3/finance/transaction/list — individual financial
+        operations (sales, commission, logistics/services, returns,
+        compensations) for the period. This is the source for logistics
+        cost/commission/storage/penalties that the manual "Аналитика →
+        Товары" CSV export does not carry at all. UNCONFIRMED — same status
+        as list_fbo_postings(), see this module's own docstring."""
+        body = {
+            "filter": {"date": {"from": date_from, "to": date_to}, "transaction_type": "all"},
+            "page": page,
+            "page_size": page_size,
+        }
+        data = self._post("/v3/finance/transaction/list", body)
+        return OzonFinanceTransactionListResponse.model_validate(data)

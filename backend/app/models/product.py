@@ -21,6 +21,12 @@ class Product(TimestampMixin, Base):
 
     price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     old_price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # Purchase/production cost per unit — Ozon's API never exposes this (it's
+    # the seller's own private data), so it's entered here manually, once per
+    # product, rather than re-uploaded on every report like the other CSV
+    # imports. Used to compute margin/ROI, which are otherwise impossible to
+    # show from any Ozon data source (see app.services.dashboard_service).
+    cost_price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     fbo_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fbs_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

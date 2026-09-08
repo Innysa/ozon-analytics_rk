@@ -69,7 +69,7 @@ export function ProductDetailPage() {
       </div>
 
       <div>
-        {tab === "overview" && <OverviewTab product={product} />}
+        {tab === "overview" && <OverviewTab product={product} storeId={currentStore.id} onChanged={setProduct} />}
         {tab === "reviews" && <ProductReviewsTab storeId={currentStore.id} productId={productId} />}
         {tab === "analytics" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} />}
         {tab === "ads" && (
@@ -90,8 +90,42 @@ export function ProductDetailPage() {
   );
 }
 
-function OverviewTab({ product }: { product: Product | null }) {
+function OverviewTab({
+  product,
+  storeId,
+  onChanged,
+}: {
+  product: Product | null;
+  storeId: string;
+  onChanged: (p: Product) => void;
+}) {
+  const [costPriceInput, setCostPriceInput] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCostPriceInput(product?.cost_price_rub != null ? String(product.cost_price_rub) : "");
+  }, [product?.id, product?.cost_price_rub]);
+
   if (!product) return <div className="text-slate-500">Загрузка...</div>;
+
+  const saveCostPrice = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const value = costPriceInput.trim() === "" ? null : costPriceInput.trim();
+      const updated = await api.put<Product>(`/stores/${storeId}/products/${product.id}/cost-price`, {
+        cost_price_rub: value,
+      });
+      onChanged(updated);
+      setNotice("Сохранено");
+    } catch {
+      setNotice("Не удалось сохранить — проверьте значение (должно быть числом ≥ 0)");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-700">
       <dl className="grid grid-cols-2 gap-2">
@@ -101,7 +135,37 @@ function OverviewTab({ product }: { product: Product | null }) {
         <dd>{product.ozon_sku}</dd>
         <dt className="text-slate-500">Артикул продавца</dt>
         <dd>{product.offer_id ?? "Нет данных"}</dd>
+        <dt className="text-slate-500">Цена (Ozon)</dt>
+        <dd>{product.price_rub != null ? `${product.price_rub.toLocaleString("ru-RU")} ₽` : "Нет данных"}</dd>
       </dl>
+
+      <div className="mt-4 border-t border-slate-100 pt-4">
+        <div className="text-xs font-semibold text-slate-700">Себестоимость</div>
+        <p className="mt-1 text-xs text-slate-500">
+          Ozon не отдаёт закупочную/производственную цену товара ни по одному API — это ваши собственные данные,
+          укажите их здесь один раз, чтобы приложение могло считать маржу и ROI на Дашборде.
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={costPriceInput}
+            onChange={(e) => setCostPriceInput(e.target.value)}
+            placeholder="Например, 450"
+            className="w-40 rounded-md border border-slate-300 px-2 py-1 text-sm"
+          />
+          <span className="text-sm text-slate-500">₽</span>
+          <button
+            onClick={saveCostPrice}
+            disabled={saving}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {saving ? "Сохранение..." : "Сохранить"}
+          </button>
+          {notice && <span className="text-xs text-slate-500">{notice}</span>}
+        </div>
+      </div>
     </div>
   );
 }

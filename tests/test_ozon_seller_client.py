@@ -110,6 +110,63 @@ def test_get_product_queries_reports_feature_unavailable_on_404():
         pass
 
 
+def test_list_fbo_postings_sends_expected_path_and_body():
+    """UNCONFIRMED against a real account (see OzonSellerClient's module
+    docstring) — this only pins down the request shape this client sends
+    and that a plausible response parses without crashing."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        return_value=_mock_post(200, {"result": {"postings": [{"posting_number": "123-0001-1"}], "has_next": False}})
+    )
+
+    result = client.list_fbo_postings(date_from="2026-08-08T00:00:00Z", date_to="2026-09-04T23:59:59Z")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v2/posting/fbo/list"
+    assert sent_kwargs["json"]["filter"] == {"since": "2026-08-08T00:00:00Z", "to": "2026-09-04T23:59:59Z"}
+    assert result.result.postings[0].posting_number == "123-0001-1"
+
+
+def test_list_fbs_postings_sends_expected_path_and_body():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"result": {"postings": [], "has_next": False}}))
+
+    client.list_fbs_postings(date_from="2026-08-08T00:00:00Z", date_to="2026-09-04T23:59:59Z")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/posting/fbs/list"
+    assert sent_kwargs["json"]["filter"] == {"since": "2026-08-08T00:00:00Z", "to": "2026-09-04T23:59:59Z"}
+
+
+def test_list_fbo_postings_tolerates_an_unexpected_response_shape():
+    """The whole point of extra="allow" + all-optional fields on
+    OzonPostingListResponse: a response shape this client's author didn't
+    anticipate must not raise a validation error — it should just come back
+    with empty/None fields rather than crash the caller."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"totally": "unexpected", "shape": 123}))
+
+    result = client.list_fbo_postings(date_from="2026-08-08T00:00:00Z", date_to="2026-09-04T23:59:59Z")
+
+    assert result.result is None
+
+
+def test_list_finance_transactions_sends_expected_path_and_body():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        return_value=_mock_post(200, {"result": {"operations": [{"operation_id": 1, "amount": -150.5}], "page_count": 1}})
+    )
+
+    result = client.list_finance_transactions(date_from="2026-08-08T00:00:00Z", date_to="2026-09-04T23:59:59Z")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v3/finance/transaction/list"
+    assert sent_kwargs["json"]["filter"] == {
+        "date": {"from": "2026-08-08T00:00:00Z", "to": "2026-09-04T23:59:59Z"}, "transaction_type": "all",
+    }
+    assert result.result.operations[0].amount == -150.5
+
+
 def test_post_retries_on_429_and_succeeds_once_ozon_stops_limiting(monkeypatch):
     """Regression test for a real production finding: the search-query-
     details sync's per-SKU fallback (see

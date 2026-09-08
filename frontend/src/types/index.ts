@@ -38,6 +38,9 @@ export interface Product {
   image_url: string | null;
   price_rub: number | null;
   old_price_rub: number | null;
+  // Manually entered — Ozon never exposes a seller's own purchase cost via
+  // any API. Used to compute margin/ROI on the Dashboard.
+  cost_price_rub: number | null;
   fbo_stock: number | null;
   fbs_stock: number | null;
   is_archived: boolean;
