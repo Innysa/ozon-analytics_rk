@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { Dashboard, DashboardMetric } from "../types";
+import type { Dashboard, DashboardMetric, MarginBlock as MarginBlockType } from "../types";
 
 function fmtRub(v: number | null): string {
   if (v === null) return "Нет данных";
@@ -134,9 +134,25 @@ export function DashboardPage() {
               «Доля расходов на рекламу в выручке» — это весь расход на рекламу (оба источника выше), делённый на всю
               выручку магазина за период (блок «Заказы и выручка» выше), а не только на продажи в продвижении — это
               главный показатель, за которым обычно следят руководители, но именно поэтому его нельзя напрямую
-              сравнивать с ДРР по отдельным кампаниям на странице «Реклама». Настоящий ROI (с учётом себестоимости
-              товара) это приложение показать не может — данные о себестоимости нигде не собираются.
+              сравнивать с ДРР по отдельным кампаниям на странице «Реклама». Настоящую маржу/ROI с учётом
+              себестоимости смотрите в блоке «Маржа» ниже.
             </p>
+          </DashboardSection>
+
+          <DashboardSection
+            title="Маржа"
+            hasData={dashboard.margin.has_data}
+            emptyHint={
+              <>
+                Нет данных. Соберите заказы на странице{" "}
+                <Link to="/rnp" className="underline">
+                  «РНП»
+                </Link>{" "}
+                (кнопка «Обновить заказы (авто)»).
+              </>
+            }
+          >
+            <MarginSection margin={dashboard.margin} />
           </DashboardSection>
 
           <DashboardSection
@@ -192,6 +208,38 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
       <div className="text-xs text-slate-500">{label}</div>
       <div className="mt-1 text-lg font-semibold text-slate-800">{value}</div>
+    </div>
+  );
+}
+
+function MarginSection({ margin }: { margin: MarginBlockType }) {
+  return (
+    <div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Выкуплено, шт." value={fmtInt(margin.delivered_units)} />
+        <Stat label="Выручка (выкуп)" value={fmtRub(margin.delivered_sum_rub)} />
+        <Stat label="Комиссия Ozon" value={fmtRub(margin.commission_rub)} />
+        <Stat
+          label="Себестоимость выкупа"
+          value={margin.cost_known ? fmtRub(margin.cost_of_delivered_rub) : "Указана не для всех товаров"}
+        />
+        <Stat label="Маржа" value={margin.cost_known ? fmtRub(margin.margin_rub) : "Нет данных"} />
+        <Stat label="Маржа, %" value={margin.cost_known ? fmtPct(margin.margin_pct) : "Нет данных"} />
+      </div>
+      {!margin.cost_known && (
+        <p className="mt-2 text-xs text-slate-400">
+          Чтобы увидеть маржу, укажите себестоимость на карточках{" "}
+          <Link to="/products" className="underline">
+            товаров
+          </Link>
+          , которые продавались в этом периоде — без неё расчёт был бы неверным, а не просто приблизительным, поэтому
+          он не показывается вовсе.
+        </p>
+      )}
+      <p className="mt-2 text-xs text-slate-400">
+        Маржа = выручка (выкуп) − комиссия Ozon − себестоимость выкупленных товаров − расход на рекламу (оба
+        источника выше). Источник — заказы FBO/FBS из Ozon Seller API, автоматически (страница «РНП»).
+      </p>
     </div>
   );
 }

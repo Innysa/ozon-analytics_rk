@@ -20,9 +20,17 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
+from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product_card_statistic import ProductCardStatistic
 from app.models.review import Review, ReviewStatus
-from app.schemas.dashboard import AdvertisingBlock, DashboardMetric, DashboardOut, OrdersRevenueBlock, ReviewsBlock
+from app.schemas.dashboard import (
+    AdvertisingBlock,
+    DashboardMetric,
+    DashboardOut,
+    MarginBlock,
+    OrdersRevenueBlock,
+    ReviewsBlock,
+)
 
 
 def _compare(current: float, previous: float | None) -> DashboardMetric:
@@ -109,6 +117,33 @@ def _has_any_reviews(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(Review.id).where(Review.store_id == store_id).limit(1)) is not None
 
 
+def _sum_order_daily_stats(db: Session, *, store_id: str, date_from: date, date_to: date) -> dict:
+    row = db.execute(
+        select(
+            func.coalesce(func.sum(OrderDailyStatistic.delivered_units), 0),
+            func.coalesce(func.sum(OrderDailyStatistic.delivered_sum_rub), 0),
+            func.coalesce(func.sum(OrderDailyStatistic.commission_rub), 0),
+            func.coalesce(func.sum(OrderDailyStatistic.cost_of_delivered_rub), 0),
+            func.coalesce(func.sum(OrderDailyStatistic.cost_of_delivered_known_units), 0),
+        ).where(
+            OrderDailyStatistic.store_id == store_id,
+            OrderDailyStatistic.date >= date_from,
+            OrderDailyStatistic.date <= date_to,
+        )
+    ).one()
+    return {
+        "delivered_units": int(row[0]),
+        "delivered_sum_rub": float(row[1]),
+        "commission_rub": float(row[2]),
+        "cost_of_delivered_rub": float(row[3]),
+        "cost_of_delivered_known_units": int(row[4]),
+    }
+
+
+def _has_any_order_daily_stats(db: Session, *, store_id: str) -> bool:
+    return db.scalar(select(OrderDailyStatistic.id).where(OrderDailyStatistic.store_id == store_id).limit(1)) is not None
+
+
 def compute_dashboard(
     db: Session,
     *,
@@ -193,6 +228,32 @@ def compute_dashboard(
     else:
         reviews = ReviewsBlock(has_data=False)
 
+    # --- Margin (commission/cost/margin — the one block sourced purely via
+    # Ozon Seller API postings, see OrderDailyStatistic's own docstring) ---
+    has_order_stats = _has_any_order_daily_stats(db, store_id=store_id)
+    if has_order_stats:
+        stats = _sum_order_daily_stats(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+        cost_known = stats["delivered_units"] > 0 and stats["cost_of_delivered_known_units"] >= stats["delivered_units"]
+        margin_rub = None
+        margin_pct = None
+        if cost_known:
+            margin_rub = round(
+                stats["delivered_sum_rub"] + stats["commission_rub"] - stats["cost_of_delivered_rub"] - total_spend_current, 2
+            )
+            margin_pct = round(margin_rub / stats["delivered_sum_rub"] * 100, 2) if stats["delivered_sum_rub"] else None
+        margin = MarginBlock(
+            has_data=True,
+            delivered_units=stats["delivered_units"],
+            delivered_sum_rub=round(stats["delivered_sum_rub"], 2),
+            commission_rub=round(stats["commission_rub"], 2),
+            cost_of_delivered_rub=round(stats["cost_of_delivered_rub"], 2) if cost_known else None,
+            cost_known=cost_known,
+            margin_rub=margin_rub,
+            margin_pct=margin_pct,
+        )
+    else:
+        margin = MarginBlock(has_data=False)
+
     return DashboardOut(
         period_start=resolved_date_from,
         period_end=resolved_date_to,
@@ -201,4 +262,5 @@ def compute_dashboard(
         orders_revenue=orders_revenue,
         advertising=advertising,
         reviews=reviews,
+        margin=margin,
     )

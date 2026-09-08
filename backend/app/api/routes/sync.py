@@ -18,6 +18,7 @@ from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
 from app.services.advertising_daily_sync_service import sync_advertising_daily_statistics
 from app.services.audit import record_audit
+from app.services.order_daily_sync_service import sync_order_daily_statistics
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
@@ -736,5 +737,104 @@ def sync_ozon_search_query_statistics(
 
     background_tasks.add_task(
         _run_search_query_details_sync, run.id, ctx.store_id, client_id, api_key, date_from, date_to
+    )
+    return _serialize(run)
+
+
+def _run_order_daily_statistics_sync(
+    run_id: str,
+    store_id: str,
+    client_id: str,
+    api_key: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> None:
+    """Runs in a FastAPI BackgroundTask, own SessionLocal() — see
+    app.services.order_daily_sync_service."""
+    db = SessionLocal()
+    error_message = None
+    try:
+        run = db.get(SyncRun, run_id)
+        try:
+            with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
+                outcome = sync_order_daily_statistics(db, store_id=store_id, client=client, date_from=date_from, date_to=date_to)
+            run.items_fetched = outcome.fetched
+            run.items_created = outcome.created
+            run.items_skipped_duplicate = outcome.updated
+            error_message = "; ".join(outcome.errors[:20]) if outcome.errors else None
+            run.status = SyncStatus.SUCCESS if not outcome.errors else (
+                SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
+            )
+        except OzonAuthError as exc:
+            db.rollback()
+            run.status = SyncStatus.FAILED
+            error_message = str(exc)
+        except OzonAPIError as exc:
+            db.rollback()
+            run.status = SyncStatus.FAILED
+            error_message = str(exc)
+        except Exception as exc:  # a SyncRun must never be left stuck "running" forever
+            db.rollback()
+            run.status = SyncStatus.FAILED
+            error_message = f"Внутренняя ошибка: {exc}"
+            logger.exception("Заказы: непредвиденная ошибка автосинхронизации, store_id=%s", store_id)
+
+        run.finished_at = datetime.now(timezone.utc)
+        run.error_message = error_message
+        try:
+            record_audit(
+                db, action="sync_finished", store_id=store_id, target_type="sync_run", target_id=run.id,
+                result="success" if run.status == SyncStatus.SUCCESS else "failure", message=error_message,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Заказы: не удалось сохранить результат синхронизации, store_id=%s", store_id)
+            run.status = SyncStatus.FAILED
+            run.error_message = error_message
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/ozon-orders")
+def sync_ozon_orders(
+    background_tasks: BackgroundTasks,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Triggers an automatic pull of daily order/revenue/buyout/cancellation
+    statistics from Ozon Seller API's FBO/FBS postings — the "РНП" data
+    source. UNCONFIRMED beyond what backend/scripts/debug_orders_finance_api.py
+    has verified so far (see app.services.order_daily_sync_service's own
+    docstring for exactly what that covers and what it doesn't). Runs in the
+    background and returns immediately with a SyncRun the frontend polls via
+    GET /runs. date_from/date_to default to the last N days per
+    ORDER_STATS_DEFAULT_LOOKBACK_DAYS."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_ORDERS_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    client_id = decrypt_secret(creds.client_id_encrypted)
+    api_key = decrypt_secret(creds.api_key_encrypted)
+
+    background_tasks.add_task(
+        _run_order_daily_statistics_sync, run.id, ctx.store_id, client_id, api_key, date_from, date_to
     )
     return _serialize(run)

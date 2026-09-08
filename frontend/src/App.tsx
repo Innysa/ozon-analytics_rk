@@ -5,6 +5,7 @@ import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { LoginPage } from "./pages/LoginPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { RnpPage } from "./pages/RnpPage";
 import { ReviewsPage } from "./pages/ReviewsPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ProductsPage } from "./pages/ProductsPage";
@@ -83,6 +84,7 @@ export default function App() {
           <Route element={<StoreScopedRoute />}>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/rnp" element={<RnpPage />} />
             <Route path="/reviews" element={<ReviewsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/products" element={<ProductsPage />} />

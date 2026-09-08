@@ -13,6 +13,7 @@ from app.api.routes import (
     auth,
     change_history,
     dashboard,
+    orders,
     ozon_connection,
     ozon_performance,
     product_analytics,
@@ -34,6 +35,10 @@ from app.services.advertising_daily_scheduler import (
     start_advertising_daily_statistics_scheduler,
     stop_advertising_daily_statistics_scheduler,
 )
+from app.services.order_daily_scheduler import (
+    start_order_daily_statistics_scheduler,
+    stop_order_daily_statistics_scheduler,
+)
 from app.services.search_query_stats_scheduler import (
     start_search_query_stats_scheduler,
     stop_search_query_stats_scheduler,
@@ -48,10 +53,12 @@ async def _lifespan(app: FastAPI):
     start_advertising_daily_statistics_scheduler()
     start_search_query_stats_scheduler()
     start_advertising_ai_review_scheduler()
+    start_order_daily_statistics_scheduler()
     yield
     stop_advertising_daily_statistics_scheduler()
     stop_search_query_stats_scheduler()
     stop_advertising_ai_review_scheduler()
+    stop_order_daily_statistics_scheduler()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=_lifespan)
@@ -76,6 +83,7 @@ app.include_router(reviews.router)
 app.include_router(ai_settings.router)
 app.include_router(analytics.router)
 app.include_router(dashboard.router)
+app.include_router(orders.router)
 app.include_router(products.router)
 app.include_router(product_analytics.router)
 app.include_router(search_queries.router)

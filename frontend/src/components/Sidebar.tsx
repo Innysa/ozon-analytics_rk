@@ -12,6 +12,9 @@ export function Sidebar() {
         <NavLink to="/dashboard" className={linkClass}>
           Дашборд
         </NavLink>
+        <NavLink to="/rnp" className={linkClass}>
+          РНП
+        </NavLink>
         <NavLink to="/reviews" className={linkClass}>
           Отзывы
         </NavLink>

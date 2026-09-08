@@ -137,6 +137,18 @@ class Settings(BaseSettings):
     # fixed daily slot rather than a literal "run right after" trigger.
     ADVERTISING_AI_REVIEW_SCHEDULER_HOUR_UTC: int = 4
 
+    # Automatic orders sync (app.services.order_daily_sync_service) — Ozon
+    # Seller API postings (FBO/FBS), see that module's own docstring for the
+    # confirmed contract and its limits.
+    ORDER_STATS_DEFAULT_LOOKBACK_DAYS: int = 7
+    ORDER_STATS_SCHEDULER_ENABLED: bool = True
+    # Runs after the advertising-stats (3:00) and search-query-stats (4:00)
+    # jobs, same fixed-daily-slot approximation as those — this app has no
+    # job-chaining primitive (see advertising_ai_review_scheduler's own
+    # docstring for why "run right after X" is always a fixed time here).
+    ORDER_STATS_SCHEDULER_HOUR_UTC: int = 3
+    ORDER_STATS_SCHEDULER_MINUTE_UTC: int = 30
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual

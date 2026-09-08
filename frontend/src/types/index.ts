@@ -601,6 +601,17 @@ export interface ReviewsDashboardBlock {
   without_reply_count: number | null;
 }
 
+export interface MarginBlock {
+  has_data: boolean;
+  delivered_units: number | null;
+  delivered_sum_rub: number | null;
+  commission_rub: number | null;
+  cost_of_delivered_rub: number | null;
+  cost_known: boolean | null;
+  margin_rub: number | null;
+  margin_pct: number | null;
+}
+
 export interface Dashboard {
   period_start: string;
   period_end: string;
@@ -609,4 +620,32 @@ export interface Dashboard {
   orders_revenue: OrdersRevenueBlock;
   advertising: AdvertisingDashboardBlock;
   reviews: ReviewsDashboardBlock;
+  margin: MarginBlock;
+}
+
+// "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon
+// Seller API postings (FBO/FBS), see backend
+// app.models.order_daily_statistic's module docstring for the confirmed
+// contract and what it deliberately does NOT cover yet (search-in-card
+// funnel, logistics/storage/penalties breakdown).
+export interface OrderDailyStatistic {
+  id: string;
+  date: string;
+  delivery_schema: "FBO" | "FBS";
+  ordered_units: number;
+  ordered_sum_rub: number;
+  ordered_sum_discounted_rub: number;
+  delivered_units: number;
+  delivered_sum_rub: number;
+  cost_of_delivered_rub: number;
+  cost_of_delivered_known_units: number;
+  cancelled_units: number;
+  cancelled_sum_rub: number;
+  unfinished_units: number;
+  commission_rub: number;
+}
+
+export interface OrderDailyStatisticListResponse {
+  items: OrderDailyStatistic[];
+  total: number;
 }

@@ -59,6 +59,24 @@ class ReviewsBlock(BaseModel):
     without_reply_count: int | None = None  # current backlog snapshot, not scoped to the period
 
 
+class MarginBlock(BaseModel):
+    """Комиссия/себестоимость/маржа — sourced from OrderDailyStatistic
+    (Ozon Seller API postings, see that model's own docstring), the one
+    genuinely API-only source among the dashboard's blocks. margin_rub/
+    margin_pct are null whenever cost_known is False — a margin computed
+    with a missing cost price would just be wrong, not merely approximate,
+    so this never falls back to treating an unset cost as 0."""
+
+    has_data: bool
+    delivered_units: int | None = None
+    delivered_sum_rub: float | None = None
+    commission_rub: float | None = None  # as Ozon reports it — negative (a deduction)
+    cost_of_delivered_rub: float | None = None
+    cost_known: bool | None = None  # whether cost price was set for every delivered unit in the period
+    margin_rub: float | None = None  # delivered_sum_rub + commission_rub - cost_of_delivered_rub - реклама (оба источника)
+    margin_pct: float | None = None
+
+
 class DashboardOut(BaseModel):
     period_start: date
     period_end: date
@@ -67,3 +85,4 @@ class DashboardOut(BaseModel):
     orders_revenue: OrdersRevenueBlock
     advertising: AdvertisingBlock
     reviews: ReviewsBlock
+    margin: MarginBlock

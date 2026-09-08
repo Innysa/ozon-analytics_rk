@@ -4,6 +4,8 @@ independent, already-existing data sources (product-card CSV import, both
 advertising sources, reviews), each with its own has_data."""
 from datetime import date, datetime, timezone
 
+import pytest
+
 from tests.conftest import login
 
 
@@ -137,6 +139,63 @@ def test_reviews_block_counts_new_reviews_in_period_and_backlog(client, db_sessi
     assert block["new_count"]["previous"] == 1
     assert block["avg_rating_current"] == 5.0
     assert block["without_reply_count"] == 2
+
+
+def test_margin_block_computes_only_when_cost_price_known_for_every_delivered_unit(client, db_session, two_stores_with_users):
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["has_data"] is True
+    assert block["cost_known"] is True
+    # 1200 (delivered) + (-100) (commission) - 400 (cost) - 0 (ad spend) = 700
+    assert block["margin_rub"] == 700.0
+    assert block["margin_pct"] == pytest.approx(58.33, abs=0.01)
+
+
+def test_margin_block_is_null_when_cost_price_missing_for_some_units(client, db_session, two_stores_with_users):
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=2, ordered_sum_rub=2400, ordered_sum_discounted_rub=2400,
+        delivered_units=2, delivered_sum_rub=2400,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,  # only 1 of 2 delivered units has a known cost
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-200,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["has_data"] is True
+    assert block["cost_known"] is False
+    assert block["margin_rub"] is None
+    assert block["cost_of_delivered_rub"] is None  # partial cost figure withheld, not shown as if it were complete
 
 
 def test_store_isolation(client, db_session, two_stores_with_users):
