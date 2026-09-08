@@ -1,6 +1,9 @@
 """One-off diagnostic script: calls Ozon Seller API's postings/finance
-endpoints directly for one store and prints the exact request and Ozon's
-raw JSON response to stdout.
+endpoints directly for one store and prints a CONDENSED look at Ozon's raw
+JSON response — counts plus one full example per distinct shape, not every
+row — specifically so the output stays small enough to copy out of a
+terminal by hand (a full-length dump of a real account's data was ~1860
+lines, too much to paste back reliably).
 
 These three methods (OzonSellerClient.list_fbo_postings/list_fbs_postings/
 list_finance_transactions) were added to eventually replace the manual
@@ -16,20 +19,27 @@ Usage (inside the running container):
 
     docker compose exec app python backend/scripts/debug_orders_finance_api.py --store-id <id>
 
-    # narrow the date range (default: last 7 days) — a shorter range keeps
-    # the printed output manageable for a first look:
+    # narrow the date range (default: last 7 days) — a wider range makes it
+    # more likely to see every distinct operation `type` at least once, but
+    # doesn't otherwise change how much gets printed (still one example per
+    # distinct shape, however many rows were actually found):
     docker compose exec app python backend/scripts/debug_orders_finance_api.py \\
-        --store-id <id> --date-from 2026-09-01 --date-to 2026-09-07
+        --store-id <id> --date-from 2026-08-01 --date-to 2026-09-07
 
     # skip one or more of the three calls, e.g. if FBO/FBS doesn't apply to
     # this store's fulfillment model:
     docker compose exec app python backend/scripts/debug_orders_finance_api.py \\
         --store-id <id> --skip-fbo --skip-fbs
 
-Prints, per endpoint: the exact request body sent, then Ozon's complete
-raw JSON response (or the exact error Ozon returned, if any — a 404/403
-here usually means the method needs a different Ozon plan/permission,
-which is itself useful information, not just a failure to shrug off).
+Prints, per endpoint: the exact request body sent, the total row count, and
+then ONE complete example row per distinct posting/operation "shape" found
+— for postings that's just the first one overall (there's no natural
+sub-type), for finance transactions that's one example per distinct
+`type` value (orders/returns/services/compensation/other/...), so a sale
+and a return are never confused for the same shape even if both exist in
+the period. Or the exact error Ozon returned, if any — a 404/403 here
+usually means the method needs a different Ozon plan/permission, which is
+itself useful information, not just a failure to shrug off.
 """
 from __future__ import annotations
 
@@ -48,19 +58,75 @@ from app.services.ozon.client import OzonCredentials as ClientCredentials  # noq
 from app.services.ozon.client import OzonSellerClient  # noqa: E402
 from app.services.ozon.exceptions import OzonAPIError  # noqa: E402
 
+# Cap on distinct finance operation `type` examples printed — a real
+# account is expected to have well under this many distinct types; the cap
+# just guards against the output blowing back up if that assumption is
+# wrong.
+_MAX_FINANCE_TYPE_EXAMPLES = 12
 
-def _print_result(label: str, body: dict, fn) -> None:
+
+def _print_postings_summary(label: str, body: dict, fn) -> None:
     print("=" * 70)
     print(f"{label} — request body:")
     print(json.dumps(body, ensure_ascii=False, indent=2))
-    print(f"{label} — raw response:")
     try:
-        result = fn()
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)[:20000])
+        response = fn()
     except OzonAPIError as exc:
-        print(f"OzonAPIError: {exc}")
-    except Exception as exc:  # noqa: BLE001 — this is a diagnostic script, show everything
-        print(f"Unexpected error ({type(exc).__name__}): {exc}")
+        print(f"{label} — OzonAPIError: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 — diagnostic script, show everything
+        print(f"{label} — unexpected error ({type(exc).__name__}): {exc}")
+        return
+
+    result = response.result
+    if result is None:
+        print(f"{label} — ответ не похож ни на один ожидаемый формат (result отсутствует). Полный ответ:")
+        print(json.dumps(response.model_dump(mode="json"), ensure_ascii=False, indent=2)[:5000])
+        return
+
+    postings = result if isinstance(result, list) else result.postings
+    print(f"{label} — всего найдено записей: {len(postings)}")
+    if not postings:
+        print(f"{label} — нет ни одной записи за этот период.")
+        return
+    print(f"{label} — первая запись целиком (все поля):")
+    print(json.dumps(postings[0].model_dump(mode="json"), ensure_ascii=False, indent=2))
+
+
+def _print_finance_summary(label: str, body: dict, fn) -> None:
+    print("=" * 70)
+    print(f"{label} — request body:")
+    print(json.dumps(body, ensure_ascii=False, indent=2))
+    try:
+        response = fn()
+    except OzonAPIError as exc:
+        print(f"{label} — OzonAPIError: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        print(f"{label} — unexpected error ({type(exc).__name__}): {exc}")
+        return
+
+    if response.result is None:
+        print(f"{label} — ответ не похож на ожидаемый формат (result отсутствует). Полный ответ:")
+        print(json.dumps(response.model_dump(mode="json"), ensure_ascii=False, indent=2)[:5000])
+        return
+
+    operations = response.result.operations
+    print(f"{label} — всего найдено операций: {len(operations)}")
+    if not operations:
+        print(f"{label} — нет ни одной операции за этот период.")
+        return
+
+    by_type: dict[str, list] = {}
+    for op in operations:
+        by_type.setdefault(op.type or "(без type)", []).append(op)
+
+    counts = {t: len(ops) for t, ops in by_type.items()}
+    print(f"{label} — разбивка по полю type: {json.dumps(counts, ensure_ascii=False)}")
+
+    for t, ops in list(by_type.items())[:_MAX_FINANCE_TYPE_EXAMPLES]:
+        print(f"--- {label} — пример операции с type={t!r} (все поля) ---")
+        print(json.dumps(ops[0].model_dump(mode="json"), ensure_ascii=False, indent=2))
 
 
 def main() -> None:
@@ -92,19 +158,19 @@ def main() -> None:
 
         with OzonSellerClient(ClientCredentials(client_id=client_id, api_key=api_key)) as client:
             if not args.skip_fbo:
-                _print_result(
+                _print_postings_summary(
                     "FBO postings (/v2/posting/fbo/list)",
                     {"filter": {"since": date_from_ts, "to": date_to_ts}, "limit": 1000},
                     lambda: client.list_fbo_postings(date_from=date_from_ts, date_to=date_to_ts),
                 )
             if not args.skip_fbs:
-                _print_result(
+                _print_postings_summary(
                     "FBS postings (/v3/posting/fbs/list)",
                     {"filter": {"since": date_from_ts, "to": date_to_ts}, "limit": 1000},
                     lambda: client.list_fbs_postings(date_from=date_from_ts, date_to=date_to_ts),
                 )
             if not args.skip_finance:
-                _print_result(
+                _print_finance_summary(
                     "Finance transactions (/v3/finance/transaction/list)",
                     {"filter": {"date": {"from": date_from_ts, "to": date_to_ts}, "transaction_type": "all"}, "page": 1, "page_size": 1000},
                     lambda: client.list_finance_transactions(date_from=date_from_ts, date_to=date_to_ts),
