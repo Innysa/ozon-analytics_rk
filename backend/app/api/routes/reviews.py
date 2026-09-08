@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, get_current_user, require_store_role
@@ -92,6 +92,8 @@ def list_reviews(
     category: str | None = None,
     statuses: str | None = None,  # comma-separated ReviewStatus values
     has_reply: bool | None = None,
+    has_text: bool | None = None,
+    sku: str | None = None,  # matches Product.ozon_sku OR Product.offer_id, substring, case-insensitive
     date_from: datetime | None = None,
     date_to: datetime | None = None,
 ) -> ReviewListResponse:
@@ -100,6 +102,17 @@ def list_reviews(
         stmt = stmt.where(Review.product_id == product_id)
     if rating:
         stmt = stmt.where(Review.rating == rating)
+    if has_text is not None:
+        # A review with only a star rating and no written comment is common
+        # on Ozon — text is "" (empty string) or NULL for those, never
+        # just whitespace (see review_import.py's _cell(), which strips and
+        # turns a blank cell into None), so this check is exact, not a guess.
+        no_text = or_(Review.text.is_(None), Review.text == "")
+        stmt = stmt.where(no_text if not has_text else ~no_text)
+    if sku:
+        stmt = stmt.join(Product, Review.product_id == Product.id).where(
+            or_(Product.ozon_sku.ilike(f"%{sku}%"), Product.offer_id.ilike(f"%{sku}%"))
+        )
     if date_from:
         stmt = stmt.where(Review.published_at >= date_from)
     if date_to:

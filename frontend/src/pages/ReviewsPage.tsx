@@ -9,6 +9,8 @@ interface Filters {
   sentiment: string;
   statuses: string;
   has_reply: string;
+  has_text: string;
+  sku: string;
 }
 
 const STATUS_GROUPS: { value: string; label: string }[] = [
@@ -25,9 +27,21 @@ export function ReviewsPage() {
   const { currentStore, refreshStores } = useStore();
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState<Filters>({ rating: "", sentiment: "", statuses: "", has_reply: "" });
+  const [filters, setFilters] = useState<Filters>({
+    rating: "", sentiment: "", statuses: "", has_reply: "", has_text: "", sku: "",
+  });
+  const [skuInput, setSkuInput] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Debounced: the SKU/Артикул box is free text, so filter on it only after
+  // the user pauses typing rather than on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFilters((f) => (f.sku === skuInput.trim() ? f : { ...f, sku: skuInput.trim() }));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [skuInput]);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -37,6 +51,8 @@ export function ReviewsPage() {
     if (filters.sentiment) params.set("sentiment", filters.sentiment);
     if (filters.statuses) params.set("statuses", filters.statuses);
     if (filters.has_reply) params.set("has_reply", filters.has_reply);
+    if (filters.has_text) params.set("has_text", filters.has_text);
+    if (filters.sku) params.set("sku", filters.sku);
     try {
       const data = await api.get<ReviewListResponse>(`/stores/${currentStore.id}/reviews?${params.toString()}`);
       setReviews(data.items);
@@ -179,6 +195,22 @@ export function ReviewsPage() {
           <option value="false">Без ответа</option>
           <option value="true">С ответом</option>
         </select>
+        <select
+          value={filters.has_text}
+          onChange={(e) => setFilters((f) => ({ ...f, has_text: e.target.value }))}
+          className="rounded-md border border-slate-300 px-2 py-1"
+        >
+          <option value="">С текстом и без</option>
+          <option value="true">Только с текстом</option>
+          <option value="false">Только звёзды (без текста)</option>
+        </select>
+        <input
+          type="text"
+          value={skuInput}
+          onChange={(e) => setSkuInput(e.target.value)}
+          placeholder="Поиск по SKU или артикулу"
+          className="w-56 rounded-md border border-slate-300 px-2 py-1"
+        />
       </div>
 
       {loading ? (
