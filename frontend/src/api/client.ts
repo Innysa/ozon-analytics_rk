@@ -9,6 +9,55 @@ export class ApiError extends Error {
   }
 }
 
+// Field names as they appear in our Pydantic schemas -> human-readable Russian labels,
+// used to turn FastAPI/Pydantic validation errors into a readable message instead of
+// letting an array of error objects get stringified to "[object Object]".
+const FIELD_LABELS: Record<string, string> = {
+  email: "Email",
+  password: "Пароль",
+  full_name: "Имя",
+  is_admin: "Администратор платформы",
+  role: "Роль",
+  user_id: "Пользователь",
+  store_id: "Магазин",
+};
+
+function fieldLabel(loc: unknown): string {
+  const parts = Array.isArray(loc) ? loc.filter((p) => typeof p === "string") : [];
+  const field = parts[parts.length - 1];
+  return (typeof field === "string" && FIELD_LABELS[field]) || (typeof field === "string" ? field : "Поле");
+}
+
+function formatValidationError(err: any): string {
+  const label = fieldLabel(err?.loc);
+  const ctx = err?.ctx ?? {};
+  switch (err?.type) {
+    case "string_too_short":
+      return `${label}: слишком короткое значение (минимум ${ctx.min_length} симв.)`;
+    case "string_too_long":
+      return `${label}: слишком длинное значение (максимум ${ctx.max_length} симв.)`;
+    case "missing":
+      return `${label}: обязательное поле`;
+    case "value_error":
+    case "string_type":
+    case "bool_type":
+    case "int_type":
+      return typeof err?.msg === "string" ? `${label}: ${err.msg}` : `${label}: некорректное значение`;
+    default:
+      return typeof err?.msg === "string" ? `${label}: ${err.msg}` : `${label}: некорректное значение`;
+  }
+}
+
+// FastAPI validation errors (422) come back as `{ detail: [{type, loc, msg, ctx}, ...] }`,
+// not a string — passing that array straight into Error() stringifies it to "[object Object]".
+function formatErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail.map(formatValidationError).join("; ");
+  }
+  return fallback;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...options,
@@ -23,7 +72,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     let detail = res.statusText;
     try {
       const data = await res.json();
-      detail = data.detail || detail;
+      detail = formatErrorDetail(data.detail, res.statusText);
     } catch {
       // ignore
     }
