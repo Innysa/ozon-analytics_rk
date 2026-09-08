@@ -2,14 +2,48 @@
 spec for stores whose Ozon plan doesn't expose the reviews API.
 
 Expected columns (case-insensitive, Russian or English header names accepted):
-  ozon_review_id / id_отзыва   - required, used for dedup with store_id
-  sku / артикул                - required, maps/creates a Product
-  product_name / товар         - optional, used if product must be created
+  ozon_review_id / id_отзыва   - required unless order_number is present
+                                  (see below), used for dedup with store_id
+  order_number / номер заказа  - fallback identifier when the file has no
+                                  dedicated review-id column — see below
+  sku                          - Ozon's own numeric SKU; maps/creates a Product
+  артикул / offer_id           - the seller's own article/offer id (kept
+                                  separate from sku — see below)
+  product_name / товар / название товара - optional, used if product must be created
   rating / оценка               - required, 1-5
-  text / текст                  - optional
+  text / текст / текст отзыва   - optional
   pros / достоинства            - optional
   cons / недостатки             - optional
-  published_at / дата           - optional, ISO date/datetime
+  published_at / дата / дата публикации - optional, ISO date/datetime
+
+Real Ozon "Отзывы → Скачать отчёт" export (confirmed against an actual
+downloaded file) has NO dedicated review-id column at all — its columns are
+Артикул;SKU;Название товара;Номер заказа;Статус получения;Текст отзыва;Дата
+публикации;Статус отзыва;Оценка;Количество фото;Количество видео;Количество
+ответов на отзыв. Two things about this real file broke the original version
+of this importer, which had only ever been exercised against a hand-built
+simple template:
+
+  1. It is ';'-delimited with a UTF-8 BOM, not the ',' pandas assumes by
+     default — `pd.read_csv(..., sep=",")` (the implicit default) raises a
+     ParserError on the first row containing a comma inside a text field
+     (e.g. a product name like "Складной пуф, размер 30x30, серый"), so
+     every real upload failed at the read step with zero visible effect
+     beyond a terse error most sellers wouldn't parse as "wrong delimiter."
+  2. It has BOTH "Артикул" (the seller's own offer id, e.g. "пуф/S/сер1/2")
+     and "SKU" (Ozon's numeric sku) as separate columns — the original alias
+     set treated "артикул" as just another name for the same "sku" field
+     that plain "sku" mapped to, via an unordered `set`, so which column won
+     for a real file depended on unspecified set-iteration behavior, and
+     "Артикул" (not a valid ozon_sku) could silently become what products
+     get matched/created by.
+  3. It has no ID-отзыва-shaped column at all, so the original hard
+     requirement for one meant every row was rejected outright regardless of
+     (1)/(2). Ozon reviews are 1:1 with a purchased order line, and
+     "Номер заказа" was confirmed unique per row in a real 473-row export,
+     so it's used as a stable substitute identifier (prefixed "order:" so it
+     can never collide with a real ozon_review_id from the API sync, which
+     are UUIDs) when no dedicated review-id column is present.
 """
 from __future__ import annotations
 
@@ -23,16 +57,22 @@ from app.models.product import Product
 from app.models.review import Review, ReviewSource, ReviewStatus
 from app.services.xlsx_compat import tolerant_xlsx_bytes
 
-_COLUMN_ALIASES = {
-    "ozon_review_id": {"ozon_review_id", "id_отзыва", "review_id", "id отзыва"},
-    "sku": {"sku", "артикул", "ozon_sku"},
-    "offer_id": {"offer_id", "артикул продавца", "seller_article"},
-    "product_name": {"product_name", "товар", "название товара"},
-    "rating": {"rating", "оценка"},
-    "text": {"text", "текст", "текст отзыва"},
-    "pros": {"pros", "достоинства"},
-    "cons": {"cons", "недостатки"},
-    "published_at": {"published_at", "дата", "дата отзыва"},
+# Alias lists (not sets) — order matters where a real Ozon export has
+# multiple candidate columns for the same purpose (see module docstring
+# point 2): the first matching alias wins, so the more specific/confirmed
+# real column name is listed before a looser one kept only for backward
+# compatibility with older hand-built templates.
+_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "ozon_review_id": ("ozon_review_id", "id_отзыва", "review_id", "id отзыва"),
+    "order_number": ("order_number", "номер заказа", "order number"),
+    "sku": ("sku", "ozon_sku", "артикул"),
+    "offer_id": ("offer_id", "артикул", "артикул продавца", "seller_article"),
+    "product_name": ("product_name", "товар", "название товара"),
+    "rating": ("rating", "оценка"),
+    "text": ("text", "текст", "текст отзыва"),
+    "pros": ("pros", "достоинства"),
+    "cons": ("cons", "недостатки"),
+    "published_at": ("published_at", "дата", "дата отзыва", "дата публикации"),
 }
 
 
@@ -57,7 +97,14 @@ def _normalize_columns(df: pd.DataFrame) -> dict[str, str]:
 
 def _read_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     if filename.lower().endswith(".csv"):
-        return pd.read_csv(io.BytesIO(content))
+        # Ozon's real export is ';'-delimited (confirmed — see module
+        # docstring); try that first and only fall back to ',' if it
+        # produced no more than one column, i.e. there was no ';' in the
+        # file at all (a hand-built plain-comma CSV).
+        df = pd.read_csv(io.BytesIO(content), sep=";")
+        if df.shape[1] < 2:
+            df = pd.read_csv(io.BytesIO(content), sep=",")
+        return df
     return pd.read_excel(io.BytesIO(tolerant_xlsx_bytes(content)))
 
 
@@ -76,9 +123,11 @@ def import_reviews_from_file(
         return result
 
     columns = _normalize_columns(df)
-    if "ozon_review_id" not in columns or "rating" not in columns:
+    has_id_column = "ozon_review_id" in columns or "order_number" in columns
+    if not has_id_column or "rating" not in columns:
         result.errors.append(
-            "В файле должны быть колонки для ID отзыва (ozon_review_id/ID отзыва) и оценки (rating/Оценка)"
+            "В файле должны быть колонки для ID отзыва (ozon_review_id/ID отзыва) "
+            "или номера заказа (order_number/Номер заказа), и оценки (rating/Оценка)"
         )
         return result
 
@@ -90,9 +139,18 @@ def import_reviews_from_file(
     for _, row in df.iterrows():
         result.fetched += 1
         try:
-            ozon_review_id = str(row[columns["ozon_review_id"]]).strip()
-            if not ozon_review_id or ozon_review_id == "nan":
-                result.errors.append("Пропущена строка без ID отзыва")
+            if "ozon_review_id" in columns:
+                ozon_review_id = str(row[columns["ozon_review_id"]]).strip()
+            else:
+                # No dedicated review-id column in this export (real Ozon
+                # "Отзывы" report) — the order number is confirmed unique
+                # per row, "order:"-prefixed so it can't collide with a real
+                # ozon_review_id (a UUID) from the API sync.
+                order_number = str(row[columns["order_number"]]).strip()
+                ozon_review_id = f"order:{order_number}" if order_number and order_number != "nan" else ""
+
+            if not ozon_review_id or ozon_review_id in ("nan", "order:nan"):
+                result.errors.append("Пропущена строка без ID отзыва/номера заказа")
                 continue
             if ozon_review_id in existing_ids:
                 result.skipped_duplicate += 1
