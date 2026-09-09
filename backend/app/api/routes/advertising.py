@@ -26,10 +26,15 @@ from app.schemas.advertising import (
     AdvertisingStatisticListResponse,
     AdvertisingStatisticOut,
     CampaignDetailOut,
+    ProductAdvertisingAutoDailyOut,
 )
 from app.schemas.common import ImportSummary
 from app.services.advertising_ai_review_service import generate_advertising_ai_review
-from app.services.advertising_analytics_service import compute_advertising_analytics, compute_campaign_detail
+from app.services.advertising_analytics_service import (
+    compute_advertising_analytics,
+    compute_campaign_detail,
+    compute_product_advertising_auto_daily,
+)
 from app.services.advertising_import import import_advertising_statistics_from_file
 from app.services.ai.factory import get_ai_provider
 from app.services.audit import record_audit
@@ -64,6 +69,23 @@ def campaign_detail(
     query itself, so a campaign_id from another store simply comes back as
     has_data=False rather than leaking that store's numbers."""
     return compute_campaign_detail(db, store_id=ctx.store_id, campaign_id=campaign_id)
+
+
+@router.get("/product-auto-daily", response_model=ProductAdvertisingAutoDailyOut)
+def product_advertising_auto_daily(
+    product_id: str,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+) -> ProductAdvertisingAutoDailyOut:
+    """Auto-collected (Ozon Performance API) advertising numbers for one
+    product, broken down by campaign — the per-product counterpart of
+    campaign_detail's auto_daily above, sliced the other way. product_id is
+    resolved and store-checked here (not trusted as a bare ozon_sku from the
+    client) so a product_id from another store simply 404s."""
+    product = db.get(Product, product_id)
+    if not product or product.store_id != ctx.store_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+    return compute_product_advertising_auto_daily(db, store_id=ctx.store_id, ozon_sku=product.ozon_sku)
 
 
 @router.post("/statistics/upload", response_model=ImportSummary)

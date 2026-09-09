@@ -8,7 +8,7 @@ real observed values."""
 from datetime import date
 
 from app.services.ozon.schemas import OzonPostingItem, OzonPostingProductItem
-from app.services.order_daily_sync_service import aggregate_postings_by_day, _fetch_all_postings
+from app.services.order_daily_sync_service import aggregate_postings_by_day, aggregate_postings_by_sku_and_day, _fetch_all_postings
 
 
 def _posting(*, status: str, in_process_at: str, sku: int, price: str, old_price: float, commission: float, quantity: int = 1) -> OzonPostingItem:
@@ -110,6 +110,63 @@ def test_posting_without_in_process_at_is_skipped_not_crashed():
     daily = aggregate_postings_by_day([posting], cost_by_sku={})
 
     assert daily == {}
+
+
+def test_by_sku_and_day_keeps_different_skus_separate():
+    """The store-level aggregate_postings_by_day sums across every SKU into
+    one bucket per day; the per-SKU variant must keep them apart instead of
+    collapsing back into a single total."""
+    p1 = _posting(status="delivered", in_process_at="2026-09-02T01:00:00.000000Z", sku=111, price="100.00", old_price=100.0, commission=-10)
+    p2 = _posting(status="delivered", in_process_at="2026-09-02T02:00:00.000000Z", sku=222, price="50.00", old_price=50.0, commission=-5)
+
+    by_sku_day = aggregate_postings_by_sku_and_day([p1, p2])
+
+    assert set(by_sku_day.keys()) == {("111", date(2026, 9, 2)), ("222", date(2026, 9, 2))}
+    assert by_sku_day[("111", date(2026, 9, 2))]["ordered_units"] == 1
+    assert by_sku_day[("111", date(2026, 9, 2))]["delivered_sum_rub"] == 100.0
+    assert by_sku_day[("222", date(2026, 9, 2))]["delivered_sum_rub"] == 50.0
+
+
+def test_by_sku_and_day_same_sku_multiple_postings_summed():
+    p1 = _posting(status="delivered", in_process_at="2026-09-02T01:00:00.000000Z", sku=111, price="100.00", old_price=100.0, commission=-10)
+    p2 = _posting(status="delivered", in_process_at="2026-09-02T20:00:00.000000Z", sku=111, price="100.00", old_price=100.0, commission=-10)
+
+    by_sku_day = aggregate_postings_by_sku_and_day([p1, p2])
+
+    bucket = by_sku_day[("111", date(2026, 9, 2))]
+    assert bucket["ordered_units"] == 2
+    assert bucket["delivered_units"] == 2
+    assert bucket["commission_rub"] == -20
+
+
+def test_by_sku_and_day_cancelled_and_unfinished_buckets():
+    cancelled = _posting(status="cancelled", in_process_at="2026-09-03T10:00:00.000000Z", sku=1, price="500.00", old_price=500.0, commission=0)
+    unfinished = _posting(status="awaiting_deliver", in_process_at="2026-09-03T10:00:00.000000Z", sku=2, price="300.00", old_price=300.0, commission=0)
+
+    by_sku_day = aggregate_postings_by_sku_and_day([cancelled, unfinished])
+
+    assert by_sku_day[("1", date(2026, 9, 3))]["cancelled_units"] == 1
+    assert by_sku_day[("1", date(2026, 9, 3))]["delivered_units"] == 0
+    assert by_sku_day[("2", date(2026, 9, 3))]["unfinished_units"] == 1
+
+
+def test_by_sku_and_day_skips_posting_without_in_process_at():
+    posting = OzonPostingItem(posting_number="x", status="delivered", in_process_at=None, products=[])
+
+    by_sku_day = aggregate_postings_by_sku_and_day([posting])
+
+    assert by_sku_day == {}
+
+
+def test_by_sku_and_day_skips_line_with_no_sku():
+    posting = OzonPostingItem(
+        posting_number="x", status="delivered", in_process_at="2026-09-02T00:00:00Z",
+        products=[OzonPostingProductItem(sku=None, offer_id="a", name="Товар", quantity=1, price="300.00")],
+    )
+
+    by_sku_day = aggregate_postings_by_sku_and_day([posting])
+
+    assert by_sku_day == {}
 
 
 class _FakePaginatedFetch:

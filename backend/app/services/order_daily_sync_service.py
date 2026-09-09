@@ -61,6 +61,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
+from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.services.ozon.exceptions import OzonAPIError
 from app.services.ozon.schemas import OzonPostingItem
 
@@ -162,6 +163,69 @@ def aggregate_postings_by_day(postings: list[OzonPostingItem], *, cost_by_sku: d
     return daily
 
 
+def _empty_sku_bucket() -> dict:
+    return {
+        "ordered_units": 0, "ordered_sum_rub": 0.0, "ordered_sum_discounted_rub": 0.0,
+        "delivered_units": 0, "delivered_sum_rub": 0.0,
+        "cancelled_units": 0, "cancelled_sum_rub": 0.0,
+        "unfinished_units": 0, "commission_rub": 0.0,
+    }
+
+
+def aggregate_postings_by_sku_and_day(postings: list[OzonPostingItem]) -> dict[tuple[str, date], dict]:
+    """Same aggregation as aggregate_postings_by_day, but keyed by (sku, day)
+    instead of just day — the per-line sku that function discards after
+    computing cost/commission. No extra Ozon call: same already-fetched
+    postings, just not thrown away this time. Deliberately excludes cost
+    (see ProductOrderDailyStatistic's own docstring — margin stays a
+    store-level concern)."""
+    daily: dict[tuple[str, date], dict] = {}
+    for posting in postings:
+        day = _parse_in_process_at(posting.in_process_at)
+        if day is None:
+            continue
+        status_bucket = _bucket_status(posting.status)
+
+        for product in posting.products:
+            qty = product.quantity or 0
+            if qty <= 0 or product.sku is None:
+                continue
+            sku = str(product.sku)
+            bucket = daily.setdefault((sku, day), _empty_sku_bucket())
+            price = _to_float(product.price)
+            fin_line = _financial_line_for_sku(posting.financial_data, product.sku)
+            old_price = _to_float(fin_line["old_price"]) if fin_line.get("old_price") is not None else price
+            commission = _to_float(fin_line.get("commission_amount"))
+
+            bucket["ordered_units"] += qty
+            bucket["ordered_sum_rub"] += old_price * qty
+            bucket["ordered_sum_discounted_rub"] += price * qty
+            bucket["commission_rub"] += commission
+
+            if status_bucket == "delivered":
+                bucket["delivered_units"] += qty
+                bucket["delivered_sum_rub"] += price * qty
+            elif status_bucket == "cancelled":
+                bucket["cancelled_units"] += qty
+                bucket["cancelled_sum_rub"] += price * qty
+            else:
+                bucket["unfinished_units"] += qty
+
+    return daily
+
+
+def _apply_sku_bucket(stat: ProductOrderDailyStatistic, bucket: dict) -> None:
+    stat.ordered_units = bucket["ordered_units"]
+    stat.ordered_sum_rub = bucket["ordered_sum_rub"]
+    stat.ordered_sum_discounted_rub = bucket["ordered_sum_discounted_rub"]
+    stat.delivered_units = bucket["delivered_units"]
+    stat.delivered_sum_rub = bucket["delivered_sum_rub"]
+    stat.cancelled_units = bucket["cancelled_units"]
+    stat.cancelled_sum_rub = bucket["cancelled_sum_rub"]
+    stat.unfinished_units = bucket["unfinished_units"]
+    stat.commission_rub = bucket["commission_rub"]
+
+
 def _apply_bucket(stat: OrderDailyStatistic, bucket: dict) -> None:
     stat.ordered_units = bucket["ordered_units"]
     stat.ordered_sum_rub = bucket["ordered_sum_rub"]
@@ -250,6 +314,30 @@ def sync_order_daily_statistics(
                 _apply_bucket(stat, bucket)
                 db.add(stat)
                 outcome.created += 1
+        db.commit()
+
+        # Same already-fetched postings, additionally broken down per SKU —
+        # no extra Ozon call (see aggregate_postings_by_sku_and_day).
+        by_sku_day = aggregate_postings_by_sku_and_day(postings)
+        for (sku, day), bucket in by_sku_day.items():
+            existing_sku = (
+                db.query(ProductOrderDailyStatistic)
+                .filter(
+                    ProductOrderDailyStatistic.store_id == store_id,
+                    ProductOrderDailyStatistic.ozon_sku == sku,
+                    ProductOrderDailyStatistic.date == day,
+                    ProductOrderDailyStatistic.delivery_schema == schema_label,
+                )
+                .first()
+            )
+            if existing_sku:
+                _apply_sku_bucket(existing_sku, bucket)
+            else:
+                sku_stat = ProductOrderDailyStatistic(
+                    store_id=store_id, ozon_sku=sku, date=day, delivery_schema=schema_label, source="ozon_seller_api",
+                )
+                _apply_sku_bucket(sku_stat, bucket)
+                db.add(sku_stat)
         db.commit()
 
     return outcome

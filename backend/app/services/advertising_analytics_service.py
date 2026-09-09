@@ -31,6 +31,8 @@ from app.schemas.advertising import (
     CampaignDailyComparison,
     CampaignDetailOut,
     MetricComparison,
+    ProductAdCampaignBreakdown,
+    ProductAdvertisingAutoDailyOut,
     ProductBreakdown,
 )
 
@@ -214,6 +216,106 @@ def compute_campaign_auto_daily_detail(db: Session, *, store_id: str, campaign_i
         period_end=max(by_date.keys()),
         daily_comparison=comparison,
         daily_comparison_unavailable_reason=reason,
+    )
+
+
+def compute_product_advertising_auto_daily(db: Session, *, store_id: str, ozon_sku: str) -> ProductAdvertisingAutoDailyOut:
+    """Same aggregation as compute_campaign_auto_daily_detail, but sliced by
+    SKU across every campaign that advertised it, instead of by one campaign
+    across every SKU it covers — a campaign usually spans many products, so
+    this groups by ozon_campaign_id to show which campaigns actually drive
+    this product's numbers."""
+    rows = db.scalars(
+        select(AdvertisingDailyStatistic).where(
+            AdvertisingDailyStatistic.store_id == store_id,
+            AdvertisingDailyStatistic.ozon_sku == ozon_sku,
+        )
+    ).all()
+    if not rows:
+        return ProductAdvertisingAutoDailyOut(has_data=False)
+
+    total_spend = sum(float(r.spend_rub or 0) for r in rows)
+    total_revenue = sum(float(r.revenue_rub or 0) for r in rows)
+    total_impressions = sum(r.impressions or 0 for r in rows)
+    total_clicks = sum(r.clicks or 0 for r in rows)
+    total_orders = sum(r.orders or 0 for r in rows)
+
+    by_date: dict[date, dict[str, float]] = defaultdict(lambda: {"spend": 0.0, "revenue": 0.0, "impressions": 0.0, "clicks": 0.0})
+    for r in rows:
+        agg = by_date[r.date]
+        agg["spend"] += float(r.spend_rub or 0)
+        agg["revenue"] += float(r.revenue_rub or 0)
+        agg["impressions"] += r.impressions or 0
+        agg["clicks"] += r.clicks or 0
+
+    comparison = None
+    reason = None
+    dates_sorted = sorted(by_date.keys(), reverse=True)
+    if len(dates_sorted) >= 2:
+        today_d, yesterday_d = dates_sorted[0], dates_sorted[1]
+        today_vals, yesterday_vals = by_date[today_d], by_date[yesterday_d]
+        comparison = CampaignAutoDailyComparison(
+            date_today=today_d,
+            date_yesterday=yesterday_d,
+            spend_rub=_compare(today_vals["spend"], yesterday_vals["spend"]),
+            impressions=_compare(today_vals["impressions"], yesterday_vals["impressions"]),
+            clicks=_compare(today_vals["clicks"], yesterday_vals["clicks"]),
+            revenue_rub=_compare(today_vals["revenue"], yesterday_vals["revenue"]),
+        )
+    else:
+        reason = (
+            "Сравнение с предыдущим днём недоступно — нужно как минимум два разных дня "
+            f"автоматически собранной статистики для этого товара; сейчас доступно: {len(dates_sorted)}."
+        )
+
+    by_campaign_agg: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"spend": 0.0, "revenue": 0.0, "impressions": 0.0, "clicks": 0.0, "orders": 0.0}
+    )
+    for r in rows:
+        agg = by_campaign_agg[r.ozon_campaign_id]
+        agg["spend"] += float(r.spend_rub or 0)
+        agg["revenue"] += float(r.revenue_rub or 0)
+        agg["impressions"] += r.impressions or 0
+        agg["clicks"] += r.clicks or 0
+        agg["orders"] += r.orders or 0
+
+    campaigns_by_ozon_id = {
+        c.ozon_campaign_id: c
+        for c in db.scalars(select(AdvertisingCampaign).where(AdvertisingCampaign.store_id == store_id)).all()
+    }
+
+    by_campaign = [
+        ProductAdCampaignBreakdown(
+            campaign_id=ozon_campaign_id,
+            campaign_name=(campaigns_by_ozon_id[ozon_campaign_id].name or ozon_campaign_id)
+            if ozon_campaign_id in campaigns_by_ozon_id
+            else ozon_campaign_id,
+            campaign_state=campaigns_by_ozon_id[ozon_campaign_id].state if ozon_campaign_id in campaigns_by_ozon_id else None,
+            spend_rub=round(agg["spend"], 2),
+            impressions=int(agg["impressions"]),
+            clicks=int(agg["clicks"]),
+            orders=int(agg["orders"]),
+            revenue_rub=round(agg["revenue"], 2),
+            drr_calculated_pct=_drr(agg["spend"], agg["revenue"]),
+            roas_calculated=_roas(agg["spend"], agg["revenue"]),
+        )
+        for ozon_campaign_id, agg in sorted(by_campaign_agg.items(), key=lambda kv: kv[1]["spend"], reverse=True)
+    ]
+
+    return ProductAdvertisingAutoDailyOut(
+        has_data=True,
+        total_spend_rub=round(total_spend, 2),
+        total_revenue_rub=round(total_revenue, 2),
+        total_impressions=total_impressions,
+        total_clicks=total_clicks,
+        total_orders=total_orders,
+        drr_calculated_pct=_drr(total_spend, total_revenue),
+        roas_calculated=_roas(total_spend, total_revenue),
+        period_start=min(by_date.keys()),
+        period_end=max(by_date.keys()),
+        daily_comparison=comparison,
+        daily_comparison_unavailable_reason=reason,
+        by_campaign=by_campaign,
     )
 
 

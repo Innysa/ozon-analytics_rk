@@ -397,6 +397,59 @@ export interface CampaignDetail {
   auto_daily: CampaignAutoDailyDetail;
 }
 
+export interface ProductOrderDailyStatistic {
+  id: string;
+  ozon_sku: string;
+  date: string;
+  delivery_schema: string;
+  ordered_units: number;
+  ordered_sum_rub: number;
+  ordered_sum_discounted_rub: number;
+  delivered_units: number;
+  delivered_sum_rub: number;
+  cancelled_units: number;
+  cancelled_sum_rub: number;
+  unfinished_units: number;
+  commission_rub: number;
+}
+
+export interface ProductOrderDailyStatisticListResponse {
+  items: ProductOrderDailyStatistic[];
+  total: number;
+}
+
+export interface ProductAdCampaignBreakdown {
+  campaign_id: string;
+  campaign_name: string;
+  campaign_state: string | null;
+  spend_rub: number;
+  impressions: number;
+  clicks: number;
+  orders: number;
+  revenue_rub: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+}
+
+// Per-product counterpart of CampaignAutoDailyDetail — same auto-collected
+// source (Ozon Performance API), sliced by SKU across every campaign that
+// advertised it instead of by one campaign across every SKU it covers.
+export interface ProductAdvertisingAutoDaily {
+  has_data: boolean;
+  total_spend_rub: number;
+  total_revenue_rub: number;
+  total_impressions: number;
+  total_clicks: number;
+  total_orders: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+  period_start: string | null;
+  period_end: string | null;
+  daily_comparison: CampaignAutoDailyComparison | null;
+  daily_comparison_unavailable_reason: string | null;
+  by_campaign: ProductAdCampaignBreakdown[];
+}
+
 export interface ProductCardStatistic {
   id: string;
   product_id: string | null;

@@ -152,6 +152,49 @@ class CampaignAutoDailyDetailOut(BaseModel):
     daily_comparison_unavailable_reason: str | None = None
 
 
+class ProductAdCampaignBreakdown(BaseModel):
+    """One campaign's contribution to a single product's advertising numbers
+    — a campaign usually covers many SKUs, so a product's ad tab needs to
+    break down by campaign, the mirror image of a campaign's own detail page
+    (which breaks down by date only, since it already knows its one
+    campaign)."""
+
+    campaign_id: str  # ozon_campaign_id — stable even if AdvertisingCampaign itself was never synced
+    campaign_name: str
+    campaign_state: str | None
+    spend_rub: float
+    impressions: int
+    clicks: int
+    orders: int
+    revenue_rub: float
+    drr_calculated_pct: float | None
+    roas_calculated: float | None
+
+
+class ProductAdvertisingAutoDailyOut(BaseModel):
+    """Same aggregation logic as CampaignAutoDailyDetailOut, but sliced by
+    ozon_sku across every campaign that advertised it, instead of by one
+    campaign across every SKU it covers. Source: the same auto-collected
+    AdvertisingDailyStatistic rows (Ozon Performance API statistics-report
+    sync) — no CSV-upload equivalent exists per-product yet (see
+    AdvertisingAnalyticsOut.by_campaign via GET /advertising/analytics?
+    product_id=... for the CSV-sourced per-product view)."""
+
+    has_data: bool = False
+    total_spend_rub: float = 0
+    total_revenue_rub: float = 0
+    total_impressions: int = 0
+    total_clicks: int = 0
+    total_orders: int = 0
+    drr_calculated_pct: float | None = None
+    roas_calculated: float | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    daily_comparison: CampaignAutoDailyComparison | None = None
+    daily_comparison_unavailable_reason: str | None = None
+    by_campaign: list[ProductAdCampaignBreakdown] = []
+
+
 class CampaignDetailOut(BaseModel):
     campaign_id: str
     has_data: bool
