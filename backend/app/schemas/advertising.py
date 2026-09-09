@@ -1,12 +1,21 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class PerformanceCredentialsIn(BaseModel):
     client_id: str
     client_secret: str
+
+    @field_validator("client_id", "client_secret")
+    @classmethod
+    def _strip_whitespace(cls, v: str) -> str:
+        # See OzonCredentialsIn._strip_whitespace — same copy-paste footgun.
+        v = v.strip()
+        if not v:
+            raise ValueError("Значение не может быть пустым")
+        return v
 
 
 class PerformanceCredentialsOut(BaseModel):

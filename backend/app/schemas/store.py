@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.models.membership import StoreRole
 
@@ -38,6 +38,17 @@ class MembershipCreate(BaseModel):
 class OzonCredentialsIn(BaseModel):
     client_id: str
     api_key: str
+
+    @field_validator("client_id", "api_key")
+    @classmethod
+    def _strip_whitespace(cls, v: str) -> str:
+        # A stray leading/trailing space or newline from copy-pasting out of
+        # Ozon's own cabinet is a common, silent cause of Ozon rejecting an
+        # otherwise-correct key — strip it instead of storing it verbatim.
+        v = v.strip()
+        if not v:
+            raise ValueError("Значение не может быть пустым")
+        return v
 
 
 class OzonCredentialsOut(BaseModel):
