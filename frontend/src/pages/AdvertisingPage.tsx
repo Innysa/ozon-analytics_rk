@@ -21,7 +21,21 @@ import type {
 // paid advertising — kept separate per user request, verified against real
 // campaign_type values already seen in this store's own data.
 const REFERRAL_CAMPAIGN_TYPES = new Set(["REF_VK", "REF_BLOGGER"]);
+// Confirmed against a real store's data (393 campaigns, all three accounted
+// for with none left over): Ozon's campaign `state` distinguishes "running"
+// from "archived" AND from "paused but not archived" (CAMPAIGN_STATE_INACTIVE)
+// as three separate values — pausing a campaign does not archive it. The
+// "Активные" tab previously showed everything except ARCHIVED, which lumped
+// paused campaigns in with running ones; it now matches RUNNING exactly, and
+// INACTIVE gets its own "Приостановленные" tab per the store owner's request.
+const RUNNING_STATE = "CAMPAIGN_STATE_RUNNING";
+const INACTIVE_STATE = "CAMPAIGN_STATE_INACTIVE";
 const ARCHIVED_STATE = "CAMPAIGN_STATE_ARCHIVED";
+const STATE_LABELS: Record<string, string> = {
+  [RUNNING_STATE]: "Активна",
+  [INACTIVE_STATE]: "На паузе",
+  [ARCHIVED_STATE]: "В архиве",
+};
 
 function fmtRub(v: number | null): string {
   if (v === null) return "Нет данных";
@@ -476,13 +490,24 @@ function AdvertisingAiReviewSection({ reviews }: { reviews: AdvertisingAiReview[
 }
 
 function CampaignsSection({ storeId, campaigns }: { storeId: string; campaigns: AdvertisingCampaign[] }) {
-  const [tab, setTab] = useState<"active" | "referral" | "archived">("active");
+  const [tab, setTab] = useState<"active" | "paused" | "referral" | "archived" | "other">("active");
 
   const isReferral = (c: AdvertisingCampaign) => !!c.campaign_type && REFERRAL_CAMPAIGN_TYPES.has(c.campaign_type);
   const referral = campaigns.filter(isReferral);
+  const active = campaigns.filter((c) => !isReferral(c) && c.state === RUNNING_STATE);
+  const paused = campaigns.filter((c) => !isReferral(c) && c.state === INACTIVE_STATE);
   const archived = campaigns.filter((c) => !isReferral(c) && c.state === ARCHIVED_STATE);
-  const active = campaigns.filter((c) => !isReferral(c) && c.state !== ARCHIVED_STATE);
-  const shown = tab === "active" ? active : tab === "referral" ? referral : archived;
+  // Defensive catch-all: Ozon may introduce a state we haven't seen (e.g. a
+  // moderation state) — never drop a campaign from every tab silently.
+  const other = campaigns.filter(
+    (c) => !isReferral(c) && c.state !== RUNNING_STATE && c.state !== INACTIVE_STATE && c.state !== ARCHIVED_STATE
+  );
+  const shown =
+    tab === "active" ? active
+    : tab === "paused" ? paused
+    : tab === "referral" ? referral
+    : tab === "archived" ? archived
+    : other;
 
   return (
     <div>
@@ -491,11 +516,19 @@ function CampaignsSection({ storeId, campaigns }: { storeId: string; campaigns: 
         <div className="flex gap-1">
           <TabButton active={tab === "active"} onClick={() => setTab("active")} label={`Активные (${active.length})`} />
           <TabButton
+            active={tab === "paused"}
+            onClick={() => setTab("paused")}
+            label={`Приостановленные (${paused.length})`}
+          />
+          <TabButton
             active={tab === "referral"}
             onClick={() => setTab("referral")}
             label={`Рефералка/блогеры (${referral.length})`}
           />
           <TabButton active={tab === "archived"} onClick={() => setTab("archived")} label={`Архив (${archived.length})`} />
+          {other.length > 0 && (
+            <TabButton active={tab === "other"} onClick={() => setTab("other")} label={`Прочие (${other.length})`} />
+          )}
         </div>
       </div>
 
@@ -712,7 +745,7 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
         <td className="w-4 py-1 text-slate-400">{expanded ? "▾" : "▸"}</td>
         <td className="py-1">{campaign.name ?? "Без названия"}</td>
         <td>{campaign.campaign_type ?? "—"}</td>
-        <td>{campaign.state ?? "—"}</td>
+        <td>{campaign.state ? STATE_LABELS[campaign.state] ?? campaign.state : "—"}</td>
         <td>{campaign.daily_budget_rub !== null ? fmtRub(campaign.daily_budget_rub) : "Нет данных"}</td>
       </tr>
       {expanded && (
