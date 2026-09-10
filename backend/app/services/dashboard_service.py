@@ -237,6 +237,38 @@ def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
     return fines, storage
 
 
+def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) -> tuple[str, float] | None:
+    """Finds the single largest (by absolute price) item across all periods'
+    services_items_json that _categorize_service_items would leave
+    uncategorized (i.e. not matched as a fine/storage item) — surfaced on
+    the Дашборд so a large volatile line (confirmed real example,
+    2026-09-10: "MarketplaceServiseItemAgencyFeeForSale" swinging from
+    -2 787 193.76 to +8 764 167.68 across different weeks on one real
+    account) doesn't get mistaken for a sync bug when it dominates
+    other_services_rub for a given range. Deliberately no "% of total"
+    threshold — always surfaces the single biggest item, since this
+    project has no confirmed basis to pick a significance cutoff."""
+    best: tuple[str, float] | None = None
+    for period in periods:
+        if not period.services_items_json:
+            continue
+        try:
+            items = json.loads(period.services_items_json)
+        except (TypeError, ValueError):
+            continue
+        for item in items:
+            name = item.get("name") or ""
+            if "Fine" in name or "Storage" in name:
+                continue
+            price = item.get("price")
+            if price is None:
+                continue
+            price = float(price)
+            if best is None or abs(price) > abs(best[1]):
+                best = (name, price)
+    return best
+
+
 def compute_dashboard(
     db: Session,
     *,
@@ -407,6 +439,7 @@ def compute_dashboard(
             # its own total (e.g. an older row, or an Ozon item name this
             # matching hasn't seen yet) never drops that money silently.
             other_services_sum = services_total_sum - fines_sum - storage_sum
+            top_item = _largest_uncategorized_service_item(periods_in_range)
             logistics = LogisticsBlock(
                 has_data=True,
                 logistics_rub=round(sum(float(p.delivery_services_total or 0) for p in periods_in_range), 2),
@@ -415,6 +448,8 @@ def compute_dashboard(
                 fines_rub=round(fines_sum, 2),
                 other_deductions_rub=round(sum(float(p.others_total or 0) for p in periods_in_range), 2),
                 other_services_rub=round(other_services_sum, 2),
+                other_services_top_item_name=top_item[0] if top_item else None,
+                other_services_top_item_rub=round(top_item[1], 2) if top_item else None,
                 periods_summed=len(periods_in_range),
                 period_note=(
                     f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end} "

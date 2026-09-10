@@ -274,6 +274,13 @@ export function DashboardPage() {
                   <Stat label="Прочие удержания" value={fmtRub(dashboard.logistics.other_deductions_rub)} />
                   <Stat label="Прочие услуги" value={fmtRub(dashboard.logistics.other_services_rub)} />
                 </div>
+                {dashboard.logistics.other_services_top_item_name && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Крупнейшая отдельная статья внутри «Прочие услуги»: {dashboard.logistics.other_services_top_item_name} —{" "}
+                    {fmtRub(dashboard.logistics.other_services_top_item_rub)}. Такие статьи (например, агентская
+                    комиссия) у Ozon бывают крупными и волатильными в отдельные недели — это не обязательно ошибка.
+                  </p>
+                )}
                 <p className="mt-2 text-xs text-slate-400">
                   {dashboard.logistics.period_note}. «Логистика» — доставка (последняя миля, приём в пункте
                   приёма, магистраль); «Обработка возвратов» — расходы на возврат товара (например, через пункт

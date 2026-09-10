@@ -721,6 +721,8 @@ export interface LogisticsBlock {
   fines_rub: number | null;
   other_deductions_rub: number | null;
   other_services_rub: number | null;
+  other_services_top_item_name: string | null;
+  other_services_top_item_rub: number | null;
   periods_summed: number;
   period_note: string | null;
 }

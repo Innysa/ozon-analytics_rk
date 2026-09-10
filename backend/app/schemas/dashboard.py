@@ -139,6 +139,19 @@ class LogisticsBlock(BaseModel):
     acquiring fees, seller "decompensation") — NOT sub-split, only two
     item names observed so far.
 
+    other_services_top_item_name/_rub — the single largest (by absolute
+    price) uncategorized item across the summed periods, e.g. a real
+    observed case: "MarketplaceServiseItemAgencyFeeForSale" (sic — that
+    typo is Ozon's own, not this codebase's) swinging from -2 787 193.76
+    to +8 764 167.68 across different weeks, confirmed 2026-09-10 to be
+    genuine volatile Ozon data (not a sync bug) after inspecting
+    raw_payload. A single such item can dominate other_services_rub and
+    look like an error — surfacing which item it was (without guessing an
+    arbitrary "significant %" threshold, which would need a number this
+    project has no basis to pick) lets a seller check for themselves
+    rather than mistake it for a bug. None when there are no uncategorized
+    items to show.
+
     Commission is deliberately NOT repeated here — MarginBlock.commission_
     rub (from postings' financial_data) is the one already shown on the
     dashboard, and this endpoint's own commission_amount has not been
@@ -153,6 +166,8 @@ class LogisticsBlock(BaseModel):
     fines_rub: float | None = None
     other_deductions_rub: float | None = None
     other_services_rub: float | None = None
+    other_services_top_item_name: str | None = None
+    other_services_top_item_rub: float | None = None
     periods_summed: int = 0
     period_note: str | None = None  # e.g. "2026-08-17 — 2026-09-06 (3 периода Ozon)"
 

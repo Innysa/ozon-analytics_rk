@@ -313,6 +313,78 @@ def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, 
     assert block["storage_rub"] == -1404
     assert block["other_services_rub"] == -81971.47  # remainder: -83879.47 - (-504) - (-1404)
     assert block["other_deductions_rub"] == -26715.76
+    assert block["other_services_top_item_name"] == "MarketplaceServiceCostPerClick"
+    assert block["other_services_top_item_rub"] == -81971.47
+
+
+def test_logistics_block_surfaces_largest_uncategorized_item_by_magnitude(client, db_session, two_stores_with_users):
+    """Confirmed 2026-09-10: a real account found a volatile line
+    (MarketplaceServiseItemAgencyFeeForSale — Ozon's own typo) ranging from
+    -2 787 193.76 to +8 764 167.68 across different weeks, once dominating
+    "Прочие услуги" enough to look like a sync bug. The Дашборд must surface
+    the single largest (by |price|) uncategorized item across all summed
+    periods — here across TWO periods, to also confirm it looks across all
+    of them, not just one."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 7, 27), period_end=date(2026, 8, 2),
+        orders_amount=1000, returns_amount=0, commission_amount=0, services_amount=5643060.15,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=5621663.17,
+        services_items_json=json.dumps([
+            {"name": "MarketplaceServiseItemAgencyFeeForSale", "price": 4908815.64},
+            {"name": "MarketplaceServiceCostPerClick", "price": -50000},
+        ]),
+        source="ozon_seller_api",
+    ))
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 3), period_end=date(2026, 8, 9),
+        orders_amount=1000, returns_amount=0, commission_amount=0, services_amount=-100000,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-100000,
+        services_items_json=json.dumps([{"name": "InsuranceService", "price": -100000}]),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-07-27", "date_to": "2026-08-09"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["other_services_top_item_name"] == "MarketplaceServiseItemAgencyFeeForSale"
+    assert block["other_services_top_item_rub"] == 4908815.64
+
+
+def test_logistics_block_top_item_none_when_no_uncategorized_items(client, db_session, two_stores_with_users):
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=0, source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["other_services_top_item_name"] is None
+    assert block["other_services_top_item_rub"] is None
 
 
 def test_logistics_block_has_data_but_zero_periods_when_range_misaligned(client, db_session, two_stores_with_users):
