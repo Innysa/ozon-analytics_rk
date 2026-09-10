@@ -111,17 +111,31 @@ value for `metrics` request-list position i, not labelled by key at all.
 get_analytics_data() therefore returns a validated OzonAnalyticsDataResponse
 rather than a raw dict.
 
-Also present (UNCONFIRMED — see app.services.ozon.schemas's own section on
-these for the full caveat):
+Also present:
   POST /v2/posting/fbo/list        - list_fbo_postings()
   POST /v3/posting/fbs/list        - list_fbs_postings()
+Both CONFIRMED against a real account (backend/scripts/debug_orders_finance_
+api.py) and in production use — see app.services.order_daily_sync_service
+and OrderDailyStatistic's own docstring for the confirmed field-level
+contract. This module's own "UNCONFIRMED" note used to cover these two as
+well as list_finance_transactions() below — that was stale; only the
+finance-transactions method still carries that caveat.
+
   POST /v3/finance/transaction/list - list_finance_transactions()
-Added to support pulling orders/revenue/logistics/commission automatically
-instead of the manual "Аналитика → Товары" CSV upload — but never called
-against a real account from this codebase. Do not wire a sync/scheduler/UI
-on top of these without first running
-backend/scripts/debug_orders_finance_api.py against a real store and
-confirming the actual response shape.
+CONFIRMED OBSOLETE as of 2026-09-10: a real account got HTTP 400 `{"code":
+9, "message":"obsolete method cannot be used"}` calling this exact method
+via debug_orders_finance_api.py. Ozon apparently retired it — reporting
+elsewhere (not independently verified against Ozon's own docs, which this
+sandbox cannot reach) points to a July 2026 deprecation with the method
+fully disabled by 2026-09-08, split into several `/v1/finance/accrual/*`
+methods instead (exact paths/contract NOT confirmed — do not build on that
+name without a real docs screenshot or a live account's own docs access
+confirming it, same discipline as everything else in this module). This is
+the blocker for Логистика/Хранение/Штрафы/Прочие удержания on the
+Дашборд — see README's "Архитектурно подготовлено" section. Do NOT call
+this method — it will always fail now. list_finance_transactions() and its
+schemas are left in place only as a record of the confirmed-dead contract,
+not for reuse.
 
 Every request carries the target store's own Client-Id / Api-Key headers —
 callers must never share credentials across stores.
@@ -385,12 +399,12 @@ class OzonSellerClient:
         limit: int = 1000,
     ) -> OzonPostingListResponse:
         """POST /v2/posting/fbo/list — orders fulfilled from Ozon's own
-        warehouse (FBO). UNCONFIRMED, see this module's own docstring and
-        app.services.ozon.schemas — do not rely on financial_data/
-        analytics_data sub-fields without confirming them first via
-        backend/scripts/debug_orders_finance_api.py. date_from/date_to per
-        Ozon's public docs are full ISO-8601 timestamps, same convention
-        as get_product_query_details()."""
+        warehouse (FBO). CONFIRMED against a real account and in production
+        use (app.services.order_daily_sync_service) — see this module's own
+        docstring and OrderDailyStatistic's docstring for the confirmed
+        field-level contract. date_from/date_to per Ozon's public docs are
+        full ISO-8601 timestamps, same convention as
+        get_product_query_details()."""
         body = {
             "dir": "ASC",
             "filter": {"since": date_from, "to": date_to},
@@ -410,7 +424,7 @@ class OzonSellerClient:
         limit: int = 1000,
     ) -> OzonPostingListResponse:
         """POST /v3/posting/fbs/list — orders fulfilled by the seller (FBS).
-        Same UNCONFIRMED status as list_fbo_postings() — see there."""
+        Same CONFIRMED status as list_fbo_postings() — see there."""
         body = {
             "dir": "ASC",
             "filter": {"since": date_from, "to": date_to},
@@ -429,12 +443,12 @@ class OzonSellerClient:
         page: int = 1,
         page_size: int = 1000,
     ) -> OzonFinanceTransactionListResponse:
-        """POST /v3/finance/transaction/list — individual financial
-        operations (sales, commission, logistics/services, returns,
-        compensations) for the period. This is the source for logistics
-        cost/commission/storage/penalties that the manual "Аналитика →
-        Товары" CSV export does not carry at all. UNCONFIRMED — same status
-        as list_fbo_postings(), see this module's own docstring."""
+        """POST /v3/finance/transaction/list — CONFIRMED OBSOLETE, DO NOT
+        CALL. Ozon returns HTTP 400 `{"code": 9, "message": "obsolete method
+        cannot be used"}` (confirmed 2026-09-10 against a real account via
+        backend/scripts/debug_orders_finance_api.py) — see this module's own
+        docstring for what's known so far about a replacement. Left in place
+        only as a record of the confirmed-dead contract."""
         body = {
             "filter": {"date": {"from": date_from, "to": date_to}, "transaction_type": "all"},
             "page": page,

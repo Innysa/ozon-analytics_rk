@@ -3,17 +3,33 @@ endpoints directly for one store and prints a CONDENSED look at Ozon's raw
 JSON response — counts plus one full example per distinct shape, not every
 row — specifically so the output stays small enough to copy out of a
 terminal by hand (a full-length dump of a real account's data was ~1860
-lines, too much to paste back reliably).
+lines, too much to paste back reliably). Given how easy it is to lose part
+of a long terminal dump on copy/paste (this happened at least once with
+this exact script — see below), prefer redirecting stdout to a file over
+copy-pasting from the terminal, e.g.:
 
-These three methods (OzonSellerClient.list_fbo_postings/list_fbs_postings/
-list_finance_transactions) were added to eventually replace the manual
-"Аналитика → Товары" CSV upload with automatic orders/revenue/logistics/
-commission collection — but have NEVER been called against a real account.
-Building a sync/scheduler/UI on top of a guessed response shape is exactly
-what caused two real bugs earlier in this project (a wrong CSV column name,
-a wrong JSON key) — this script exists so that doesn't happen a third time:
-run it, then send the printed output back before any parsing/storage logic
-gets written.
+    docker compose exec app python backend/scripts/debug_orders_finance_api.py \\
+        --store-id <id> > finance_debug.txt
+
+list_fbo_postings/list_fbs_postings (OzonSellerClient) are CONFIRMED and in
+production use (app.services.order_daily_sync_service) — this script's
+FBO/FBS calls below still exist mainly to inspect a fresh account's raw
+shape when debugging something unrelated, not because their contract is in
+doubt.
+
+list_finance_transactions (`POST /v3/finance/transaction/list`) is
+CONFIRMED OBSOLETE as of 2026-09-10 — Ozon now returns `HTTP 400 {"code":
+9, "message": "obsolete method cannot be used"}` for it on a real account.
+This explains why an earlier run of this script never captured a `type=
+"other"` example: the method was already dead, not a copy-paste accident.
+The finance-transactions call below is kept only so this script keeps
+surfacing that exact error clearly (instead of silently skipping) until a
+confirmed replacement method is wired up here — do not build a sync/
+scheduler/UI on top of a guessed replacement. Building on a guessed
+response shape is exactly what caused two real bugs earlier in this
+project (a wrong CSV column name, a wrong JSON key) — this script exists so
+that doesn't happen again: run it, then send the printed output back
+before any parsing/storage logic gets written.
 
 Usage (inside the running container):
 

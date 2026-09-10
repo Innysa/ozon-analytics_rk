@@ -118,19 +118,21 @@ class OzonProductInfoListResponse(BaseModel):
 
 
 # --- Postings / orders (/v2/posting/fbo/list, /v3/posting/fbs/list) -----
+#
+# CONFIRMED against a real account (backend/scripts/debug_orders_finance_
+# api.py) and in production use — see OrderDailyStatistic's own docstring
+# for the confirmed field-level contract. `extra="allow"` and optional
+# fields are kept anyway as a defensive default, not because this is
+# unconfirmed.
+#
 # --- Finance transactions (/v3/finance/transaction/list) -----------------
 #
-# UNCONFIRMED — unlike everything above (verified against real captured
-# payloads before being relied on), these have NOT been called against a
-# real account. The request shape (filter/pagination fields) follows Ozon's
-# published API documentation and is unlikely to be wrong — that part of
-# the contract is stable across sellers. The RESPONSE shape below is
-# deliberately maximally tolerant (every field optional, extra="allow")
-# specifically because past mistakes this session (guessed CSV column
-# names, guessed JSON keys) all happened on the response side, never the
-# request side. Do NOT build a sync/scheduler/UI on top of these fields
-# without first running backend/scripts/debug_orders_finance_api.py against
-# a real store and confirming the actual field names/values it prints.
+# CONFIRMED OBSOLETE (2026-09-10): a real account got HTTP 400 `{"code": 9,
+# "message": "obsolete method cannot be used"}` calling this method — see
+# OzonSellerClient.list_finance_transactions()'s own docstring. The schemas
+# below are left in place only as a record of what the (now-dead) contract
+# looked like; nothing in this codebase calls list_finance_transactions()
+# and nothing should, until a confirmed replacement method is wired up.
 
 
 class OzonPostingProductItem(BaseModel):
