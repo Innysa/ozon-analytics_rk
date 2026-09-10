@@ -673,6 +673,7 @@ export interface DashboardMetric {
 
 export interface OrdersRevenueBlock {
   has_data: boolean;
+  source: "ozon_seller_api" | "csv_import" | null;
   orders: DashboardMetric | null;
   revenue_rub: DashboardMetric | null;
   avg_order_value_rub: number | null;

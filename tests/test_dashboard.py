@@ -53,6 +53,94 @@ def test_orders_revenue_block_compares_to_previous_equal_period(client, db_sessi
     assert block["avg_order_value_rub"] == 1000.0
 
 
+def test_orders_revenue_prefers_ozon_seller_api_over_csv_when_both_present(client, db_session, two_stores_with_users):
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product_card_statistic import ProductCardStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    # CSV data would show orders=10/revenue=10000 for the current period —
+    # the auto source below must win instead, not be summed with it.
+    db_session.add(ProductCardStatistic(
+        store_id=store_id, ozon_sku="111", date=date(2026, 8, 25),
+        ordered_units=10, ordered_sum_actual_price_rub=10000, source="csv_import",
+    ))
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 26), delivery_schema="FBO",
+        ordered_units=3, ordered_sum_rub=3600, ordered_sum_discounted_rub=3300,
+        delivered_units=3, delivered_sum_rub=3300,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-150,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["orders_revenue"]
+    assert block["has_data"] is True
+    assert block["source"] == "ozon_seller_api"
+    assert block["orders"]["current"] == 3
+    assert block["revenue_rub"]["current"] == 3300
+
+
+def test_orders_revenue_falls_back_to_csv_when_no_auto_order_data(client, db_session, two_stores_with_users):
+    from app.models.product_card_statistic import ProductCardStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(ProductCardStatistic(
+        store_id=store_id, ozon_sku="111", date=date(2026, 8, 25),
+        ordered_units=10, ordered_sum_actual_price_rub=10000, source="csv_import",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["orders_revenue"]
+    assert block["has_data"] is True
+    assert block["source"] == "csv_import"
+    assert block["orders"]["current"] == 10
+
+
+def test_advertising_share_uses_ozon_seller_api_revenue_when_that_is_the_active_source(client, db_session, two_stores_with_users):
+    from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=5000, ordered_sum_discounted_rub=5000,
+        delivered_units=1, delivered_sum_rub=5000,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-500,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AdvertisingDailyStatistic(
+        store_id=store_id, ozon_campaign_id="1", ozon_sku="111", date=date(2026, 8, 25),
+        spend_rub=500, source="ozon_performance_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["orders_revenue"]["source"] == "ozon_seller_api"
+    # 500 / 5000 * 100 = 10%
+    assert body["advertising"]["spend_share_of_revenue_pct"] == 10.0
+
+
 def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_session, two_stores_with_users):
     from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
     from app.models.advertising_statistic import AdvertisingStatistic

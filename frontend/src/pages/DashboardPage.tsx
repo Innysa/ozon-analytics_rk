@@ -97,7 +97,11 @@ export function DashboardPage() {
             hasData={dashboard.orders_revenue.has_data}
             emptyHint={
               <>
-                Нет данных. Загрузите отчёт «Аналитика → Товары» на странице{" "}
+                Нет данных. Соберите заказы на странице{" "}
+                <Link to="/rnp" className="underline">
+                  «РНП»
+                </Link>{" "}
+                (кнопка «Обновить заказы (авто)») или загрузите отчёт «Аналитика → Товары» на странице{" "}
                 <Link to="/products" className="underline">
                   «Товары»
                 </Link>
@@ -110,6 +114,14 @@ export function DashboardPage() {
               <MetricCard label="Выручка" metric={dashboard.orders_revenue.revenue_rub} format={fmtRub} />
               <Stat label="Средний чек" value={fmtRub(dashboard.orders_revenue.avg_order_value_rub)} />
             </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Источник:{" "}
+              {dashboard.orders_revenue.source === "ozon_seller_api"
+                ? "автоматически, Ozon Seller API (та же синхронизация, что и «РНП»/«Маржа»)."
+                : "отчёт «Аналитика → Товары» (CSV/XLSX), загруженный вручную."}{" "}
+              Показано «заказано» (на момент заказа), а не «выкуплено» — выкуп и его маржу с учётом себестоимости
+              смотрите в блоке «Маржа» ниже, эти цифры не обязаны совпадать.
+            </p>
           </DashboardSection>
 
           <DashboardSection

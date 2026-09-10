@@ -118,8 +118,14 @@ def _has_any_reviews(db: Session, *, store_id: str) -> bool:
 
 
 def _sum_order_daily_stats(db: Session, *, store_id: str, date_from: date, date_to: date) -> dict:
+    """Also carries ordered_units/ordered_sum_discounted_rub (used by the
+    orders_revenue block below when this source is available), alongside
+    the delivered_*/commission/cost fields the margin block has always used
+    — one query serves both, since both read the same table."""
     row = db.execute(
         select(
+            func.coalesce(func.sum(OrderDailyStatistic.ordered_units), 0),
+            func.coalesce(func.sum(OrderDailyStatistic.ordered_sum_discounted_rub), 0),
             func.coalesce(func.sum(OrderDailyStatistic.delivered_units), 0),
             func.coalesce(func.sum(OrderDailyStatistic.delivered_sum_rub), 0),
             func.coalesce(func.sum(OrderDailyStatistic.commission_rub), 0),
@@ -132,11 +138,13 @@ def _sum_order_daily_stats(db: Session, *, store_id: str, date_from: date, date_
         )
     ).one()
     return {
-        "delivered_units": int(row[0]),
-        "delivered_sum_rub": float(row[1]),
-        "commission_rub": float(row[2]),
-        "cost_of_delivered_rub": float(row[3]),
-        "cost_of_delivered_known_units": int(row[4]),
+        "ordered_units": int(row[0]),
+        "ordered_sum_discounted_rub": float(row[1]),
+        "delivered_units": int(row[2]),
+        "delivered_sum_rub": float(row[3]),
+        "commission_rub": float(row[4]),
+        "cost_of_delivered_rub": float(row[5]),
+        "cost_of_delivered_known_units": int(row[6]),
     }
 
 
@@ -160,22 +168,46 @@ def compute_dashboard(
     previous_date_to = resolved_date_from - timedelta(days=1)
     previous_date_from = previous_date_to - timedelta(days=period_days - 1)
 
-    # --- Orders / revenue (ProductCardStatistic — "Аналитика → Товары") ---
-    orders_current, revenue_current = _sum_product_card_stats(
-        db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
-    )
+    # --- Orders / revenue: prefers the automatic Ozon Seller API source
+    # (OrderDailyStatistic, same table as "РНП"/"Маржа") over the manual
+    # "Аналитика → Товары" CSV import (ProductCardStatistic) whenever the
+    # store has any auto-collected order data at all — never both at once,
+    # since summing them would double-count the same underlying sales. Both
+    # report "заказано" (order time), not "выкуплено" (delivery time, shown
+    # separately in the Маржа block) — switching source does not change what
+    # the number means, only where it comes from.
+    has_order_daily_stats = _has_any_order_daily_stats(db, store_id=store_id)
     has_product_card_data = _has_any_product_card_stats(db, store_id=store_id)
-    if has_product_card_data:
+    order_stats_current: dict | None = None
+
+    if has_order_daily_stats:
+        order_stats_current = _sum_order_daily_stats(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+        order_stats_previous = _sum_order_daily_stats(db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to)
+        orders_current = order_stats_current["ordered_units"]
+        revenue_current = order_stats_current["ordered_sum_discounted_rub"]
+        orders_revenue = OrdersRevenueBlock(
+            has_data=True,
+            source="ozon_seller_api",
+            orders=_compare(orders_current, order_stats_previous["ordered_units"]),
+            revenue_rub=_compare(revenue_current, order_stats_previous["ordered_sum_discounted_rub"]),
+            avg_order_value_rub=round(revenue_current / orders_current, 2) if orders_current else None,
+        )
+    elif has_product_card_data:
+        orders_current, revenue_current = _sum_product_card_stats(
+            db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
+        )
         orders_previous, revenue_previous = _sum_product_card_stats(
             db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to
         )
         orders_revenue = OrdersRevenueBlock(
             has_data=True,
+            source="csv_import",
             orders=_compare(orders_current, orders_previous),
             revenue_rub=_compare(revenue_current, revenue_previous),
             avg_order_value_rub=round(revenue_current / orders_current, 2) if orders_current else None,
         )
     else:
+        revenue_current = 0.0
         orders_revenue = OrdersRevenueBlock(has_data=False)
 
     # --- Advertising spend (both sources, kept separate) ---
@@ -196,7 +228,7 @@ def compute_dashboard(
         total_spend_current += manual_current
 
     spend_share_of_revenue_pct = None
-    if (has_auto_ads or has_manual_ads) and has_product_card_data and revenue_current:
+    if (has_auto_ads or has_manual_ads) and orders_revenue.has_data and revenue_current:
         spend_share_of_revenue_pct = round(total_spend_current / revenue_current * 100, 2)
 
     advertising = AdvertisingBlock(
@@ -230,9 +262,8 @@ def compute_dashboard(
 
     # --- Margin (commission/cost/margin — the one block sourced purely via
     # Ozon Seller API postings, see OrderDailyStatistic's own docstring) ---
-    has_order_stats = _has_any_order_daily_stats(db, store_id=store_id)
-    if has_order_stats:
-        stats = _sum_order_daily_stats(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+    if has_order_daily_stats:
+        stats = order_stats_current  # already fetched above for orders_revenue — same table, same period
         cost_known = stats["delivered_units"] > 0 and stats["cost_of_delivered_known_units"] >= stats["delivered_units"]
         margin_rub = None
         margin_pct = None

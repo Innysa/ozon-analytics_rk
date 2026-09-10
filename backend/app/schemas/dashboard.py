@@ -24,12 +24,22 @@ class DashboardMetric(BaseModel):
 
 
 class OrdersRevenueBlock(BaseModel):
-    """From ProductCardStatistic ("Аналитика → Товары" import) — the only
-    source in this app with genuine store-wide daily orders/revenue across
-    every product, not just what's advertised. has_data is False if the
-    store has never uploaded that report."""
+    """Store-wide daily orders/revenue across every product, not just what's
+    advertised. Two possible sources, NEVER combined (that would double-count
+    the same sales) — the automatic one is preferred whenever the store has
+    any of it at all:
+      - source="ozon_seller_api": OrderDailyStatistic (same table as "РНП"/
+        "Маржа"), collected automatically via Ozon Seller API postings.
+      - source="csv_import": ProductCardStatistic, from the manually
+        uploaded "Аналитика → Товары" report — used only when the store has
+        no automatic order data yet.
+    Both report "заказано" (order time, not delivery time) — orders and
+    revenue here are NOT the same figures as "Выкуплено"/"Выручка (выкуп)"
+    in MarginBlock below, which is delivery-time and excludes cancellations.
+    has_data is False only when the store has neither source at all."""
 
     has_data: bool
+    source: str | None = None  # "ozon_seller_api" | "csv_import" | None (no data)
     orders: DashboardMetric | None = None
     revenue_rub: DashboardMetric | None = None
     avg_order_value_rub: float | None = None  # revenue / orders for the current period only
