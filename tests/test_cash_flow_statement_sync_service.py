@@ -1,12 +1,15 @@
 """Tests for the cash-flow-statement sync from Ozon Seller API's POST
 /v1/finance/cash-flow-statement/list (app.services.cash_flow_statement_
-sync_service). Fixtures use the real confirmed response shape from two
+sync_service). Fixtures use the real confirmed response shape from three
 rounds of real diagnostic output (2026-09-10) — see
 app.models.cash_flow_statement_period.CashFlowStatementPeriod's own
 docstring for the full confirmed contract, most importantly: details[] is
-matched to cash_flows[] by period.begin/period.end (NOT array position),
-and "services" is a mixed bucket (storage + ads-per-click + insurance),
-never split into Хранение/Штрафы."""
+matched to cash_flows[] by period.begin/period.end (NOT array position);
+"services" is a mixed bucket (storage + ads-per-click + insurance + fines,
+e.g. real item FinesShipmentNonRecommendedSlot) stored here raw, split into
+Хранение/Штрафы/Прочие услуги only at dashboard read time; "others" is a
+separate raw bucket (e.g. acquiring fees, seller decompensation), stored
+raw as Прочие удержания."""
 from datetime import date
 
 from app.services.cash_flow_statement_sync_service import _parse_ozon_ts, sync_cash_flow_statement_periods
@@ -25,7 +28,8 @@ def _flow(begin: str, end: str, *, orders=0, returns=0, commission=0, services=0
 
 
 def _detail(begin: str, end: str, *, delivery_services_total=0, delivery_services_items=None,
-            return_total=0, return_items=None, services_total=0, services_items=None) -> dict:
+            return_total=0, return_items=None, services_total=0, services_items=None,
+            others_total=0, others_items=None) -> dict:
     return {
         "period": {"id": 0, "begin": begin, "end": end},
         "begin_balance_amount": 7546644.61,
@@ -40,6 +44,7 @@ def _detail(begin: str, end: str, *, delivery_services_total=0, delivery_service
         "invoice_transfer": 15717.64,
         "rfbs": {"total": 0, "transfer_delivery": 0, "transfer_delivery_return": 0, "compensation_delivery_return": 0, "partial_compensation": 0, "partial_compensation_return": 0},
         "services": {"total": services_total, "items": services_items or []},
+        "others": {"total": others_total, "items": others_items or []},
     }
 
 
@@ -132,6 +137,28 @@ def test_sync_stores_items_as_json_and_updates_existing_period(db_session, two_s
     assert len(rows) == 1
     assert float(rows[0].delivery_services_total) == -99999
     assert float(rows[0].orders_amount) == 1500
+
+
+def test_sync_stores_others_bucket_raw(db_session, two_stores_with_users):
+    """Confirmed 2026-09-10: details[] carries a sixth top-level bucket,
+    "others" (e.g. acquiring fees, seller decompensation) — stored raw, not
+    merged into services_total."""
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    others_items = [
+        {"name": "MarketplaceRedistributionOfAcquiringOperation", "price": -23694.81},
+        {"name": "MarketplaceSellerDecompensationItemByTypeDocOperation", "price": -3020.95},
+    ]
+    flows = [_flow("2026-09-01T00:00:00Z", "2026-09-06T00:00:00Z", orders=1000)]
+    details = [_detail("2026-09-01T00:00:00Z", "2026-09-06T00:00:00Z", others_total=-40227.78, others_items=others_items)]
+
+    sync_cash_flow_statement_periods(db_session, store_id=store_id, client=_FakeClient(flows, details), date_from=date(2026, 9, 1), date_to=date(2026, 9, 6))
+
+    row = db_session.query(CashFlowStatementPeriod).filter(CashFlowStatementPeriod.store_id == store_id).one()
+    assert float(row.others_total) == -40227.78
+    assert "MarketplaceSellerDecompensationItemByTypeDocOperation" in row.others_items_json
 
 
 def test_sync_records_error_on_ozon_api_error(db_session, two_stores_with_users):

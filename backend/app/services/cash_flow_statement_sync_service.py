@@ -1,11 +1,16 @@
 """Orchestrates the automatic cash-flow-statement sync from Ozon Seller
 API's POST /v1/finance/cash-flow-statement/list — see
 app.models.cash_flow_statement_period.CashFlowStatementPeriod's own
-docstring for the full CONFIRMED request/response contract (two rounds of
-real diagnostic output against a real account, 2026-09-10) and what is
-deliberately NOT parsed (e.g. no attempt to split "services" into
-Хранение/Штрафы — that bucket only exposes a lump total + a raw items[]
-list, no per-category subtotal).
+docstring for the full CONFIRMED request/response contract (three rounds of
+real diagnostic output against a real account, 2026-09-10).
+
+"services" and "others" (both {"total", "items": [{"name","price"}]}) are
+stored here AS-IS, raw — the per-category split into Хранение/Штрафы/
+Прочие удержания/Прочие услуги shown on the Дашборд happens at read time
+in dashboard_service.py, not here, by scanning services_items_json for
+confirmed item-name substrings ("Storage", "Fine"). Keeping the raw split
+out of storage means a future re-categorization only touches the Дашборд
+layer, not a re-sync.
 
 Ozon returns its OWN fixed ~weekly periods regardless of the requested
 date.from/date.to — this sync always requests the full configured lookback
@@ -117,6 +122,7 @@ def sync_cash_flow_statement_periods(
         delivery_services = delivery.get("delivery_services") or {}
         delivery_return = delivery.get("return") or {}
         services = detail.get("services") or {}
+        others = detail.get("others") or {}
         rfbs = detail.get("rfbs") or {}
 
         existing = (
@@ -148,6 +154,8 @@ def sync_cash_flow_statement_periods(
         record.delivery_return_items_json = _items_json(delivery_return)
         record.services_total = services.get("total")
         record.services_items_json = _items_json(services)
+        record.others_total = others.get("total")
+        record.others_items_json = _items_json(others)
         record.rfbs_total = rfbs.get("total")
         record.loan = detail.get("loan")
         record.invoice_transfer = detail.get("invoice_transfer")

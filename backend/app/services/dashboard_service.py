@@ -12,6 +12,7 @@ whatever cadence the seller uploads "Аналитика → Товары" in, no
 necessarily daily)."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -204,6 +205,38 @@ def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(CashFlowStatementPeriod.id).where(CashFlowStatementPeriod.store_id == store_id).limit(1)) is not None
 
 
+def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
+    """Pulls (fines, storage) out of a CashFlowStatementPeriod.
+    services_items_json blob, by CONFIRMED real item-name substrings
+    (checked against a real account's full diagnostic dump, 2026-09-10):
+    "Fine" -> a real fine (e.g. FinesShipmentNonRecommendedSlot), "Storage"
+    -> real storage fee (MarketplaceServiceItemTemporaryStorageRedistribution).
+
+    Deliberately does NOT also return an "other" sum computed from the
+    remaining items — the caller derives that as (period.services_total -
+    fines - storage) instead, so a period whose items_json is empty/missing
+    (e.g. an older row synced before with_details was in use) still keeps
+    its full services_total in "Прочие услуги" rather than silently losing
+    it because there was nothing to scan. Only these two substrings have
+    been directly confirmed against a real item name so far — anything else
+    stays uncategorized (falls into "Прочие услуги" via the total)."""
+    if not items_json:
+        return 0.0, 0.0
+    try:
+        items = json.loads(items_json)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    fines = storage = 0.0
+    for item in items:
+        name = item.get("name") or ""
+        price = float(item.get("price") or 0)
+        if "Fine" in name:
+            fines += price
+        elif "Storage" in name:
+            storage += price
+    return fines, storage
+
+
 def compute_dashboard(
     db: Session,
     *,
@@ -362,11 +395,26 @@ def compute_dashboard(
     if has_cash_flow_data:
         periods_in_range = _cash_flow_periods_in_range(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
         if periods_in_range:
+            fines_sum = storage_sum = 0.0
+            for p in periods_in_range:
+                fines, storage = _categorize_service_items(p.services_items_json)
+                fines_sum += fines
+                storage_sum += storage
+            services_total_sum = sum(float(p.services_total or 0) for p in periods_in_range)
+            # other_services_rub is the REMAINDER of services_total after
+            # pulling out fines/storage — not summed independently from
+            # items[] — so a period whose items_json doesn't (fully) cover
+            # its own total (e.g. an older row, or an Ozon item name this
+            # matching hasn't seen yet) never drops that money silently.
+            other_services_sum = services_total_sum - fines_sum - storage_sum
             logistics = LogisticsBlock(
                 has_data=True,
                 logistics_rub=round(sum(float(p.delivery_services_total or 0) for p in periods_in_range), 2),
                 returns_logistics_rub=round(sum(float(p.delivery_return_total or 0) for p in periods_in_range), 2),
-                other_services_rub=round(sum(float(p.services_total or 0) for p in periods_in_range), 2),
+                storage_rub=round(storage_sum, 2),
+                fines_rub=round(fines_sum, 2),
+                other_deductions_rub=round(sum(float(p.others_total or 0) for p in periods_in_range), 2),
+                other_services_rub=round(other_services_sum, 2),
                 periods_summed=len(periods_in_range),
                 period_note=(
                     f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end} "

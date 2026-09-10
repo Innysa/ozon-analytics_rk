@@ -66,6 +66,22 @@ full methodology):
     a pickup point) — parsed the same {"total", "items"} shape as
     delivery_services defensively; not independently re-confirmed as
     exhaustively as delivery_services was.
+  - UPDATE (2026-09-10, user's own grep of their full saved diagnostic
+    file, not a partial screenshot): `services.items[]` DOES contain a
+    fine — real item name `FinesShipmentNonRecommendedSlot`. It is stored
+    as-is inside services_items_json (raw storage, no special-casing at
+    the DB layer); the Дашборд layer (dashboard_service.py) is what now
+    pulls "Fine"-named items out of it into their own Штрафы figure — see
+    that module's own docstring for the categorization rule.
+  - Also confirmed same session: `details[]` entries carry a SIXTH
+    top-level bucket alongside delivery/services/rfbs/loan/invoice_transfer
+    that earlier rounds never saw — `others`: {"total", "items": [{"name",
+    "price"}]}. Real items seen: MarketplaceRedistributionOfAcquiringOperation
+    (эквайринг) and MarketplaceSellerDecompensationItemByTypeDocOperation
+    (декомпенсация продавца). Stored as-is in others_total/
+    others_items_json, shown on the Дашборд as "Прочие удержания" — not
+    further split by name (only two examples seen so far, not enough to
+    safely sub-categorize).
 
 Uniqueness is on (store_id, period_begin, period_end) — NOT period.id,
 because every real example seen so far had "id": 0 regardless of which
@@ -111,8 +127,10 @@ class CashFlowStatementPeriod(TimestampMixin, Base):
     delivery_services_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_return_total: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # Возврат (логистика)
     delivery_return_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    services_total: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # Прочие услуги
+    services_total: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # Прочие услуги + Штрафы + Хранение (raw, pre-split)
     services_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    others_total: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)  # Прочие удержания
+    others_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     rfbs_total: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     loan: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     invoice_transfer: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)

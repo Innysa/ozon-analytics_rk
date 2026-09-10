@@ -119,20 +119,39 @@ class LogisticsBlock(BaseModel):
     subtotal — real components confirmed: last-mile courier, dropoff,
     handover to Ozon, "direct flow" logistics). returns_logistics_rub =
     sum of delivery.return.total (return processing, e.g. via a pickup
-    point). other_services_rub = sum of services.total — a MIXED bucket
-    (storage + advertising cost-per-click + insurance + possibly more,
-    confirmed from real item names) that Ozon does NOT break into
-    Хранение/Штрафы separately through this method; shown as one honest
-    lump sum rather than a guessed split. Commission is deliberately NOT
-    repeated here — MarginBlock.commission_rub (from postings' financial_
-    data) is the one already shown on the dashboard, and this endpoint's
-    own commission_amount has not been confirmed to match it number-for-
-    number, so showing both would risk two conflicting "commission"
-    figures without an explanation of why they might differ."""
+    point).
+
+    services.total is a MIXED bucket (storage + advertising cost-per-click
+    + insurance + fines + possibly more) with no per-category subtotal from
+    Ozon — only a lump total plus a raw items[] list. storage_rub/fines_rub
+    are pulled OUT of that total by confirmed real item-name substrings
+    (see dashboard_service.py's _categorize_service_items): "Storage" ->
+    storage_rub, "Fine" -> fines_rub (both CONFIRMED present, 2026-09-10 —
+    MarketplaceServiceItemTemporaryStorageRedistribution and
+    FinesShipmentNonRecommendedSlot respectively). other_services_rub is
+    the REMAINDER (services_total - fines_rub - storage_rub), not summed
+    independently from items[] — so a period whose items weren't recorded,
+    or that has an item name this matching doesn't recognize, still keeps
+    its money in other_services_rub instead of it silently disappearing.
+
+    other_deductions_rub = sum of the separate "others" bucket inside
+    details[] (also {"total", "items[]"}, confirmed 2026-09-10 — e.g.
+    acquiring fees, seller "decompensation") — NOT sub-split, only two
+    item names observed so far.
+
+    Commission is deliberately NOT repeated here — MarginBlock.commission_
+    rub (from postings' financial_data) is the one already shown on the
+    dashboard, and this endpoint's own commission_amount has not been
+    confirmed to match it number-for-number, so showing both would risk
+    two conflicting "commission" figures without an explanation of why
+    they might differ."""
 
     has_data: bool
     logistics_rub: float | None = None
     returns_logistics_rub: float | None = None
+    storage_rub: float | None = None
+    fines_rub: float | None = None
+    other_deductions_rub: float | None = None
     other_services_rub: float | None = None
     periods_summed: int = 0
     period_note: str | None = None  # e.g. "2026-08-17 — 2026-09-06 (3 периода Ozon)"

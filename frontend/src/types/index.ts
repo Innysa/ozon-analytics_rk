@@ -717,6 +717,9 @@ export interface LogisticsBlock {
   has_data: boolean;
   logistics_rub: number | null;
   returns_logistics_rub: number | null;
+  storage_rub: number | null;
+  fines_rub: number | null;
+  other_deductions_rub: number | null;
   other_services_rub: number | null;
   periods_summed: number;
   period_note: string | null;

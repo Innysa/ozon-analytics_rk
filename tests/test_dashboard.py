@@ -265,6 +265,54 @@ def test_logistics_block_sums_periods_fully_contained_in_range(client, db_sessio
     assert block["logistics_rub"] == -300
     assert block["returns_logistics_rub"] == -50
     assert block["other_services_rub"] == -110
+    # No items recorded for these periods — fines/storage stay at 0 rather
+    # than silently dropping the -110 from services_total.
+    assert block["fines_rub"] == 0
+    assert block["storage_rub"] == 0
+
+
+def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, db_session, two_stores_with_users):
+    """Confirmed 2026-09-10 (real item names, not guessed): a fine
+    (FinesShipmentNonRecommendedSlot) and a storage fee
+    (MarketplaceServiceItemTemporaryStorageRedistribution) both live inside
+    services.items[] — the Дашборд must pull them into their own figures
+    rather than leaving them buried in one "Прочие услуги" lump."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    services_items = [
+        {"name": "MarketplaceServiceItemTemporaryStorageRedistribution", "price": -1404},
+        {"name": "MarketplaceServiceCostPerClick", "price": -81971.47},
+        {"name": "FinesShipmentNonRecommendedSlot", "price": -504},
+    ]
+    others_items = [
+        {"name": "MarketplaceRedistributionOfAcquiringOperation", "price": -23694.81},
+        {"name": "MarketplaceSellerDecompensationItemByTypeDocOperation", "price": -3020.95},
+    ]
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-83879.47, services_items_json=json.dumps(services_items),
+        others_total=-26715.76, others_items_json=json.dumps(others_items),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["fines_rub"] == -504
+    assert block["storage_rub"] == -1404
+    assert block["other_services_rub"] == -81971.47  # remainder: -83879.47 - (-504) - (-1404)
+    assert block["other_deductions_rub"] == -26715.76
 
 
 def test_logistics_block_has_data_but_zero_periods_when_range_misaligned(client, db_session, two_stores_with_users):
