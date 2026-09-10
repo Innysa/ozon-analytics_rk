@@ -713,6 +713,15 @@ export interface InventoryBlock {
   fbs_units: number | null;
 }
 
+export interface LogisticsBlock {
+  has_data: boolean;
+  logistics_rub: number | null;
+  returns_logistics_rub: number | null;
+  other_services_rub: number | null;
+  periods_summed: number;
+  period_note: string | null;
+}
+
 export interface Dashboard {
   period_start: string;
   period_end: string;
@@ -723,6 +732,7 @@ export interface Dashboard {
   reviews: ReviewsDashboardBlock;
   margin: MarginBlock;
   inventory: InventoryBlock;
+  logistics: LogisticsBlock;
 }
 
 // "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon

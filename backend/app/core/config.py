@@ -184,6 +184,23 @@ class Settings(BaseSettings):
     PRODUCT_ANALYTICS_STATS_SCHEDULER_HOUR_UTC: int = 3
     PRODUCT_ANALYTICS_STATS_SCHEDULER_MINUTE_UTC: int = 45
 
+    # Automatic cash-flow-statement sync (app.services.cash_flow_statement_
+    # sync_service) — Ozon Seller API POST /v1/finance/cash-flow-statement/
+    # list, the confirmed replacement for the now-obsolete /v3/finance/
+    # transaction/list (see CashFlowStatementPeriod's own docstring for the
+    # full confirmed contract). Ozon returns its OWN fixed ~weekly periods
+    # regardless of the requested date.from/date.to — 60 days is sized to
+    # reliably cover about 8-9 of those periods per run, not because Ozon
+    # documents any particular window limit for this method (none is
+    # confirmed either way). No confirmed rate limit for this method (unlike
+    # /v1/analytics/data's documented 1/minute) — pagination has no added
+    # sleep, relying on the client's normal 429 retry as the only backstop.
+    CASH_FLOW_STATEMENT_DEFAULT_LOOKBACK_DAYS: int = 60
+    CASH_FLOW_STATEMENT_MAX_PAGES: int = 20
+    CASH_FLOW_STATEMENT_SCHEDULER_ENABLED: bool = True
+    CASH_FLOW_STATEMENT_SCHEDULER_HOUR_UTC: int = 4
+    CASH_FLOW_STATEMENT_SCHEDULER_MINUTE_UTC: int = 15
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual

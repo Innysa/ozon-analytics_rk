@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
+from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
 from app.models.product_card_statistic import ProductCardStatistic
@@ -29,6 +30,7 @@ from app.schemas.dashboard import (
     DashboardMetric,
     DashboardOut,
     InventoryBlock,
+    LogisticsBlock,
     MarginBlock,
     OrdersRevenueBlock,
     ReviewsBlock,
@@ -182,6 +184,26 @@ def _has_any_product_stock_data(db: Session, *, store_id: str) -> bool:
     )
 
 
+def _cash_flow_periods_in_range(db: Session, *, store_id: str, date_from: date, date_to: date) -> list[CashFlowStatementPeriod]:
+    # Ozon's own weekly periods rarely align to an arbitrary dashboard
+    # range — same "fully contained only" rule as AdvertisingStatistic's
+    # period_start/period_end above, for the same reason (a period
+    # straddling the boundary can't be split).
+    return list(
+        db.scalars(
+            select(CashFlowStatementPeriod).where(
+                CashFlowStatementPeriod.store_id == store_id,
+                CashFlowStatementPeriod.period_begin >= date_from,
+                CashFlowStatementPeriod.period_end <= date_to,
+            ).order_by(CashFlowStatementPeriod.period_begin)
+        )
+    )
+
+
+def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
+    return db.scalar(select(CashFlowStatementPeriod.id).where(CashFlowStatementPeriod.store_id == store_id).limit(1)) is not None
+
+
 def compute_dashboard(
     db: Session,
     *,
@@ -330,6 +352,36 @@ def compute_dashboard(
     else:
         inventory = InventoryBlock(has_data=False)
 
+    # --- Logistics/services (Ozon's own weekly cash-flow periods — see
+    # LogisticsBlock's own docstring for why this stays separate from
+    # MarginBlock rather than being folded into margin_rub: the periods
+    # here are Ozon-defined weekly buckets, not the same day-precise window
+    # postings use, so combining them into one "more precise" margin figure
+    # risked silently mixing two different accounting windows) ---
+    has_cash_flow_data = _has_any_cash_flow_periods(db, store_id=store_id)
+    if has_cash_flow_data:
+        periods_in_range = _cash_flow_periods_in_range(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+        if periods_in_range:
+            logistics = LogisticsBlock(
+                has_data=True,
+                logistics_rub=round(sum(float(p.delivery_services_total or 0) for p in periods_in_range), 2),
+                returns_logistics_rub=round(sum(float(p.delivery_return_total or 0) for p in periods_in_range), 2),
+                other_services_rub=round(sum(float(p.services_total or 0) for p in periods_in_range), 2),
+                periods_summed=len(periods_in_range),
+                period_note=(
+                    f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end} "
+                    f"({len(periods_in_range)} период{'' if len(periods_in_range) == 1 else 'а' if len(periods_in_range) < 5 else 'ов'} Ozon)"
+                ),
+            )
+        else:
+            # Store has synced periods, but none fully fit inside this
+            # specific range (e.g. a short or misaligned custom range) —
+            # has_data True with zero periods_summed, not a false "no data
+            # at all" — the frontend distinguishes these via periods_summed.
+            logistics = LogisticsBlock(has_data=True, periods_summed=0, period_note="Нет периодов Ozon целиком внутри выбранного диапазона")
+    else:
+        logistics = LogisticsBlock(has_data=False)
+
     return DashboardOut(
         period_start=resolved_date_from,
         period_end=resolved_date_to,
@@ -340,4 +392,5 @@ def compute_dashboard(
         reviews=reviews,
         margin=margin,
         inventory=inventory,
+        logistics=logistics,
     )

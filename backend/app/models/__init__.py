@@ -21,6 +21,7 @@ from app.models.search_query_statistic import SearchQueryStatistic
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
+from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 
 __all__ = [
     "User",
@@ -46,4 +47,5 @@ __all__ = [
     "OrderDailyStatistic",
     "ProductOrderDailyStatistic",
     "ProductAnalyticsDailyStatistic",
+    "CashFlowStatementPeriod",
 ]

@@ -473,3 +473,36 @@ class OzonSellerClient:
         without first confirming the shape is stable (e.g. a second real
         example, or the official docs)."""
         return self._post(path, body)
+
+    def get_cash_flow_statement(
+        self, *, date_from: str, date_to: str, page: int = 1, page_size: int = 1000, with_details: bool = True
+    ) -> dict:
+        """POST /v1/finance/cash-flow-statement/list — CONFIRMED (two rounds
+        of real diagnostic output against a real account, 2026-09-10, via
+        backend/scripts/debug_cash_flow_statement.py) as the replacement for
+        the now-obsolete /v3/finance/transaction/list (see
+        list_finance_transactions()'s own docstring). Full contract details
+        — including what is deliberately NOT modeled (no per-category split
+        inside "services") — are in
+        app.models.cash_flow_statement_period.CashFlowStatementPeriod's own
+        docstring; this method intentionally returns the raw parsed dict
+        (not a typed schema) since only app.services.
+        cash_flow_statement_sync_service reads specific fields out of it —
+        the same "raw dict, caller picks fields" pattern as
+        get_product_queries().
+
+        date_from/date_to are full ISO-8601 timestamps — confirmed working
+        with the same "...T00:00:00Z"/"...T23:59:59Z" convention already
+        used for postings. The monthly form ({"date": {"year", "month"}})
+        does NOT work here — Ozon requires date.from/date.to even though
+        the report is inherently periodic; Ozon also does NOT split results
+        by the requested range — it returns its OWN roughly weekly periods
+        regardless (confirmed: 7-day windows stepping backward from
+        date_to, not aligned to the caller's own dates)."""
+        body = {
+            "date": {"from": date_from, "to": date_to},
+            "page": page,
+            "page_size": page_size,
+            "with_details": with_details,
+        }
+        return self._post("/v1/finance/cash-flow-statement/list", body)

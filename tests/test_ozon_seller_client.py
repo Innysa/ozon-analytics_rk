@@ -211,6 +211,27 @@ def test_list_finance_transactions_sends_expected_path_and_body():
     assert result.result.operations[0].amount == -150.5
 
 
+def test_get_cash_flow_statement_sends_expected_path_and_body():
+    """CONFIRMED contract (real account, 2026-09-10) — see
+    get_cash_flow_statement()'s own docstring."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        return_value=_mock_post(200, {"result": {"cash_flows": [{"orders_amount": 5197686}], "page_count": 1, "details": []}})
+    )
+
+    result = client.get_cash_flow_statement(date_from="2026-08-04T00:00:00Z", date_to="2026-09-03T23:59:59Z")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v1/finance/cash-flow-statement/list"
+    assert sent_kwargs["json"] == {
+        "date": {"from": "2026-08-04T00:00:00Z", "to": "2026-09-03T23:59:59Z"},
+        "page": 1,
+        "page_size": 1000,
+        "with_details": True,
+    }
+    assert result["result"]["cash_flows"][0]["orders_amount"] == 5197686
+
+
 def test_probe_finance_endpoint_posts_caller_supplied_path_and_body():
     """probe_finance_endpoint() is a generic diagnostic passthrough (see its
     own docstring) — it must send exactly the path/body the caller gives it,

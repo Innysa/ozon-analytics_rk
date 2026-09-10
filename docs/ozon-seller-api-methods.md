@@ -33,14 +33,14 @@
 - `/v1/finance/realization/by-day` — реализация по дням
 - `/v2/finance/realization` — отчёт о реализации (существовал и раньше)
 - `/v1/finance/cash-flow-statement/list` — отчёт ДДС (движение денежных
-  средств) — **кандидат для Логистики/Хранения/Штрафов/Прочих удержаний на
-  Дашборде** (см. README, раздел «Заказы и финансы»); контракт ЧАСТИЧНО
-  подтверждён (запрос — `{"date": {"from", "to"}, "page", "page_size"}`,
-  ответ — `cash_flows[]` с `orders_amount`/`returns_amount`/
-  `commission_amount`/`services_amount`/`item_delivery_and_return_amount`),
-  но периодизация и разбивка `services_amount` на логистику/хранение/штрафы
-  по отдельности — ещё нет; продолжение разведки —
-  `backend/scripts/debug_cash_flow_statement.py`
+  средств) — **ИСПОЛЬЗУЕТСЯ**: блок «Логистика и услуги» на Дашборде (см.
+  README, раздел «Заказы и финансы», для полного подтверждённого
+  контракта). Реализовано: `OzonSellerClient.get_cash_flow_statement()`,
+  `app.services.cash_flow_statement_sync_service`,
+  `CashFlowStatementPeriod`. Логистика и обработка возвратов показаны
+  раздельно (`delivery.delivery_services`/`delivery.return`); «Прочие
+  услуги» (`services`) — одна сумма, Ozon не даёт под ней отдельной
+  разбивки на хранение/штрафы
 - `/v1/finance/products/buyout` — выкуп товаров
 - `/v1/finance/decompensation` — декомпенсация
 - `/v1/finance/compensation` — компенсация

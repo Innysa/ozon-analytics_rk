@@ -35,6 +35,10 @@ from app.services.advertising_daily_scheduler import (
     start_advertising_daily_statistics_scheduler,
     stop_advertising_daily_statistics_scheduler,
 )
+from app.services.cash_flow_statement_scheduler import (
+    start_cash_flow_statement_scheduler,
+    stop_cash_flow_statement_scheduler,
+)
 from app.services.order_daily_scheduler import (
     start_order_daily_statistics_scheduler,
     stop_order_daily_statistics_scheduler,
@@ -59,12 +63,14 @@ async def _lifespan(app: FastAPI):
     start_advertising_ai_review_scheduler()
     start_order_daily_statistics_scheduler()
     start_product_analytics_daily_statistics_scheduler()
+    start_cash_flow_statement_scheduler()
     yield
     stop_advertising_daily_statistics_scheduler()
     stop_search_query_stats_scheduler()
     stop_advertising_ai_review_scheduler()
     stop_order_daily_statistics_scheduler()
     stop_product_analytics_daily_statistics_scheduler()
+    stop_cash_flow_statement_scheduler()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=_lifespan)

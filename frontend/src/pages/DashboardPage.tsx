@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { Dashboard, DashboardMetric, MarginBlock as MarginBlockType } from "../types";
+import type { Dashboard, DashboardMetric, MarginBlock as MarginBlockType, SyncRun } from "../types";
 
 function fmtRub(v: number | null): string {
   if (v === null) return "Нет данных";
@@ -39,6 +39,8 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [dateFrom, setDateFrom] = useState(defaultDateFrom);
   const [dateTo, setDateTo] = useState(defaultDateTo);
+  const [syncingLogistics, setSyncingLogistics] = useState(false);
+  const [logisticsNotice, setLogisticsNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -57,6 +59,41 @@ export function DashboardPage() {
   }, [load]);
 
   if (!currentStore) return null;
+
+  const pollSyncRun = async (runId: string, attempt = 0): Promise<SyncRun | null> => {
+    const runs = await api.get<SyncRun[]>(`/stores/${currentStore.id}/sync/runs`);
+    const run = runs.find((r) => r.id === runId) ?? null;
+    if (!run || run.status !== "running" || attempt >= 60) return run;
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return pollSyncRun(runId, attempt + 1);
+  };
+
+  const syncLogistics = async () => {
+    setSyncingLogistics(true);
+    setLogisticsNotice("Запуск автосбора логистики/услуг через Ozon Seller API...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-cash-flow-statement`);
+      setLogisticsNotice("Синхронизация выполняется в фоне...");
+      const finished = await pollSyncRun(run.id);
+      if (!finished) {
+        setLogisticsNotice("Не удалось получить статус синхронизации — обновите страницу.");
+      } else if (finished.status === "failed") {
+        setLogisticsNotice(`Автосбор не удался: ${finished.error_message ?? "неизвестная ошибка"}`);
+      } else if (finished.status === "running") {
+        setLogisticsNotice("Синхронизация всё ещё выполняется — проверьте журнал синхронизаций позже.");
+      } else {
+        setLogisticsNotice(
+          `Готово: получено периодов ${finished.items_fetched}, создано ${finished.items_created}, обновлено ${finished.items_skipped_duplicate}.` +
+            (finished.error_message ? ` Предупреждения: ${finished.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setLogisticsNotice(err instanceof ApiError ? err.message : "Ошибка автосбора логистики/услуг");
+    } finally {
+      setSyncingLogistics(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -91,6 +128,8 @@ export function DashboardPage() {
             Период: {dashboard.period_start} — {dashboard.period_end}. Сравнение — с таким же по длине предыдущим
             периодом ({dashboard.previous_period_start} — {dashboard.previous_period_end}).
           </div>
+
+          {logisticsNotice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{logisticsNotice}</div>}
 
           <DashboardSection
             title="Заказы и выручка"
@@ -194,6 +233,60 @@ export function DashboardPage() {
               Текущий остаток на складах Ozon (без учёта архивных товаров) — снимок на сейчас, не за выбранный период,
               из последней синхронизации каталога на странице «Товары».
             </p>
+          </DashboardSection>
+
+          <DashboardSection
+            title="Логистика и услуги"
+            hasData={dashboard.logistics.has_data}
+            emptyHint={
+              <>
+                Нет данных.{" "}
+                <button
+                  onClick={syncLogistics}
+                  disabled={syncingLogistics}
+                  className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                >
+                  {syncingLogistics ? "Синхронизация..." : "Обновить логистику/услуги (авто)"}
+                </button>
+              </>
+            }
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-400">
+                Источник: автоматически, Ozon Seller API (отчёт ДДС, POST /v1/finance/cash-flow-statement/list) —
+                заменил отключённый Ozon метод для финансовых операций.
+              </p>
+              <button
+                onClick={syncLogistics}
+                disabled={syncingLogistics}
+                className="shrink-0 rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+              >
+                {syncingLogistics ? "Синхронизация..." : "Обновить (авто)"}
+              </button>
+            </div>
+            {dashboard.logistics.periods_summed > 0 ? (
+              <>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                  <Stat label="Логистика" value={fmtRub(dashboard.logistics.logistics_rub)} />
+                  <Stat label="Обработка возвратов" value={fmtRub(dashboard.logistics.returns_logistics_rub)} />
+                  <Stat label="Прочие услуги" value={fmtRub(dashboard.logistics.other_services_rub)} />
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  {dashboard.logistics.period_note}. «Логистика» — доставка (последняя миля, приём в пункте
+                  приёма, магистраль); «Обработка возвратов» — расходы на возврат товара (например, через пункт
+                  выдачи); «Прочие услуги» — реклама за клик, хранение, страхование и др. одной суммой: Ozon не
+                  делит эту статью на отдельные категории через этот метод, поэтому «Хранение» и «Штрафы» отдельно
+                  показать нельзя, не гадая. Ozon группирует эти цифры собственными периодами (обычно неделя),
+                  которые не всегда совпадают с выбранным периодом дашборда — учтены только периоды, полностью
+                  попавшие в выбранный диапазон.
+                </p>
+              </>
+            ) : (
+              <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-center text-sm text-slate-500">
+                {dashboard.logistics.period_note ?? "Нет периодов Ozon целиком внутри выбранного диапазона."} Попробуйте
+                более широкий период.
+              </div>
+            )}
           </DashboardSection>
 
           <DashboardSection

@@ -20,6 +20,7 @@ def test_no_data_anywhere_returns_all_blocks_empty(client, two_stores_with_users
     assert body["advertising"]["has_data"] is False
     assert body["reviews"]["has_data"] is False
     assert body["inventory"]["has_data"] is False
+    assert body["logistics"]["has_data"] is False
 
 
 def test_orders_revenue_block_compares_to_previous_equal_period(client, db_session, two_stores_with_users):
@@ -223,6 +224,73 @@ def test_inventory_block_no_data_when_catalog_never_synced(client, db_session, t
     resp = client.get(f"/api/stores/{store_id}/dashboard")
     assert resp.status_code == 200
     assert resp.json()["inventory"]["has_data"] is False
+
+
+def test_logistics_block_sums_periods_fully_contained_in_range(client, db_session, two_stores_with_users):
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-100, delivery_return_total=-20, services_total=-50, source="ozon_seller_api",
+    ))
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 24), period_end=date(2026, 8, 30),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-200, delivery_return_total=-30, services_total=-60, source="ozon_seller_api",
+    ))
+    # This period straddles the requested range's edge — must NOT be summed
+    # (same "fully contained only" rule as AdvertisingStatistic).
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 31), period_end=date(2026, 9, 6),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-999, delivery_return_total=-999, services_total=-999, source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["has_data"] is True
+    assert block["periods_summed"] == 2
+    assert block["logistics_rub"] == -300
+    assert block["returns_logistics_rub"] == -50
+    assert block["other_services_rub"] == -110
+
+
+def test_logistics_block_has_data_but_zero_periods_when_range_misaligned(client, db_session, two_stores_with_users):
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-100, source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    # A short range that doesn't fully contain the one stored period.
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-20", "date_to": "2026-08-21"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["has_data"] is True
+    assert block["periods_summed"] == 0
+    assert block["logistics_rub"] is None
 
 
 def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_session, two_stores_with_users):

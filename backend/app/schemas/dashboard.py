@@ -103,6 +103,41 @@ class InventoryBlock(BaseModel):
     fbs_units: int | None = None
 
 
+class LogisticsBlock(BaseModel):
+    """Логистика/Хранение/Прочие удержания — sourced from
+    CashFlowStatementPeriod (Ozon Seller API POST /v1/finance/cash-flow-
+    statement/list, see that model's own docstring for the confirmed
+    contract), the replacement for the now-obsolete /v3/finance/
+    transaction/list. Ozon groups its own weekly periods — a period counts
+    toward the dashboard's selected range only if FULLY contained in it
+    (same rule already used for AdvertisingStatistic's period_start/
+    period_end), so a short or misaligned custom range can show has_data
+    False or partial coverage even when periods exist nearby; period_note
+    names the periods actually summed so this isn't silent.
+
+    logistics_rub = sum of delivery.delivery_services.total (Ozon's own
+    subtotal — real components confirmed: last-mile courier, dropoff,
+    handover to Ozon, "direct flow" logistics). returns_logistics_rub =
+    sum of delivery.return.total (return processing, e.g. via a pickup
+    point). other_services_rub = sum of services.total — a MIXED bucket
+    (storage + advertising cost-per-click + insurance + possibly more,
+    confirmed from real item names) that Ozon does NOT break into
+    Хранение/Штрафы separately through this method; shown as one honest
+    lump sum rather than a guessed split. Commission is deliberately NOT
+    repeated here — MarginBlock.commission_rub (from postings' financial_
+    data) is the one already shown on the dashboard, and this endpoint's
+    own commission_amount has not been confirmed to match it number-for-
+    number, so showing both would risk two conflicting "commission"
+    figures without an explanation of why they might differ."""
+
+    has_data: bool
+    logistics_rub: float | None = None
+    returns_logistics_rub: float | None = None
+    other_services_rub: float | None = None
+    periods_summed: int = 0
+    period_note: str | None = None  # e.g. "2026-08-17 — 2026-09-06 (3 периода Ozon)"
+
+
 class DashboardOut(BaseModel):
     period_start: date
     period_end: date
@@ -113,3 +148,4 @@ class DashboardOut(BaseModel):
     reviews: ReviewsBlock
     margin: MarginBlock
     inventory: InventoryBlock
+    logistics: LogisticsBlock
