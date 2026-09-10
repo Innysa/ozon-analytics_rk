@@ -200,3 +200,43 @@ class OzonFinanceTransactionListResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     result: OzonFinanceTransactionListResult | None = None
+
+
+# POST /v1/analytics/data ("Данные аналитики" — Аналитика → Графики). CONFIRMED
+# against a real account with Premium Plus (backend/scripts/debug_analytics_data.py,
+# 2026-09-10) with dimension=["sku", "day"]:
+#   {"result": {"data": [{"dimensions": [{"id": "<sku>", "name": "<товар>"},
+#                                          {"id": "<YYYY-MM-DD>", "name": ""}],
+#                          "metrics": [<value>, ...]}, ...],
+#               "totals": [<value>, ...]},
+#    "timestamp": "..."}
+# `dimensions` and `metrics` are POSITIONAL — they line up with the request's
+# own `dimension`/`metrics` lists in the same order, not labelled by key.
+# Callers MUST request dimension/metrics in a fixed, known order (see
+# product_analytics_daily_sync_service._METRICS) to index into these safely.
+class OzonAnalyticsDimensionValue(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str | None = None
+    name: str | None = None
+
+
+class OzonAnalyticsDataRow(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    dimensions: list[OzonAnalyticsDimensionValue] = []
+    metrics: list[float] = []
+
+
+class OzonAnalyticsDataResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    data: list[OzonAnalyticsDataRow] = []
+    totals: list[float] = []
+
+
+class OzonAnalyticsDataResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    result: OzonAnalyticsDataResult | None = None
+    timestamp: str | None = None

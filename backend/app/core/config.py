@@ -149,6 +149,16 @@ class Settings(BaseSettings):
     ORDER_STATS_SCHEDULER_HOUR_UTC: int = 3
     ORDER_STATS_SCHEDULER_MINUTE_UTC: int = 30
 
+    # Automatic per-product funnel sync (app.services.product_analytics_daily_
+    # sync_service) — Ozon Seller API POST /v1/analytics/data, Premium Plus/Pro
+    # only (see that module's own docstring). Rate-limited to 1 request/minute
+    # by Ozon — the sync only makes one call per store per run by design
+    # (single page covers up to 1000 sku×day rows), so this stays well under it.
+    PRODUCT_ANALYTICS_STATS_DEFAULT_LOOKBACK_DAYS: int = 7
+    PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED: bool = True
+    PRODUCT_ANALYTICS_STATS_SCHEDULER_HOUR_UTC: int = 3
+    PRODUCT_ANALYTICS_STATS_SCHEDULER_MINUTE_UTC: int = 45
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual

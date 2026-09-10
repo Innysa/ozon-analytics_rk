@@ -11,11 +11,16 @@ from app.models.product import Product
 from app.models.product_card_statistic import ProductCardStatistic
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
+from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
 from app.schemas.common import ImportSummary
 from app.schemas.product_analytics import (
     ProductCardAnalyticsOut,
     ProductCardStatisticListResponse,
     ProductCardStatisticOut,
+)
+from app.schemas.product_analytics_daily import (
+    ProductAnalyticsDailyStatisticListResponse,
+    ProductAnalyticsDailyStatisticOut,
 )
 from app.services.audit import record_audit
 from app.services.product_analytics_import import import_product_card_statistics_from_file
@@ -146,3 +151,37 @@ def product_analytics_summary(
     date_to: date | None = None,
 ) -> ProductCardAnalyticsOut:
     return compute_product_card_analytics(db, store_id=ctx.store_id, product_id=product_id, date_from=date_from, date_to=date_to)
+
+
+@router.get("/auto", response_model=ProductAnalyticsDailyStatisticListResponse)
+def list_product_analytics_auto(
+    product_id: str,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> ProductAnalyticsDailyStatisticListResponse:
+    """Automatically-collected per-day funnel (views/cart adds/conversion/
+    position on the product card) from Ozon Seller API POST /v1/analytics/
+    data — see app.services.product_analytics_daily_sync_service. Requires
+    Premium Plus/Premium Pro on the connected Ozon account; otherwise this
+    simply has no rows (a failed SyncRun explains why, same as any other
+    sync). product_id is resolved and store-checked here (never a bare
+    ozon_sku trusted from the client), so a product_id from another store
+    simply 404s."""
+    product = db.get(Product, product_id)
+    if not product or product.store_id != ctx.store_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    stmt = select(ProductAnalyticsDailyStatistic).where(
+        ProductAnalyticsDailyStatistic.store_id == ctx.store_id,
+        ProductAnalyticsDailyStatistic.ozon_sku == product.ozon_sku,
+    )
+    if date_from:
+        stmt = stmt.where(ProductAnalyticsDailyStatistic.date >= date_from)
+    if date_to:
+        stmt = stmt.where(ProductAnalyticsDailyStatistic.date <= date_to)
+
+    rows = db.scalars(stmt.order_by(ProductAnalyticsDailyStatistic.date.desc())).all()
+    items = [ProductAnalyticsDailyStatisticOut.model_validate(r) for r in rows]
+    return ProductAnalyticsDailyStatisticListResponse(items=items, total=len(items))

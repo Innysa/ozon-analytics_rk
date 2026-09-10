@@ -99,15 +99,17 @@ docs.ozon.ru either, so this came from the user, not a live fetch):
   - Rate limit: at most 1 request per minute per the docs — any future sync
     built on this must respect that, not just retry-on-429.
 
-The RESPONSE shape is NOT confirmed beyond the top level: the docs' own
-example response has an empty "data": [] (no real row shown), so how a
-populated row actually represents its dimension values and metric values
-(e.g. an array of {id, name} objects vs. parallel arrays vs. something
-else) is unknown. get_analytics_data() therefore returns the raw parsed
-JSON dict, same as get_product_queries() above — do not build a pydantic
-schema or any parsing/storage/sync logic on top of this until
-backend/scripts/debug_analytics_data.py has been run against a real
-account with Premium Plus and confirmed the real row shape.
+The RESPONSE shape is now CONFIRMED too (backend/scripts/debug_analytics_data.py
+against a real account with Premium Plus, 2026-09-10) — see
+app.services.ozon.schemas's OzonAnalyticsDataResponse for the full shape and
+the real example. In short: `result.data[]` is `{"dimensions": [...],
+"metrics": [...]}`, where both arrays are POSITIONAL to the request's own
+`dimension`/`metrics` lists — e.g. requesting dimension=["sku", "day"] gives
+`dimensions[0] = {"id": "<sku>", "name": "<product title>"}` and
+`dimensions[1] = {"id": "<YYYY-MM-DD>", "name": ""}`; `metrics[i]` is the
+value for `metrics` request-list position i, not labelled by key at all.
+get_analytics_data() therefore returns a validated OzonAnalyticsDataResponse
+rather than a raw dict.
 
 Also present (UNCONFIRMED — see app.services.ozon.schemas's own section on
 these for the full caveat):
@@ -139,6 +141,7 @@ from app.services.ozon.exceptions import (
     OzonRateLimited,
 )
 from app.services.ozon.schemas import (
+    OzonAnalyticsDataResponse,
     OzonFinanceTransactionListResponse,
     OzonPostingListResponse,
     OzonProductInfoListResponse,
@@ -352,14 +355,14 @@ class OzonSellerClient:
         offset: int = 0,
         filters: list[dict] | None = None,
         sort: list[dict] | None = None,
-    ) -> dict:
-        """POST /v1/analytics/data — see this module's own docstring for the
-        confirmed request contract and, critically, why the response is
-        NOT confirmed: returns the raw parsed JSON dict rather than a
-        pydantic schema, same as get_product_queries() above, until a real
-        populated row has been seen (backend/scripts/debug_analytics_data.py).
-        date_from/date_to are plain dates ("YYYY-MM-DD"), NOT the
-        "...T00:00:00Z" timestamp the product-queries methods need."""
+    ) -> OzonAnalyticsDataResponse:
+        """POST /v1/analytics/data — CONFIRMED request AND response contract,
+        see this module's own docstring. date_from/date_to are plain dates
+        ("YYYY-MM-DD"), NOT the "...T00:00:00Z" timestamp the product-queries
+        methods need. `dimension`/`metrics` order here must match whatever
+        the caller uses to index the response's positional dimensions/metrics
+        arrays — see product_analytics_daily_sync_service for the fixed
+        order this app actually uses."""
         body: dict = {
             "date_from": date_from,
             "date_to": date_to,
@@ -371,7 +374,7 @@ class OzonSellerClient:
         }
         if sort:
             body["sort"] = sort
-        return self._post("/v1/analytics/data", body)
+        return OzonAnalyticsDataResponse.model_validate(self._post("/v1/analytics/data", body))
 
     def list_fbo_postings(
         self,

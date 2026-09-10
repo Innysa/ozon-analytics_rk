@@ -20,6 +20,7 @@ from app.models.product_card_statistic import ProductCardStatistic
 from app.models.search_query_statistic import SearchQueryStatistic
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
+from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
 
 __all__ = [
     "User",
@@ -44,4 +45,5 @@ __all__ = [
     "SearchQueryStatistic",
     "OrderDailyStatistic",
     "ProductOrderDailyStatistic",
+    "ProductAnalyticsDailyStatistic",
 ]

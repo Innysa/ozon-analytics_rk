@@ -7,6 +7,8 @@ import type {
   Product,
   ProductAdCampaignBreakdown,
   ProductAdvertisingAutoDaily,
+  ProductAnalyticsDailyStatistic,
+  ProductAnalyticsDailyStatisticListResponse,
   ProductCampaignDailyListResponse,
   ProductCampaignDailyRow,
   ProductCardAnalytics,
@@ -558,6 +560,7 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
   const [summary, setSummary] = useState<ProductCardAnalytics | null>(null);
   const [rows, setRows] = useState<ProductCardStatisticListResponse | null>(null);
   const [orderRows, setOrderRows] = useState<ProductOrderDailyStatistic[] | null>(null);
+  const [funnelRows, setFunnelRows] = useState<ProductAnalyticsDailyStatistic[] | null>(null);
 
   useEffect(() => {
     api.get<ProductCardAnalytics>(`/stores/${storeId}/product-analytics/summary?product_id=${productId}`).then(setSummary);
@@ -567,9 +570,12 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
     api
       .get<ProductOrderDailyStatisticListResponse>(`/stores/${storeId}/orders/product-daily-statistics?product_id=${productId}`)
       .then((d) => setOrderRows(d.items));
+    api
+      .get<ProductAnalyticsDailyStatisticListResponse>(`/stores/${storeId}/product-analytics/auto?product_id=${productId}`)
+      .then((d) => setFunnelRows(d.items));
   }, [storeId, productId]);
 
-  if (!summary || !orderRows) return <div className="text-slate-500">Загрузка...</div>;
+  if (!summary || !orderRows || !funnelRows) return <div className="text-slate-500">Загрузка...</div>;
 
   const orderDays = combineProductOrderRowsByDate(orderRows);
   const orderTotals = orderDays.reduce(
@@ -582,7 +588,7 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
     { orderedUnits: 0, orderedSumRub: 0, deliveredUnits: 0, deliveredSumRub: 0 }
   );
 
-  if (!summary.has_data && orderDays.length === 0) {
+  if (!summary.has_data && orderDays.length === 0 && funnelRows.length === 0) {
     return (
       <div className="rounded-md border border-slate-200 bg-white p-6 text-center text-slate-500">
         Нет данных. Загрузите отчёт «Аналитика → Товары» на странице{" "}
@@ -634,8 +640,72 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
             </table>
           </div>
           <p className="mt-2 text-xs italic text-slate-500">
-            Источник — заказы FBO/FBS из Ozon Seller API, автоматически (страница «РНП»). Не включает переходы в
-            карточку/корзину — этого Ozon через заказы не отдаёт, см. блок ниже.
+            Источник — заказы FBO/FBS из Ozon Seller API, автоматически (страница «РНП»). Не включает показы,
+            переходы в карточку/корзину и конверсию — эти показатели Ozon через заказы не отдаёт, см. блок «Воронка»
+            ниже.
+          </p>
+        </div>
+      )}
+
+      {funnelRows.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-semibold text-slate-700">
+            Воронка карточки (авто, Ozon Analytics API — требуется Premium Plus/Premium Pro)
+          </h3>
+          <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <Stat
+              label="Показы карточки"
+              value={funnelRows.reduce((sum, r) => sum + r.views_pdp, 0).toLocaleString("ru-RU")}
+            />
+            <Stat
+              label="Уникальные посетители карточки"
+              value={funnelRows.reduce((sum, r) => sum + r.sessions_pdp, 0).toLocaleString("ru-RU")}
+            />
+            <Stat
+              label="Добавлено в корзину с карточки"
+              value={funnelRows.reduce((sum, r) => sum + r.cart_adds_pdp, 0).toLocaleString("ru-RU")}
+            />
+            <Stat
+              label="Заказано, шт (Ozon Analytics API)"
+              value={funnelRows.reduce((sum, r) => sum + r.ordered_units, 0).toLocaleString("ru-RU")}
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs text-slate-500">
+                  <th className="py-1">Дата</th>
+                  <th>Показы карточки</th>
+                  <th>Посетители</th>
+                  <th>В корзину</th>
+                  <th>Конверсия в корзину (Ozon)</th>
+                  <th>Позиция в категории (Ozon)</th>
+                  <th>Выручка (Ozon Analytics API)</th>
+                  <th>Заказано, шт (Ozon Analytics API)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {funnelRows.map((r) => (
+                  <tr key={r.id} className="border-b border-slate-100">
+                    <td className="py-1">{r.date}</td>
+                    <td>{r.views_pdp.toLocaleString("ru-RU")}</td>
+                    <td>{r.sessions_pdp.toLocaleString("ru-RU")}</td>
+                    <td>{r.cart_adds_pdp.toLocaleString("ru-RU")}</td>
+                    <td>{fmtPct(r.cart_conversion_pdp_pct)}</td>
+                    <td>{r.position_category ?? "—"}</td>
+                    <td>{fmtRub(r.revenue_rub)}</td>
+                    <td>{r.ordered_units.toLocaleString("ru-RU")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-xs italic text-slate-500">
+            Источник — Ozon Seller API, метод «Данные аналитики» (аналог раздела «Аналитика → Графики» в личном
+            кабинете Ozon), собирается автоматически. Требует активной подписки Premium Plus/Premium Pro на
+            аккаунте — без неё эти показатели Ozon не отдаёт. Это отдельный источник данных от отчёта «Аналитика →
+            Товары» (CSV) ниже: методика подсчёта показателей у Ozon для них может отличаться, поэтому цифры не
+            обязаны совпадать день в день. Конверсия и позиция — значения Ozon как есть, без пересчёта.
           </p>
         </div>
       )}

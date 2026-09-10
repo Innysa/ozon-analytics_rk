@@ -418,6 +418,27 @@ export interface ProductOrderDailyStatisticListResponse {
   total: number;
 }
 
+// Automatically-collected per-day funnel (Ozon Seller API POST
+// /v1/analytics/data, dimension=["sku","day"]) — requires Ozon Premium
+// Plus/Premium Pro on the connected account.
+export interface ProductAnalyticsDailyStatistic {
+  id: string;
+  ozon_sku: string;
+  date: string;
+  revenue_rub: number;
+  ordered_units: number;
+  views_pdp: number;
+  cart_adds_pdp: number;
+  cart_conversion_pdp_pct: number | null;
+  sessions_pdp: number;
+  position_category: number | null;
+}
+
+export interface ProductAnalyticsDailyStatisticListResponse {
+  items: ProductAnalyticsDailyStatistic[];
+  total: number;
+}
+
 export interface ProductAdCampaignBreakdown {
   campaign_id: string;
   campaign_name: string;
