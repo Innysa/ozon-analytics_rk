@@ -138,3 +138,68 @@ def test_sync_store_isolation(db_session, two_stores_with_users):
 
     store_b_rows = db_session.query(ProductAnalyticsDailyStatistic).filter(ProductAnalyticsDailyStatistic.store_id == d["store_b"].id).all()
     assert store_b_rows == []
+
+
+class _FakePagingClient:
+    """Returns full (PAGE_LIMIT-sized) pages until pages_available is
+    exhausted, then a final short page — or keeps returning full pages
+    forever if pages_available is None, to exercise the MAX_PAGES cutoff."""
+
+    def __init__(self, pages_available: int | None, *, page_limit: int):
+        self._pages_available = pages_available
+        self._page_limit = page_limit
+        self.calls: list[dict] = []
+
+    def get_analytics_data(self, **kwargs):
+        self.calls.append(kwargs)
+        page_index = kwargs["offset"] // kwargs["limit"]
+        if self._pages_available is not None and page_index >= self._pages_available - 1:
+            n = 1  # final, short page — signals "no more data" to the paging loop
+        else:
+            n = self._page_limit
+        rows = [_row(f"sku{page_index}-{i}", "2026-09-01", revenue=1, ordered_units=1) for i in range(n)]
+        return OzonAnalyticsDataResponse(result=OzonAnalyticsDataResult(data=rows, totals=[]), timestamp="x")
+
+
+def test_sync_pages_through_offset_with_rate_limit_sleep_between_pages(db_session, two_stores_with_users, monkeypatch):
+    import app.services.product_analytics_daily_sync_service as sync_service
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(sync_service.time, "sleep", lambda s: sleeps.append(s))
+
+    d = two_stores_with_users
+    client = _FakePagingClient(pages_available=2, page_limit=sync_service.PAGE_LIMIT)
+
+    outcome = sync_service.sync_product_analytics_daily_statistics(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 9, 1), date_to=date(2026, 9, 1)
+    )
+
+    assert len(client.calls) == 2
+    assert client.calls[0]["offset"] == 0
+    assert client.calls[1]["offset"] == sync_service.PAGE_LIMIT
+    assert sleeps == [60]  # one sleep between the two pages, none before/after
+    assert outcome.fetched == sync_service.PAGE_LIMIT + 1
+    assert outcome.errors == []
+
+
+def test_sync_reports_truncation_when_max_pages_exhausted_on_a_full_page(db_session, two_stores_with_users, monkeypatch):
+    import app.services.product_analytics_daily_sync_service as sync_service
+
+    monkeypatch.setattr(sync_service.time, "sleep", lambda *_: None)
+    settings = sync_service.get_settings()
+    monkeypatch.setattr(settings, "PRODUCT_ANALYTICS_STATS_MAX_PAGES", 2)
+    monkeypatch.setattr(sync_service, "get_settings", lambda: settings)
+
+    d = two_stores_with_users
+    client = _FakePagingClient(pages_available=None, page_limit=sync_service.PAGE_LIMIT)  # always full — never a natural stop
+
+    outcome = sync_service.sync_product_analytics_daily_statistics(
+        db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 9, 1), date_to=date(2026, 9, 1)
+    )
+
+    assert len(client.calls) == 2  # stopped at MAX_PAGES, not looping forever
+    assert outcome.fetched == 2 * sync_service.PAGE_LIMIT
+    assert len(outcome.errors) == 1
+    assert "не загружена" in outcome.errors[0]
+    # Even though truncated, the rows that WERE fetched are still saved — not discarded.
+    assert outcome.created == 2 * sync_service.PAGE_LIMIT

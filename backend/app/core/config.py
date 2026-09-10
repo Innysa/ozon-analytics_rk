@@ -139,8 +139,16 @@ class Settings(BaseSettings):
 
     # Automatic orders sync (app.services.order_daily_sync_service) — Ozon
     # Seller API postings (FBO/FBS), see that module's own docstring for the
-    # confirmed contract and its limits.
-    ORDER_STATS_DEFAULT_LOOKBACK_DAYS: int = 7
+    # confirmed contract and its limits. 30 days is an editorial choice (a
+    # month of history is what a seller/owner typically wants to see), not an
+    # Ozon-side limit — /v2/posting/fbo/list and /v3/posting/fbs/list have no
+    # confirmed max date-range per request; volume within the window is
+    # already handled by has_next pagination (MAX_PAGES=50, PAGE_LIMIT=1000
+    # postings). Every run re-fetches the FULL rolling window from scratch
+    # (not just "since last sync"), so raising this value takes effect
+    # immediately on the very next run — it backfills the whole new window in
+    # one go, it does not grow gradually day by day.
+    ORDER_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
     ORDER_STATS_SCHEDULER_ENABLED: bool = True
     # Runs after the advertising-stats (3:00) and search-query-stats (4:00)
     # jobs, same fixed-daily-slot approximation as those — this app has no
@@ -151,10 +159,27 @@ class Settings(BaseSettings):
 
     # Automatic per-product funnel sync (app.services.product_analytics_daily_
     # sync_service) — Ozon Seller API POST /v1/analytics/data, Premium Plus/Pro
-    # only (see that module's own docstring). Rate-limited to 1 request/minute
-    # by Ozon — the sync only makes one call per store per run by design
-    # (single page covers up to 1000 sku×day rows), so this stays well under it.
-    PRODUCT_ANALYTICS_STATS_DEFAULT_LOOKBACK_DAYS: int = 7
+    # only (see that module's own docstring). 30 days is the same editorial
+    # choice as ORDER_STATS_DEFAULT_LOOKBACK_DAYS above; unlike orders, this
+    # method has NO confirmed pagination-volume cushion — a 30-day window
+    # times a store's SKU count can exceed the 1000-row page size, so the
+    # sync now pages through offset when needed (see
+    # PRODUCT_ANALYTICS_STATS_MAX_PAGES/_RATE_LIMIT_SLEEP_SECONDS below).
+    # Every run re-fetches the FULL rolling window from scratch, same as
+    # orders — raising this value backfills the whole new window on the very
+    # next run, not gradually.
+    PRODUCT_ANALYTICS_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    # Ozon allows at most 1 request/minute to this specific method (confirmed
+    # in the official docs — see get_analytics_data()'s own docstring). A
+    # window needing more than one page (>1000 sku×day rows) must wait this
+    # long between pages, not just retry-on-429. MAX_PAGES bounds how many
+    # such 60s waits one store's sync can rack up in a single run (9 waits =
+    # 9 minutes for the worst case at the default) — a store whose real
+    # (sku, day) count exceeds MAX_PAGES * 1000 for its lookback window gets
+    # a documented, non-silent partial result (outcome.errors names how many
+    # rows were left unfetched) rather than an unbounded background job.
+    PRODUCT_ANALYTICS_STATS_MAX_PAGES: int = 10
+    PRODUCT_ANALYTICS_STATS_RATE_LIMIT_SLEEP_SECONDS: int = 60
     PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED: bool = True
     PRODUCT_ANALYTICS_STATS_SCHEDULER_HOUR_UTC: int = 3
     PRODUCT_ANALYTICS_STATS_SCHEDULER_MINUTE_UTC: int = 45
