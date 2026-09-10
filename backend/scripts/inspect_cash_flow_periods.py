@@ -37,6 +37,13 @@ Prints, in order:
      store, each with its min/max observed `price` — a direct, complete
      answer to "does anything look like a fine/penalty by name", instead
      of relying on partial screenshots of a few periods.
+
+Pass --period-begin ГГГГ-ММ-ДД to additionally dump raw_payload (the exact
+{"cash_flow", "details"} JSON Ozon returned) for the one row whose
+period_begin matches — use this BEFORE re-syncing to capture what Ozon
+actually sent for a row that looks wrong, since a re-sync will overwrite
+it (the sync always UPSERTs by period_begin/period_end, so this evidence
+is gone once the row is refreshed).
 """
 from __future__ import annotations
 
@@ -59,6 +66,7 @@ def main() -> None:
     parser.add_argument("--store-id", required=True)
     parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — как на Дашборде (30 дней назад)")
     parser.add_argument("--date-to", default=None, help="ГГГГ-ММ-ДД, по умолчанию — сегодня")
+    parser.add_argument("--period-begin", default=None, help="ГГГГ-ММ-ДД — если задан, дополнительно печатает raw_payload для этого периода")
     args = parser.parse_args()
 
     today = datetime.now(timezone.utc).date()
@@ -147,6 +155,19 @@ def main() -> None:
                 lo = min(numeric) if numeric else None
                 hi = max(numeric) if numeric else None
                 print(f"    {name}: встречалось {len(prices)} раз(а), min={lo}, max={hi}")
+
+        if args.period_begin:
+            target = date.fromisoformat(args.period_begin)
+            match = next((r for r in rows if r.period_begin == target), None)
+            print()
+            print("=" * 70)
+            print(f"raw_payload для периода, начинающегося {target}:")
+            if match is None:
+                print(f"    период с period_begin={target} не найден для этого магазина.")
+            elif not match.raw_payload:
+                print("    raw_payload пуст для этой записи (возможно, сохранена до того, как это поле начали заполнять).")
+            else:
+                print(json.dumps(json.loads(match.raw_payload), ensure_ascii=False, indent=2))
     finally:
         db.close()
 
