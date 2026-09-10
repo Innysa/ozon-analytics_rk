@@ -179,6 +179,20 @@ def main() -> None:
             # not just unconfirmed) — not useful for a period-wide query
             # without already knowing which postings to ask about, so it's
             # not retried here.
+
+            # Штрафы (fines/penalties): no item name resembling one has been
+            # observed inside cash-flow-statement's services/delivery_services/
+            # delivery_return item lists on this account. These two methods
+            # were seen in this account's own method list (round 1's
+            # permissions check) but never tried — их названия ("декомпенсация"/
+            # "компенсация") — the closest remaining unexplored candidates for
+            # a penalty-like category. Guessing the same {"date": {"from",
+            # "to"}} shape cash-flow-statement uses, since it's the only
+            # confirmed convention on this account for a period-based finance
+            # report — if wrong, Ozon's own validation error will say what
+            # field it actually wants (as it has for every other method here).
+            _try(client, "Decompensation (date range guess)", "/v1/finance/decompensation", {"date": {"from": date_from_ts, "to": date_to_ts}, "page": 1, "page_size": 1000})
+            _try(client, "Compensation (date range guess)", "/v1/finance/compensation", {"date": {"from": date_from_ts, "to": date_to_ts}, "page": 1, "page_size": 1000})
     finally:
         db.close()
 
