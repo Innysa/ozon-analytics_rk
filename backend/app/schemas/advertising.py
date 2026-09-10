@@ -195,6 +195,27 @@ class ProductAdvertisingAutoDailyOut(BaseModel):
     by_campaign: list[ProductAdCampaignBreakdown] = []
 
 
+class ProductCampaignDailyRow(BaseModel):
+    """One (product, campaign) pair's numbers for a single day — the
+    expanded-row detail on the product detail page's "Реклама" tab, same
+    auto-collected AdvertisingDailyStatistic source as everything else here,
+    just not aggregated across dates this time."""
+
+    date: date
+    spend_rub: float
+    impressions: int
+    clicks: int
+    orders: int
+    revenue_rub: float
+    drr_calculated_pct: float | None
+    roas_calculated: float | None
+
+
+class ProductCampaignDailyListResponse(BaseModel):
+    items: list[ProductCampaignDailyRow]
+    total: int
+
+
 class CampaignDetailOut(BaseModel):
     campaign_id: str
     has_data: bool

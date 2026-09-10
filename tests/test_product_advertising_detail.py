@@ -130,3 +130,67 @@ def test_route_end_to_end_and_store_isolation(client, db_session, two_stores_wit
     login(client, "admin@example.com", "adminpass123")
     not_found = client.get(f"/api/stores/{d['store_b'].id}/advertising/product-auto-daily?product_id={product.id}")
     assert not_found.status_code == 404
+
+
+def test_daily_rows_only_that_product_and_campaign(db_session, two_stores_with_users):
+    """The expanded-row detail for one campaign on the "Реклама" tab must be
+    scoped to exactly (sku, campaign) — neither another SKU on the same
+    campaign nor the same SKU on another campaign should leak in."""
+    from app.services.advertising_analytics_service import compute_product_campaign_daily_rows
+
+    d = two_stores_with_users
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 9, 1), spend=100, revenue=500, impressions=1000, clicks=20, orders=2)
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 9, 2), spend=150, revenue=400, impressions=900, clicks=25, orders=1)
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="999", day=date(2026, 9, 1), spend=9999, revenue=9999, impressions=9999, clicks=99)
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c2", ozon_sku="111", day=date(2026, 9, 1), spend=8888, revenue=8888, impressions=8888, clicks=88)
+    db_session.flush()
+
+    rows = compute_product_campaign_daily_rows(db_session, store_id=d["store_a"].id, ozon_sku="111", ozon_campaign_id="c1")
+
+    assert len(rows) == 2
+    # Sorted by date descending.
+    assert rows[0].date == date(2026, 9, 2)
+    assert rows[0].spend_rub == pytest.approx(150)
+    assert rows[0].revenue_rub == pytest.approx(400)
+    assert rows[0].orders == 1
+    assert rows[0].drr_calculated_pct == pytest.approx(150 / 400 * 100, rel=1e-3)
+    assert rows[1].date == date(2026, 9, 1)
+    assert rows[1].spend_rub == pytest.approx(100)
+
+
+def test_daily_rows_empty_when_no_match(db_session, two_stores_with_users):
+    from app.services.advertising_analytics_service import compute_product_campaign_daily_rows
+
+    d = two_stores_with_users
+    rows = compute_product_campaign_daily_rows(db_session, store_id=d["store_a"].id, ozon_sku="does-not-exist", ozon_campaign_id="c1")
+    assert rows == []
+
+
+def test_daily_rows_route_end_to_end_and_store_isolation(client, db_session, two_stores_with_users):
+    from app.models.product import Product
+
+    d = two_stores_with_users
+    product = Product(store_id=d["store_a"].id, ozon_sku="111", name="Тестовый товар")
+    db_session.add(product)
+    db_session.flush()
+    _make_campaign(db_session, d["store_a"].id, ozon_campaign_id="c1", name="Кампания 1")
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 9, 1), spend=100, revenue=500, impressions=1000, clicks=20, orders=1)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{d['store_a'].id}/advertising/product-campaign-daily",
+        params={"product_id": product.id, "ozon_campaign_id": "c1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["date"] == "2026-09-01"
+    assert body["items"][0]["spend_rub"] == 100.0
+
+    login(client, "admin@example.com", "adminpass123")
+    not_found = client.get(
+        f"/api/stores/{d['store_b'].id}/advertising/product-campaign-daily",
+        params={"product_id": product.id, "ozon_campaign_id": "c1"},
+    )
+    assert not_found.status_code == 404

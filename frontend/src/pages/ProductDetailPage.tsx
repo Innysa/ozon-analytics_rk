@@ -5,7 +5,10 @@ import { useStore } from "../store/StoreContext";
 import type {
   AdvertisingAnalytics,
   Product,
+  ProductAdCampaignBreakdown,
   ProductAdvertisingAutoDaily,
+  ProductCampaignDailyListResponse,
+  ProductCampaignDailyRow,
   ProductCardAnalytics,
   ProductCardStatisticListResponse,
   ProductOrderDailyStatistic,
@@ -377,7 +380,8 @@ function ProductAdsTab({ storeId, productId }: { storeId: string; productId: str
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-xs text-slate-500">
-                    <th className="py-1">Кампания</th>
+                    <th className="w-4 py-1" />
+                    <th>Кампания</th>
                     <th>Статус</th>
                     <th>Расход</th>
                     <th>Показы</th>
@@ -389,16 +393,7 @@ function ProductAdsTab({ storeId, productId }: { storeId: string; productId: str
                 </thead>
                 <tbody>
                   {auto.by_campaign.map((c) => (
-                    <tr key={c.campaign_id} className="border-b border-slate-100">
-                      <td className="py-1">{c.campaign_name}</td>
-                      <td>{c.campaign_state ? AD_STATE_LABELS[c.campaign_state] ?? c.campaign_state : "—"}</td>
-                      <td>{fmtRub(c.spend_rub)}</td>
-                      <td>{c.impressions.toLocaleString("ru-RU")}</td>
-                      <td>{c.clicks.toLocaleString("ru-RU")}</td>
-                      <td>{c.orders.toLocaleString("ru-RU")}</td>
-                      <td>{fmtRub(c.revenue_rub)}</td>
-                      <td>{fmtPct(c.drr_calculated_pct)}</td>
-                    </tr>
+                    <ProductCampaignRow key={c.campaign_id} storeId={storeId} productId={productId} campaign={c} />
                   ))}
                 </tbody>
               </table>
@@ -450,6 +445,88 @@ function ProductAdsTab({ storeId, productId }: { storeId: string; productId: str
         складывают между собой, чтобы не задвоить расход и продажи.
       </p>
     </div>
+  );
+}
+
+function ProductCampaignRow({
+  storeId,
+  productId,
+  campaign,
+}: {
+  storeId: string;
+  productId: string;
+  campaign: ProductAdCampaignBreakdown;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [days, setDays] = useState<ProductCampaignDailyRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && days === null && !loading) {
+      setLoading(true);
+      api
+        .get<ProductCampaignDailyListResponse>(
+          `/stores/${storeId}/advertising/product-campaign-daily?product_id=${productId}&ozon_campaign_id=${encodeURIComponent(campaign.campaign_id)}`
+        )
+        .then((d) => setDays(d.items))
+        .finally(() => setLoading(false));
+    }
+  };
+
+  return (
+    <>
+      <tr onClick={toggle} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50">
+        <td className="w-4 py-1 text-slate-400">{expanded ? "▾" : "▸"}</td>
+        <td className="py-1">{campaign.campaign_name}</td>
+        <td>{campaign.campaign_state ? AD_STATE_LABELS[campaign.campaign_state] ?? campaign.campaign_state : "—"}</td>
+        <td>{fmtRub(campaign.spend_rub)}</td>
+        <td>{campaign.impressions.toLocaleString("ru-RU")}</td>
+        <td>{campaign.clicks.toLocaleString("ru-RU")}</td>
+        <td>{campaign.orders.toLocaleString("ru-RU")}</td>
+        <td>{fmtRub(campaign.revenue_rub)}</td>
+        <td>{fmtPct(campaign.drr_calculated_pct)}</td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-slate-100 bg-slate-50">
+          <td colSpan={9} className="p-3">
+            {loading || days === null ? (
+              <div className="text-slate-500">Загрузка...</div>
+            ) : days.length === 0 ? (
+              <div className="text-slate-500">Нет данных по дням для этой кампании.</div>
+            ) : (
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs text-slate-500">
+                    <th className="py-1">Дата</th>
+                    <th>Расход</th>
+                    <th>Показы</th>
+                    <th>Клики</th>
+                    <th>Заказы</th>
+                    <th>Продажи</th>
+                    <th>ДРР</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map((d) => (
+                    <tr key={d.date} className="border-b border-slate-100">
+                      <td className="py-1">{d.date}</td>
+                      <td>{fmtRub(d.spend_rub)}</td>
+                      <td>{d.impressions.toLocaleString("ru-RU")}</td>
+                      <td>{d.clicks.toLocaleString("ru-RU")}</td>
+                      <td>{d.orders.toLocaleString("ru-RU")}</td>
+                      <td>{fmtRub(d.revenue_rub)}</td>
+                      <td>{fmtPct(d.drr_calculated_pct)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

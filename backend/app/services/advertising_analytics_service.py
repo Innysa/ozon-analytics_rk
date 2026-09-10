@@ -34,6 +34,7 @@ from app.schemas.advertising import (
     ProductAdCampaignBreakdown,
     ProductAdvertisingAutoDailyOut,
     ProductBreakdown,
+    ProductCampaignDailyRow,
 )
 
 
@@ -317,6 +318,50 @@ def compute_product_advertising_auto_daily(db: Session, *, store_id: str, ozon_s
         daily_comparison_unavailable_reason=reason,
         by_campaign=by_campaign,
     )
+
+
+def compute_product_campaign_daily_rows(
+    db: Session, *, store_id: str, ozon_sku: str, ozon_campaign_id: str
+) -> list[ProductCampaignDailyRow]:
+    """The expanded-row detail for one campaign on the product detail page's
+    "Реклама" tab: every day of auto-collected AdvertisingDailyStatistic for
+    this exact (sku, campaign) pair — the same source as
+    compute_product_advertising_auto_daily's by_campaign totals, just not
+    summed across dates this time. Filtered by ozon_campaign_id (not the
+    internal campaign_id FK) so it still works for a campaign whose
+    AdvertisingCampaign metadata was never synced."""
+    rows = db.scalars(
+        select(AdvertisingDailyStatistic).where(
+            AdvertisingDailyStatistic.store_id == store_id,
+            AdvertisingDailyStatistic.ozon_sku == ozon_sku,
+            AdvertisingDailyStatistic.ozon_campaign_id == ozon_campaign_id,
+        )
+    ).all()
+
+    by_date: dict[date, dict[str, float]] = defaultdict(
+        lambda: {"spend": 0.0, "revenue": 0.0, "impressions": 0.0, "clicks": 0.0, "orders": 0.0}
+    )
+    for r in rows:
+        agg = by_date[r.date]
+        agg["spend"] += float(r.spend_rub or 0)
+        agg["revenue"] += float(r.revenue_rub or 0)
+        agg["impressions"] += r.impressions or 0
+        agg["clicks"] += r.clicks or 0
+        agg["orders"] += r.orders or 0
+
+    return [
+        ProductCampaignDailyRow(
+            date=day,
+            spend_rub=round(agg["spend"], 2),
+            impressions=int(agg["impressions"]),
+            clicks=int(agg["clicks"]),
+            orders=int(agg["orders"]),
+            revenue_rub=round(agg["revenue"], 2),
+            drr_calculated_pct=_drr(agg["spend"], agg["revenue"]),
+            roas_calculated=_roas(agg["spend"], agg["revenue"]),
+        )
+        for day, agg in sorted(by_date.items(), reverse=True)
+    ]
 
 
 def compute_campaign_detail(db: Session, *, store_id: str, campaign_id: str) -> CampaignDetailOut:

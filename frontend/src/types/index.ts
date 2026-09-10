@@ -431,6 +431,24 @@ export interface ProductAdCampaignBreakdown {
   roas_calculated: number | null;
 }
 
+// Expanded-row detail for one (product, campaign) pair on the product
+// detail page's "Реклама" tab.
+export interface ProductCampaignDailyRow {
+  date: string;
+  spend_rub: number;
+  impressions: number;
+  clicks: number;
+  orders: number;
+  revenue_rub: number;
+  drr_calculated_pct: number | null;
+  roas_calculated: number | null;
+}
+
+export interface ProductCampaignDailyListResponse {
+  items: ProductCampaignDailyRow[];
+  total: number;
+}
+
 // Per-product counterpart of CampaignAutoDailyDetail — same auto-collected
 // source (Ozon Performance API), sliced by SKU across every campaign that
 // advertised it instead of by one campaign across every SKU it covers.

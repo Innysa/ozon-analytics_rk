@@ -27,6 +27,7 @@ from app.schemas.advertising import (
     AdvertisingStatisticOut,
     CampaignDetailOut,
     ProductAdvertisingAutoDailyOut,
+    ProductCampaignDailyListResponse,
 )
 from app.schemas.common import ImportSummary
 from app.services.advertising_ai_review_service import generate_advertising_ai_review
@@ -34,6 +35,7 @@ from app.services.advertising_analytics_service import (
     compute_advertising_analytics,
     compute_campaign_detail,
     compute_product_advertising_auto_daily,
+    compute_product_campaign_daily_rows,
 )
 from app.services.advertising_import import import_advertising_statistics_from_file
 from app.services.ai.factory import get_ai_provider
@@ -86,6 +88,26 @@ def product_advertising_auto_daily(
     if not product or product.store_id != ctx.store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
     return compute_product_advertising_auto_daily(db, store_id=ctx.store_id, ozon_sku=product.ozon_sku)
+
+
+@router.get("/product-campaign-daily", response_model=ProductCampaignDailyListResponse)
+def product_campaign_daily(
+    product_id: str,
+    ozon_campaign_id: str,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
+    db: Session = Depends(get_db),
+) -> ProductCampaignDailyListResponse:
+    """Expanded-row detail for one campaign on the product detail page's
+    "Реклама" tab — day-by-day spend/impressions/clicks/orders/revenue/ДРР
+    for this exact (product, campaign) pair, same auto-collected source as
+    product_advertising_auto_daily's by_campaign totals above."""
+    product = db.get(Product, product_id)
+    if not product or product.store_id != ctx.store_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+    items = compute_product_campaign_daily_rows(
+        db, store_id=ctx.store_id, ozon_sku=product.ozon_sku, ozon_campaign_id=ozon_campaign_id
+    )
+    return ProductCampaignDailyListResponse(items=items, total=len(items))
 
 
 @router.post("/statistics/upload", response_model=ImportSummary)
