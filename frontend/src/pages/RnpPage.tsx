@@ -23,7 +23,7 @@ function defaultDateTo(): string {
 
 function defaultDateFrom(): string {
   const d = new Date();
-  d.setDate(d.getDate() - 6);
+  d.setDate(d.getDate() - 29); // 30-day window, matches ORDER_STATS_DEFAULT_LOOKBACK_DAYS
   return isoDate(d);
 }
 
