@@ -211,6 +211,21 @@ def test_list_finance_transactions_sends_expected_path_and_body():
     assert result.result.operations[0].amount == -150.5
 
 
+def test_probe_finance_endpoint_posts_caller_supplied_path_and_body():
+    """probe_finance_endpoint() is a generic diagnostic passthrough (see its
+    own docstring) — it must send exactly the path/body the caller gives it,
+    with no assumed shape, and return the raw parsed JSON unvalidated."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"anything": "goes here"}))
+
+    result = client.probe_finance_endpoint("/v1/finance/cash-flow-statement/list", {"date": {"year": 2026, "month": 9}})
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v1/finance/cash-flow-statement/list"
+    assert sent_kwargs["json"] == {"date": {"year": 2026, "month": 9}}
+    assert result == {"anything": "goes here"}
+
+
 def test_post_retries_on_429_and_succeeds_once_ozon_stops_limiting(monkeypatch):
     """Regression test for a real production finding: the search-query-
     details sync's per-SKU fallback (see

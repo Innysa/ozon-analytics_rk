@@ -456,3 +456,20 @@ class OzonSellerClient:
         }
         data = self._post("/v3/finance/transaction/list", body)
         return OzonFinanceTransactionListResponse.model_validate(data)
+
+    def probe_finance_endpoint(self, path: str, body: dict) -> dict:
+        """DIAGNOSTIC ONLY — see backend/scripts/debug_cash_flow_statement.py.
+        Generic raw POST for exploring a candidate replacement for the now-
+        confirmed-obsolete /v3/finance/transaction/list (see
+        list_finance_transactions()'s own docstring). A real account's own
+        Ozon Seller API key confirmed these method NAMES exist (2026-09-10,
+        via the account's own key-permissions listing) — the exact request/
+        response CONTRACT for any of them is NOT confirmed, so this takes a
+        caller-supplied body rather than a typed one, letting the diagnostic
+        script try several plausible shapes in one run without formalizing a
+        guess as if it were confirmed. Returns the raw parsed JSON (or raises
+        the same OzonAPIError family every other method here does). Do NOT
+        build a sync/scheduler/UI on top of a response captured this way
+        without first confirming the shape is stable (e.g. a second real
+        example, or the official docs)."""
+        return self._post(path, body)
