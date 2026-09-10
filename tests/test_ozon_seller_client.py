@@ -110,6 +110,33 @@ def test_get_product_queries_reports_feature_unavailable_on_404():
         pass
 
 
+def test_get_analytics_data_sends_expected_path_and_body():
+    """get_analytics_data()'s REQUEST contract is CONFIRMED straight from
+    the official docs (see OzonSellerClient's module docstring) — plain
+    "YYYY-MM-DD" dates (not the "...T00:00:00Z" timestamp product-queries
+    needs), dimension/metrics as separate lists, filters defaulting to [].
+    The RESPONSE shape is NOT confirmed, so this only pins the request."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"result": {"data": [], "totals": []}, "timestamp": "x"}))
+
+    result = client.get_analytics_data(
+        date_from="2026-08-08", date_to="2026-09-04", dimension=["sku", "day"], metrics=["revenue", "ordered_units"],
+        limit=20,
+    )
+
+    assert result == {"result": {"data": [], "totals": []}, "timestamp": "x"}
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v1/analytics/data"
+    assert sent_kwargs["json"]["date_from"] == "2026-08-08"
+    assert sent_kwargs["json"]["date_to"] == "2026-09-04"
+    assert sent_kwargs["json"]["dimension"] == ["sku", "day"]
+    assert sent_kwargs["json"]["metrics"] == ["revenue", "ordered_units"]
+    assert sent_kwargs["json"]["limit"] == 20
+    assert sent_kwargs["json"]["offset"] == 0
+    assert sent_kwargs["json"]["filters"] == []
+    assert "sort" not in sent_kwargs["json"]
+
+
 def test_list_fbo_postings_sends_expected_path_and_body():
     """UNCONFIRMED against a real account (see OzonSellerClient's module
     docstring) — this only pins down the request shape this client sends

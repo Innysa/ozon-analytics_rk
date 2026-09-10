@@ -67,6 +67,48 @@ app.services.search_query_details_sync_service._extract_query_rows, which
 is what actually parses this). get_product_queries()'s own response shape
 has not been separately re-verified against this finding.
 
+Also present:
+  POST /v1/analytics/data - see get_analytics_data()
+"Данные аналитики", the Seller API equivalent of the "Аналитика → Графики"
+report — NOT the same report as "Аналитика → Товары" (search_query_import/
+product_analytics_import's CSV upload); metric names differ and the two have
+not been confirmed to line up 1:1. The REQUEST contract below is CONFIRMED
+straight from the official docs (a real screenshot of the Redoc page for
+this method, read 2026-09-10 — this sandbox has no network access to
+docs.ozon.ru either, so this came from the user, not a live fetch):
+
+  - date_from/date_to: plain date strings (the docs' own example uses
+    "2020-09-01", no time component — unlike product-queries above, which
+    needs a full "...T00:00:00Z" timestamp; do not assume the same format).
+    Without a Premium Plus/Premium Pro subscription, date_from must be
+    within the last 3 months.
+  - dimension (list[str], required): grouping. Free for every seller:
+    "unknownDimension", "sku", "spu", "day", "week", "month". Premium
+    Plus/Pro only: "year", "category1", "category2", "brand", "modelID",
+    "descriptionType".
+  - metrics (list[str], required, max 14 per call — a 15th raises
+    InvalidArgument): free for every seller: "revenue", "ordered_units".
+    Premium Plus/Pro only: "unknown_metric", "hits_view_search",
+    "hits_view_pdp", "hits_view", "hits_tocart_search", "hits_tocart_pdp",
+    "hits_tocart", "session_view_search", "session_view_pdp",
+    "session_view", "conv_tocart_search", "conv_tocart_pdp", "conv_tocart",
+    "returns", "cancellations", "delivered_units", "position_category".
+  - filters (list[dict]), sort (list[dict]): shape not confirmed beyond
+    "array of objects" — not used by get_analytics_data() below yet.
+  - limit (int, required, 1-1000), offset (int).
+  - Rate limit: at most 1 request per minute per the docs — any future sync
+    built on this must respect that, not just retry-on-429.
+
+The RESPONSE shape is NOT confirmed beyond the top level: the docs' own
+example response has an empty "data": [] (no real row shown), so how a
+populated row actually represents its dimension values and metric values
+(e.g. an array of {id, name} objects vs. parallel arrays vs. something
+else) is unknown. get_analytics_data() therefore returns the raw parsed
+JSON dict, same as get_product_queries() above — do not build a pydantic
+schema or any parsing/storage/sync logic on top of this until
+backend/scripts/debug_analytics_data.py has been run against a real
+account with Premium Plus and confirmed the real row shape.
+
 Also present (UNCONFIRMED — see app.services.ozon.schemas's own section on
 these for the full caveat):
   POST /v2/posting/fbo/list        - list_fbo_postings()
@@ -298,6 +340,38 @@ class OzonSellerClient:
         if skus:
             body["skus"] = skus
         return self._post("/v1/analytics/product-queries/details", body)
+
+    def get_analytics_data(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        dimension: list[str],
+        metrics: list[str],
+        limit: int = 1000,
+        offset: int = 0,
+        filters: list[dict] | None = None,
+        sort: list[dict] | None = None,
+    ) -> dict:
+        """POST /v1/analytics/data — see this module's own docstring for the
+        confirmed request contract and, critically, why the response is
+        NOT confirmed: returns the raw parsed JSON dict rather than a
+        pydantic schema, same as get_product_queries() above, until a real
+        populated row has been seen (backend/scripts/debug_analytics_data.py).
+        date_from/date_to are plain dates ("YYYY-MM-DD"), NOT the
+        "...T00:00:00Z" timestamp the product-queries methods need."""
+        body: dict = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "dimension": dimension,
+            "metrics": metrics,
+            "limit": limit,
+            "offset": offset,
+            "filters": filters or [],
+        }
+        if sort:
+            body["sort"] = sort
+        return self._post("/v1/analytics/data", body)
 
     def list_fbo_postings(
         self,
