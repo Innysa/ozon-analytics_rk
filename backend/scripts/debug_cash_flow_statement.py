@@ -67,7 +67,7 @@ from app.services.ozon.client import OzonSellerClient  # noqa: E402
 from app.services.ozon.exceptions import OzonAPIError  # noqa: E402
 
 
-def _try(client: OzonSellerClient, label: str, path: str, body: dict) -> None:
+def _try(client: OzonSellerClient, label: str, path: str, body: dict) -> dict | None:
     print("=" * 70)
     print(f"{label} — POST {path}")
     print("request body:")
@@ -76,24 +76,31 @@ def _try(client: OzonSellerClient, label: str, path: str, body: dict) -> None:
         data = client.probe_finance_endpoint(path, body)
     except OzonAPIError as exc:
         print(f"{label} — OzonAPIError: {exc}")
-        return
+        return None
     except Exception as exc:  # noqa: BLE001 — diagnostic script, show everything
         print(f"{label} — unexpected error ({type(exc).__name__}): {exc}")
-        return
+        return None
     print(f"{label} — SUCCESS, raw response:")
     print(json.dumps(data, ensure_ascii=False, indent=2)[:8000])
+    return data
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--store-id", required=True)
-    parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — 7 дней назад")
+    parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — 30 дней назад")
     parser.add_argument("--date-to", default=None, help="ГГГГ-ММ-ДД, по умолчанию — сегодня")
     args = parser.parse_args()
 
     today = datetime.now(timezone.utc).date()
     date_to = date.fromisoformat(args.date_to) if args.date_to else today
-    date_from = date.fromisoformat(args.date_from) if args.date_from else date_to - timedelta(days=6)
+    # 30 days (not 7, as in the first round) — wide enough to see more than
+    # one of Ozon's own internal cash-flow periods (the confirmed response
+    # returned periods NOT aligned to the requested range's own boundaries —
+    # e.g. a 2026-09-01..2026-09-06 period appeared inside a 2026-09-04..
+    # 2026-09-10 request — so a wider window is needed to see the actual
+    # periodization pattern, not guess it from 1-2 examples).
+    date_from = date.fromisoformat(args.date_from) if args.date_from else date_to - timedelta(days=29)
     date_from_ts = f"{date_from.isoformat()}T00:00:00Z"
     date_to_ts = f"{date_to.isoformat()}T23:59:59Z"
     # /v2/finance/realization and (guessed) cash-flow-statement are usually
@@ -117,36 +124,61 @@ def main() -> None:
             # key actually works at all, before trying anything shaped.
             _try(client, "Balance", "/v1/finance/balance", {})
 
-            # User's top candidate — ДДС report. Two shapes tried since the
-            # convention (monthly vs. date-range) isn't confirmed for this
-            # specific (newer) method.
-            _try(
-                client, "Cash flow statement (monthly)", "/v1/finance/cash-flow-statement/list",
-                {"date": {"year": report_year, "month": report_month}, "page": 1, "page_size": 1000, "with_details": True},
-            )
-            _try(
-                client, "Cash flow statement (date range)", "/v1/finance/cash-flow-statement/list",
-                {"date": {"from": date_from_ts, "to": date_to_ts}, "page": 1, "page_size": 1000},
-            )
+            # CONFIRMED WORKING shape (round 1, 2026-09-10, 7-day window):
+            # {"date": {"from": <ISO ts>, "to": <ISO ts>}, "page", "page_size"}
+            # returns {"result": {"cash_flows": [{"period": {"id","begin",
+            # "end"}, "orders_amount", "returns_amount", "commission_amount",
+            # "services_amount", "item_delivery_and_return_amount",
+            # "currency_code"}, ...], "page_count", "details": []}}. The
+            # periods returned were NOT aligned to the requested date range
+            # (a 09-01..09-06 period inside a 09-04..09-10 request) — this
+            # run uses a 30-day window and loops pages to reveal the real
+            # periodization pattern instead of guessing from 2 examples, and
+            # adds with_details=True (unset in the confirmed call, so
+            # "details" came back empty — untested whether this is what
+            # unlocks a logistics/storage/penalties breakdown INSIDE
+            # services_amount, which is currently just one lump sum).
+            offset_page = 1
+            while True:
+                data = _try(
+                    client, f"Cash flow statement (date range, with_details, page {offset_page})",
+                    "/v1/finance/cash-flow-statement/list",
+                    {"date": {"from": date_from_ts, "to": date_to_ts}, "page": offset_page, "page_size": 1000, "with_details": True},
+                )
+                if not data:
+                    break
+                result = data.get("result") or {}
+                page_count = result.get("page_count") or 1
+                if offset_page >= page_count or offset_page >= 10:  # 10 = runaway guard, not a confirmed cap
+                    break
+                offset_page += 1
 
-            # Fallback candidate — long-stable Ozon monthly realization report.
-            _try(
-                client, "Realization report v2 (monthly)", "/v2/finance/realization",
-                {"date": {"year": report_year, "month": report_month}},
-            )
+            # The monthly shape failed validation ("invalid Period.From:
+            # value is required") — the method wants date.from/date.to even
+            # for a "monthly" call, so this second variant is dropped; kept
+            # here as a comment so a future reader doesn't re-try it blind:
+            #   {"date": {"year": ..., "month": ...}, ...} -> always fails.
 
-            # Accrual family — "by-day" sounds most directly useful for a
-            # daily dashboard; "postings" and "types" are reference-shaped
-            # guesses (types especially might not need a body/date at all).
-            _try(
-                client, "Accrual by day", "/v1/finance/accrual/by-day",
-                {"date": {"from": date_from_ts, "to": date_to_ts}, "page": 1, "page_size": 1000},
-            )
+            # Fallback candidate — long-stable Ozon monthly realization
+            # report. Round 1's error ("invalid GetRealizationReportRequestV2
+            # .Year: value must be inside range [2000, 9999]") for a value
+            # that WAS 2026 suggests year/month are TOP-LEVEL fields, not
+            # nested under "date" as first guessed — tried flat this round.
+            _try(client, "Realization report v2 (top-level year/month)", "/v2/finance/realization", {"year": report_year, "month": report_month})
+
+            # Accrual family. Round 1's /v1/finance/accrual/by-day error
+            # ("invalid value for string field date") means "date" wants a
+            # STRING there, not an object — tried as a plain ISO date this
+            # round (guessing date_to; the field name/whether it wants a
+            # range is still unconfirmed).
+            _try(client, "Accrual by day (date as string)", "/v1/finance/accrual/by-day", {"date": date_to.isoformat(), "page": 1, "page_size": 1000})
             _try(client, "Accrual types (no filter)", "/v1/finance/accrual/types", {})
-            _try(
-                client, "Accrual postings (date range guess)", "/v1/finance/accrual/postings",
-                {"date": {"from": date_from_ts, "to": date_to_ts}, "page": 1, "page_size": 1000},
-            )
+            # /v1/finance/accrual/postings needs specific posting_numbers
+            # (confirmed: "PostingNumbers: value must contain between 1 and
+            # 200 items" — round 1's date-range guess was wrong on its face,
+            # not just unconfirmed) — not useful for a period-wide query
+            # without already knowing which postings to ask about, so it's
+            # not retried here.
     finally:
         db.close()
 

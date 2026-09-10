@@ -33,9 +33,13 @@
 - `/v1/finance/realization/by-day` — реализация по дням
 - `/v2/finance/realization` — отчёт о реализации (существовал и раньше)
 - `/v1/finance/cash-flow-statement/list` — отчёт ДДС (движение денежных
-  средств) — **вероятный кандидат для Логистики/Хранения/Штрафов/Прочих
-  удержаний на Дашборде** (см. README, раздел «Заказы и финансы»); контракт
-  ещё не подтверждён, разведка идёт через
+  средств) — **кандидат для Логистики/Хранения/Штрафов/Прочих удержаний на
+  Дашборде** (см. README, раздел «Заказы и финансы»); контракт ЧАСТИЧНО
+  подтверждён (запрос — `{"date": {"from", "to"}, "page", "page_size"}`,
+  ответ — `cash_flows[]` с `orders_amount`/`returns_amount`/
+  `commission_amount`/`services_amount`/`item_delivery_and_return_amount`),
+  но периодизация и разбивка `services_amount` на логистику/хранение/штрафы
+  по отдельности — ещё нет; продолжение разведки —
   `backend/scripts/debug_cash_flow_statement.py`
 - `/v1/finance/products/buyout` — выкуп товаров
 - `/v1/finance/decompensation` — декомпенсация
