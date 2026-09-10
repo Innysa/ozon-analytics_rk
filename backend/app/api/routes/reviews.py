@@ -47,6 +47,7 @@ def _analysis_out(analysis: ReviewAIAnalysis | None) -> ReviewAIAnalysisOut | No
         complaints=json.loads(analysis.complaints_json or "[]"),
         product_improvements=json.loads(analysis.product_improvements_json or "[]"),
         card_improvements=json.loads(analysis.card_improvements_json or "[]"),
+        infographic_ideas=json.loads(analysis.infographic_ideas_json or "[]"),
         hypotheses=json.loads(analysis.hypotheses_json or "[]"),
     )
 
@@ -175,6 +176,36 @@ def _log_ai_generation(db: Session, *, store_id: str, review_id: str, user_id: s
     )
 
 
+def _apply_review_analysis(
+    db: Session, *, store_id: str, review: Review, result, model_used: str | None
+) -> ReviewAIAnalysis:
+    """Writes one AnalyzeReviewOutcome.result onto the review's
+    ReviewAIAnalysis row — shared by the single-review and bulk-by-product
+    analyze routes so both populate the exact same fields
+    app.services.analytics_service.compute_review_analytics later aggregates
+    into the "Рекомендации ИИ" product tab."""
+    existing = db.query(ReviewAIAnalysis).filter(ReviewAIAnalysis.review_id == review.id).first()
+    if not existing:
+        existing = ReviewAIAnalysis(review_id=review.id, store_id=store_id, sentiment="", category="", urgency="", reply_needed=True)
+        db.add(existing)
+
+    existing.sentiment = result.sentiment
+    existing.category = result.category
+    existing.urgency = result.urgency
+    existing.reply_needed = result.reply_needed
+    existing.advantages_json = json.dumps(result.advantages, ensure_ascii=False)
+    existing.complaints_json = json.dumps(result.complaints, ensure_ascii=False)
+    existing.product_improvements_json = json.dumps(result.product_improvements, ensure_ascii=False)
+    existing.card_improvements_json = json.dumps(result.card_improvements, ensure_ascii=False)
+    existing.infographic_ideas_json = json.dumps(result.infographic_ideas, ensure_ascii=False)
+    existing.hypotheses_json = json.dumps(result.hypotheses, ensure_ascii=False)
+    existing.model_used = model_used
+
+    review.status = ReviewStatus.ANALYZED if result.reply_needed else ReviewStatus.NO_REPLY_NEEDED
+    db.flush()
+    return existing
+
+
 @router.post("/{review_id}/analyze", response_model=ReviewOut)
 def analyze_review(
     review_id: str,
@@ -202,25 +233,7 @@ def analyze_review(
         db.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Не удалось проанализировать отзыв: {outcome.error_message}")
 
-    result = outcome.result
-    existing = db.query(ReviewAIAnalysis).filter(ReviewAIAnalysis.review_id == review.id).first()
-    if not existing:
-        existing = ReviewAIAnalysis(review_id=review.id, store_id=ctx.store_id, sentiment="", category="", urgency="", reply_needed=True)
-        db.add(existing)
-
-    existing.sentiment = result.sentiment
-    existing.category = result.category
-    existing.urgency = result.urgency
-    existing.reply_needed = result.reply_needed
-    existing.advantages_json = json.dumps(result.advantages, ensure_ascii=False)
-    existing.complaints_json = json.dumps(result.complaints, ensure_ascii=False)
-    existing.product_improvements_json = json.dumps(result.product_improvements, ensure_ascii=False)
-    existing.card_improvements_json = json.dumps(result.card_improvements, ensure_ascii=False)
-    existing.hypotheses_json = json.dumps(result.hypotheses, ensure_ascii=False)
-    existing.model_used = outcome.usage.model
-
-    review.status = ReviewStatus.ANALYZED if result.reply_needed else ReviewStatus.NO_REPLY_NEEDED
-    db.flush()
+    _apply_review_analysis(db, store_id=ctx.store_id, review=review, result=outcome.result, model_used=outcome.usage.model)
     record_audit(db, action="review_analyzed", user_id=user.id, store_id=ctx.store_id, target_type="review", target_id=review.id)
     db.commit()
     return _review_out(db, review, product)
@@ -468,3 +481,62 @@ def bulk_generate_drafts(
     record_audit(db, action="bulk_draft_generated", user_id=user.id, store_id=ctx.store_id, message=f"succeeded={succeeded} failed={failed}")
     db.commit()
     return {"succeeded": succeeded, "failed": failed}
+
+
+@router.post("/bulk/analyze-product")
+def bulk_analyze_product_reviews(
+    product_id: str,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Analyzes every review of one product that doesn't have a
+    ReviewAIAnalysis row yet, in one call. This is what actually powers the
+    "Рекомендации ИИ" product tab — app.services.analytics_service.
+    compute_review_analytics aggregates ONLY from ReviewAIAnalysis rows, and
+    until this route existed the only way to create one was the per-review
+    "Проанализировать" button on each ReviewCard, one click per review —
+    impractical for a product with more than a couple of reviews, and the
+    actual reason that tab tends to show "Нет данных" even with a working
+    AI provider and real reviews: nobody had clicked through all of them.
+
+    Already-analyzed reviews are skipped (re-analyzing is still available
+    per-review via "Проанализировать", e.g. after a review's text changes),
+    so this is safe to click repeatedly as new reviews come in."""
+    product = db.get(Product, product_id)
+    if not product or product.store_id != ctx.store_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    reviews = db.scalars(
+        select(Review).where(Review.store_id == ctx.store_id, Review.product_id == product_id)
+    ).all()
+    to_analyze = [r for r in reviews if r.ai_analysis is None]
+    skipped = len(reviews) - len(to_analyze)
+    if not to_analyze:
+        return {"succeeded": 0, "failed": 0, "skipped": skipped}
+
+    ai_settings = db.query(StoreAISettings).filter(StoreAISettings.store_id == ctx.store_id).first()
+    provider = get_ai_provider()
+    outcomes = provider.analyze_reviews_batch(
+        [
+            {"product_name": product.name, "rating": r.rating, "text": r.text, "pros": r.pros, "cons": r.cons}
+            for r in to_analyze
+        ],
+        ai_settings,
+    )
+
+    succeeded, failed = 0, 0
+    for review, outcome in zip(to_analyze, outcomes):
+        _log_ai_generation(db, store_id=ctx.store_id, review_id=review.id, user_id=user.id, operation="analyze_review_bulk", outcome=outcome)
+        if outcome.success and outcome.result:
+            _apply_review_analysis(db, store_id=ctx.store_id, review=review, result=outcome.result, model_used=outcome.usage.model)
+            succeeded += 1
+        else:
+            failed += 1
+
+    record_audit(
+        db, action="bulk_review_analyzed", user_id=user.id, store_id=ctx.store_id,
+        target_type="product", target_id=product_id, message=f"succeeded={succeeded} failed={failed} skipped={skipped}",
+    )
+    db.commit()
+    return {"succeeded": succeeded, "failed": failed, "skipped": skipped}

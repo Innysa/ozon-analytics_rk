@@ -55,6 +55,7 @@ export interface ReviewAIAnalysis {
   complaints: string[];
   product_improvements: string[];
   card_improvements: string[];
+  infographic_ideas: string[];
   hypotheses: string[];
 }
 

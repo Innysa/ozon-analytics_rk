@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
 import type {
   AdvertisingAnalytics,
@@ -295,10 +295,32 @@ function ProductAnalyticsTab({
   recommendationsOnly?: boolean;
 }) {
   const [data, setData] = useState<ReviewAnalytics | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () => {
     api.get<ReviewAnalytics>(`/stores/${storeId}/analytics/reviews?product_id=${productId}`).then(setData);
-  }, [storeId, productId]);
+  };
+
+  useEffect(load, [storeId, productId]);
+
+  const analyzeProductReviews = async () => {
+    setAnalyzing(true);
+    setNotice("Анализ отзывов через ИИ...");
+    try {
+      const result = await api.post<{ succeeded: number; failed: number; skipped: number }>(
+        `/stores/${storeId}/reviews/bulk/analyze-product?product_id=${productId}`
+      );
+      setNotice(
+        `Готово: проанализировано ${result.succeeded}, ошибок ${result.failed}, уже было проанализировано ${result.skipped}.`
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка анализа отзывов");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   if (!data) return <div className="text-slate-500">Загрузка...</div>;
   if (!data.has_data) return <div className="text-slate-500">Нет данных</div>;
@@ -306,9 +328,24 @@ function ProductAnalyticsTab({
   if (recommendationsOnly) {
     return (
       <div className="space-y-4 rounded-md border border-slate-200 bg-white p-4">
-        <p className="text-xs italic text-slate-500">
-          Рекомендации сформированы ИИ на основе анализа отзывов и являются гипотезами, требующими проверки человеком —
-          не воспринимайте их как доказанные факты.
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs italic text-slate-500">
+            Рекомендации сформированы ИИ на основе анализа отзывов и являются гипотезами, требующими проверки человеком —
+            не воспринимайте их как доказанные факты.
+          </p>
+          <button
+            onClick={analyzeProductReviews}
+            disabled={analyzing}
+            className="shrink-0 rounded-md bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+          >
+            {analyzing ? "Анализ..." : "Проанализировать отзывы товара (ИИ)"}
+          </button>
+        </div>
+        {notice && <p className="text-xs text-slate-500">{notice}</p>}
+        <p className="text-xs text-slate-400">
+          Рекомендации строятся по уже проанализированным ИИ отзывам этого товара. Отзыв, к которому ещё не применяли
+          анализ (ни здесь, ни кнопкой «Проанализировать» на странице «Отзывы»), в них не попадёт — нажмите кнопку выше,
+          чтобы проанализировать сразу все непроанализированные отзывы товара.
         </p>
         <Section title="Рекомендации по товару" items={data.product_improvement_ideas} />
         <Section title="Рекомендации по карточке товара" items={data.card_improvement_ideas} />

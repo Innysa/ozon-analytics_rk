@@ -48,6 +48,7 @@ class DemoProvider(AIProvider):
             complaints=["[демо-пример] нарекание на качество"] if sentiment == "negative" else [],
             product_improvements=[],
             card_improvements=[],
+            infographic_ideas=["[демо-пример] крупным текстом указать на фото ключевую характеристику"] if sentiment == "negative" else [],
             hypotheses=["[демо-пример] требует проверки человеком"],
         )
         return AnalyzeReviewOutcome(result=result, usage=_DEMO_USAGE, success=True)

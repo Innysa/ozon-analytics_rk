@@ -4,8 +4,9 @@ Nothing here invents numbers — if there are no reviews (or no AI analyses),
 `has_data` is False and every other field stays empty/None. Every aggregated
 "top complaint"/"top advantage" keeps the list of source review IDs so the UI
 can render the required "Показать отзывы-основания" link, and outputs coming
-from AI text fields (product_improvements/card_improvements/hypotheses) are
-kept clearly separate from calculated counts.
+from AI text fields (product_improvements/card_improvements/infographic_ideas/
+hypotheses — each its own ReviewAIAnalysis column, not derived from another)
+are kept clearly separate from calculated counts.
 """
 from __future__ import annotations
 
@@ -73,6 +74,7 @@ def compute_review_analytics(db: Session, *, store_id: str, product_id: str | No
             product_improvement_pairs.append((item, a.review_id))
         for item in json.loads(a.card_improvements_json or "[]"):
             card_improvement_pairs.append((item, a.review_id))
+        for item in json.loads(a.infographic_ideas_json or "[]"):
             infographic_pairs.append((item, a.review_id))
 
     # Products with rising negativity: average rating of the last 30 days vs the 30 days before that.

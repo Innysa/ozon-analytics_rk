@@ -19,6 +19,7 @@ class ReviewAnalysisResult(BaseModel):
     complaints: list[str] = Field(default_factory=list)
     product_improvements: list[str] = Field(default_factory=list)
     card_improvements: list[str] = Field(default_factory=list)
+    infographic_ideas: list[str] = Field(default_factory=list)
     hypotheses: list[str] = Field(default_factory=list)
 
 

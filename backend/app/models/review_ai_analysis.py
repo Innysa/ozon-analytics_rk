@@ -24,6 +24,7 @@ class ReviewAIAnalysis(TimestampMixin, Base):
     complaints_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     product_improvements_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     card_improvements_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    infographic_ideas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     hypotheses_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)

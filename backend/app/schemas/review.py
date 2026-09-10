@@ -15,6 +15,7 @@ class ReviewAIAnalysisOut(BaseModel):
     complaints: list[str] = []
     product_improvements: list[str] = []
     card_improvements: list[str] = []
+    infographic_ideas: list[str] = []
     hypotheses: list[str] = []
 
     model_config = {"from_attributes": True}
