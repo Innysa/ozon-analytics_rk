@@ -109,18 +109,21 @@ export function DashboardPage() {
               </>
             }
           >
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricCard label="Заказы, шт." metric={dashboard.orders_revenue.orders} format={fmtInt} />
               <MetricCard label="Выручка" metric={dashboard.orders_revenue.revenue_rub} format={fmtRub} />
               <Stat label="Средний чек" value={fmtRub(dashboard.orders_revenue.avg_order_value_rub)} />
+              <Stat label="Процент выкупа" value={fmtPct(dashboard.orders_revenue.buyout_pct)} />
             </div>
             <p className="mt-2 text-xs text-slate-400">
               Источник:{" "}
               {dashboard.orders_revenue.source === "ozon_seller_api"
                 ? "автоматически, Ozon Seller API (та же синхронизация, что и «РНП»/«Маржа»)."
                 : "отчёт «Аналитика → Товары» (CSV/XLSX), загруженный вручную."}{" "}
-              Показано «заказано» (на момент заказа), а не «выкуплено» — выкуп и его маржу с учётом себестоимости
-              смотрите в блоке «Маржа» ниже, эти цифры не обязаны совпадать.
+              «Заказы», «Выручка» и «Средний чек» — это «заказано» (на момент заказа), а не «выкуплено»; «Процент
+              выкупа» — единственная цифра здесь, которая уже учитывает и то, и другое (доля заказанных штук,
+              реально дошедших до покупателя). Абсолютные суммы выкупа и маржу с учётом себестоимости смотрите в
+              блоке «Маржа» ниже — эти цифры не обязаны совпадать с «Выручкой» выше.
             </p>
           </DashboardSection>
 
@@ -138,16 +141,18 @@ export function DashboardPage() {
             }
           >
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-              <MetricCard label="Расход (авто, Performance API)" metric={dashboard.advertising.spend_auto_rub} format={fmtRub} />
-              <MetricCard label="Расход (загружено вручную)" metric={dashboard.advertising.spend_manual_rub} format={fmtRub} />
+              <MetricCard label="Расход на рекламу (авто, Performance API)" metric={dashboard.advertising.spend_auto_rub} format={fmtRub} />
+              {dashboard.advertising.spend_manual_rub && (
+                <MetricCard label="Расход (загружено вручную)" metric={dashboard.advertising.spend_manual_rub} format={fmtRub} />
+              )}
               <Stat label="Доля расходов на рекламу в выручке" value={fmtPct(dashboard.advertising.spend_share_of_revenue_pct)} />
             </div>
             <p className="mt-2 text-xs text-slate-400">
-              «Доля расходов на рекламу в выручке» — это весь расход на рекламу (оба источника выше), делённый на всю
-              выручку магазина за период (блок «Заказы и выручка» выше), а не только на продажи в продвижении — это
-              главный показатель, за которым обычно следят руководители, но именно поэтому его нельзя напрямую
-              сравнивать с ДРР по отдельным кампаниям на странице «Реклама». Настоящую маржу/ROI с учётом
-              себестоимости смотрите в блоке «Маржа» ниже.
+              «Доля расходов на рекламу в выручке» — это весь расход на рекламу выше, делённый на всю выручку
+              магазина за период (блок «Заказы и выручка» выше), а не только на продажи в продвижении — это главный
+              показатель, за которым обычно следят руководители, но именно поэтому его нельзя напрямую сравнивать с
+              ДРР по отдельным кампаниям на странице «Реклама». Настоящую маржу/ROI с учётом себестоимости смотрите
+              в блоке «Маржа» ниже.
             </p>
           </DashboardSection>
 
@@ -165,6 +170,30 @@ export function DashboardPage() {
             }
           >
             <MarginSection margin={dashboard.margin} />
+          </DashboardSection>
+
+          <DashboardSection
+            title="Остатки товаров"
+            hasData={dashboard.inventory.has_data}
+            emptyHint={
+              <>
+                Нет данных. Синхронизируйте каталог на странице{" "}
+                <Link to="/products" className="underline">
+                  «Товары»
+                </Link>{" "}
+                (кнопка «Синхронизировать с Ozon»).
+              </>
+            }
+          >
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              <Stat label="Остаток, всего шт." value={fmtInt(dashboard.inventory.total_units)} />
+              <Stat label="Остаток на FBO, шт." value={fmtInt(dashboard.inventory.fbo_units)} />
+              <Stat label="Остаток на FBS, шт." value={fmtInt(dashboard.inventory.fbs_units)} />
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Текущий остаток на складах Ozon (без учёта архивных товаров) — снимок на сейчас, не за выбранный период,
+              из последней синхронизации каталога на странице «Товары».
+            </p>
           </DashboardSection>
 
           <DashboardSection

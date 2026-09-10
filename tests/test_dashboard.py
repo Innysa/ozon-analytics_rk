@@ -19,6 +19,7 @@ def test_no_data_anywhere_returns_all_blocks_empty(client, two_stores_with_users
     assert body["orders_revenue"]["has_data"] is False
     assert body["advertising"]["has_data"] is False
     assert body["reviews"]["has_data"] is False
+    assert body["inventory"]["has_data"] is False
 
 
 def test_orders_revenue_block_compares_to_previous_equal_period(client, db_session, two_stores_with_users):
@@ -139,6 +140,89 @@ def test_advertising_share_uses_ozon_seller_api_revenue_when_that_is_the_active_
     assert body["orders_revenue"]["source"] == "ozon_seller_api"
     # 500 / 5000 * 100 = 10%
     assert body["advertising"]["spend_share_of_revenue_pct"] == 10.0
+
+
+def test_orders_revenue_buyout_pct_from_ozon_seller_api_source(client, db_session, two_stores_with_users):
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=10, ordered_sum_rub=12000, ordered_sum_discounted_rub=12000,
+        delivered_units=8, delivered_sum_rub=9600,
+        cancelled_units=2, cancelled_sum_rub=2400, unfinished_units=0, commission_rub=-1000,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["orders_revenue"]
+    # 8 / 10 * 100 = 80%
+    assert block["buyout_pct"] == 80.0
+
+
+def test_orders_revenue_buyout_pct_from_csv_source(client, db_session, two_stores_with_users):
+    from app.models.product_card_statistic import ProductCardStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(ProductCardStatistic(
+        store_id=store_id, ozon_sku="111", date=date(2026, 8, 25),
+        ordered_units=20, ordered_sum_actual_price_rub=20000, bought_out_units=15, source="csv_import",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["orders_revenue"]
+    # 15 / 20 * 100 = 75%
+    assert block["buyout_pct"] == 75.0
+
+
+def test_inventory_block_sums_fbo_and_fbs_stock_excluding_archived(client, db_session, two_stores_with_users):
+    from app.models.product import Product
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(Product(store_id=store_id, ozon_sku="111", name="Товар 1", fbo_stock=10, fbs_stock=5))
+    db_session.add(Product(store_id=store_id, ozon_sku="222", name="Товар 2", fbo_stock=3, fbs_stock=None))
+    db_session.add(Product(store_id=store_id, ozon_sku="333", name="Архивный", fbo_stock=1000, fbs_stock=1000, is_archived=True))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/dashboard")
+    assert resp.status_code == 200
+    block = resp.json()["inventory"]
+    assert block["has_data"] is True
+    assert block["fbo_units"] == 13
+    assert block["fbs_units"] == 5
+    assert block["total_units"] == 18
+
+
+def test_inventory_block_no_data_when_catalog_never_synced(client, db_session, two_stores_with_users):
+    from app.models.product import Product
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    # A product exists (e.g. created manually for cost_price_rub) but the
+    # catalog sync that would populate fbo_stock/fbs_stock never ran.
+    db_session.add(Product(store_id=store_id, ozon_sku="111", name="Товар без синка остатков"))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/dashboard")
+    assert resp.status_code == 200
+    assert resp.json()["inventory"]["has_data"] is False
 
 
 def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_session, two_stores_with_users):

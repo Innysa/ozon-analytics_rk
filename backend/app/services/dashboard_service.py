@@ -21,12 +21,14 @@ from app.core.config import get_settings
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.order_daily_statistic import OrderDailyStatistic
+from app.models.product import Product
 from app.models.product_card_statistic import ProductCardStatistic
 from app.models.review import Review, ReviewStatus
 from app.schemas.dashboard import (
     AdvertisingBlock,
     DashboardMetric,
     DashboardOut,
+    InventoryBlock,
     MarginBlock,
     OrdersRevenueBlock,
     ReviewsBlock,
@@ -42,18 +44,19 @@ def _compare(current: float, previous: float | None) -> DashboardMetric:
     return DashboardMetric(current=round(current, 2), previous=round(previous, 2), delta_pct=delta_pct, direction=direction)
 
 
-def _sum_product_card_stats(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[int, float]:
+def _sum_product_card_stats(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[int, float, int]:
     row = db.execute(
         select(
             func.coalesce(func.sum(ProductCardStatistic.ordered_units), 0),
             func.coalesce(func.sum(ProductCardStatistic.ordered_sum_actual_price_rub), 0),
+            func.coalesce(func.sum(ProductCardStatistic.bought_out_units), 0),
         ).where(
             ProductCardStatistic.store_id == store_id,
             ProductCardStatistic.date >= date_from,
             ProductCardStatistic.date <= date_to,
         )
     ).one()
-    return int(row[0]), float(row[1])
+    return int(row[0]), float(row[1]), int(row[2])
 
 
 def _has_any_product_card_stats(db: Session, *, store_id: str) -> bool:
@@ -152,6 +155,33 @@ def _has_any_order_daily_stats(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(OrderDailyStatistic.id).where(OrderDailyStatistic.store_id == store_id).limit(1)) is not None
 
 
+def _sum_product_stock(db: Session, *, store_id: str) -> tuple[int, int]:
+    row = db.execute(
+        select(
+            func.coalesce(func.sum(Product.fbo_stock), 0),
+            func.coalesce(func.sum(Product.fbs_stock), 0),
+        ).where(Product.store_id == store_id, Product.is_archived.is_(False))
+    ).one()
+    return int(row[0]), int(row[1])
+
+
+def _has_any_product_stock_data(db: Session, *, store_id: str) -> bool:
+    # fbo_stock/fbs_stock are only ever set by the catalog sync (POST
+    # /v3/product/info/list) — a store that has never run it has both NULL
+    # on every product, same "never synced" signal used elsewhere in this
+    # file (_has_any_order_daily_stats etc.).
+    return (
+        db.scalar(
+            select(Product.id).where(
+                Product.store_id == store_id,
+                Product.is_archived.is_(False),
+                (Product.fbo_stock.isnot(None)) | (Product.fbs_stock.isnot(None)),
+            ).limit(1)
+        )
+        is not None
+    )
+
+
 def compute_dashboard(
     db: Session,
     *,
@@ -185,26 +215,32 @@ def compute_dashboard(
         order_stats_previous = _sum_order_daily_stats(db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to)
         orders_current = order_stats_current["ordered_units"]
         revenue_current = order_stats_current["ordered_sum_discounted_rub"]
+        buyout_pct = (
+            round(order_stats_current["delivered_units"] / orders_current * 100, 2) if orders_current else None
+        )
         orders_revenue = OrdersRevenueBlock(
             has_data=True,
             source="ozon_seller_api",
             orders=_compare(orders_current, order_stats_previous["ordered_units"]),
             revenue_rub=_compare(revenue_current, order_stats_previous["ordered_sum_discounted_rub"]),
             avg_order_value_rub=round(revenue_current / orders_current, 2) if orders_current else None,
+            buyout_pct=buyout_pct,
         )
     elif has_product_card_data:
-        orders_current, revenue_current = _sum_product_card_stats(
+        orders_current, revenue_current, bought_out_current = _sum_product_card_stats(
             db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
         )
-        orders_previous, revenue_previous = _sum_product_card_stats(
+        orders_previous, revenue_previous, _ = _sum_product_card_stats(
             db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to
         )
+        buyout_pct = round(bought_out_current / orders_current * 100, 2) if orders_current else None
         orders_revenue = OrdersRevenueBlock(
             has_data=True,
             source="csv_import",
             orders=_compare(orders_current, orders_previous),
             revenue_rub=_compare(revenue_current, revenue_previous),
             avg_order_value_rub=round(revenue_current / orders_current, 2) if orders_current else None,
+            buyout_pct=buyout_pct,
         )
     else:
         revenue_current = 0.0
@@ -285,6 +321,15 @@ def compute_dashboard(
     else:
         margin = MarginBlock(has_data=False)
 
+    # --- Inventory (current stock snapshot, not period-scoped — see
+    # InventoryBlock's own docstring) ---
+    has_stock_data = _has_any_product_stock_data(db, store_id=store_id)
+    if has_stock_data:
+        fbo_units, fbs_units = _sum_product_stock(db, store_id=store_id)
+        inventory = InventoryBlock(has_data=True, total_units=fbo_units + fbs_units, fbo_units=fbo_units, fbs_units=fbs_units)
+    else:
+        inventory = InventoryBlock(has_data=False)
+
     return DashboardOut(
         period_start=resolved_date_from,
         period_end=resolved_date_to,
@@ -294,4 +339,5 @@ def compute_dashboard(
         advertising=advertising,
         reviews=reviews,
         margin=margin,
+        inventory=inventory,
     )

@@ -677,6 +677,7 @@ export interface OrdersRevenueBlock {
   orders: DashboardMetric | null;
   revenue_rub: DashboardMetric | null;
   avg_order_value_rub: number | null;
+  buyout_pct: number | null;
 }
 
 export interface AdvertisingDashboardBlock {
@@ -705,6 +706,13 @@ export interface MarginBlock {
   margin_pct: number | null;
 }
 
+export interface InventoryBlock {
+  has_data: boolean;
+  total_units: number | null;
+  fbo_units: number | null;
+  fbs_units: number | null;
+}
+
 export interface Dashboard {
   period_start: string;
   period_end: string;
@@ -714,6 +722,7 @@ export interface Dashboard {
   advertising: AdvertisingDashboardBlock;
   reviews: ReviewsDashboardBlock;
   margin: MarginBlock;
+  inventory: InventoryBlock;
 }
 
 // "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon

@@ -43,6 +43,7 @@ class OrdersRevenueBlock(BaseModel):
     orders: DashboardMetric | None = None
     revenue_rub: DashboardMetric | None = None
     avg_order_value_rub: float | None = None  # revenue / orders for the current period only
+    buyout_pct: float | None = None  # delivered (bought-out) units / ordered units for the current period, from the SAME active source above
 
 
 class AdvertisingBlock(BaseModel):
@@ -87,6 +88,21 @@ class MarginBlock(BaseModel):
     margin_pct: float | None = None
 
 
+class InventoryBlock(BaseModel):
+    """Total remaining stock (Ozon warehouses only, FBO+FBS), from the
+    product catalog sync (Product.fbo_stock/fbs_stock, populated by
+    POST /v3/product/info/list via the "Синхронизировать с Ozon" button on
+    the «Товары» page) — a CURRENT snapshot, not scoped to the selected
+    period (same convention as ReviewsBlock.without_reply_count above).
+    Archived products are excluded. has_data is False only if the store has
+    never synced its catalog from Ozon at all."""
+
+    has_data: bool
+    total_units: int | None = None
+    fbo_units: int | None = None
+    fbs_units: int | None = None
+
+
 class DashboardOut(BaseModel):
     period_start: date
     period_end: date
@@ -96,3 +112,4 @@ class DashboardOut(BaseModel):
     advertising: AdvertisingBlock
     reviews: ReviewsBlock
     margin: MarginBlock
+    inventory: InventoryBlock
