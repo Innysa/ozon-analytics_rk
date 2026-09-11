@@ -389,10 +389,18 @@ function ProductPlannerCard({
   );
 }
 
+function dailyComparisonClass(actual: number, planPerDay: number | null): string {
+  if (planPerDay === null) return "";
+  if (actual < planPerDay) return "bg-red-50";
+  if (actual > planPerDay) return "bg-green-50";
+  return "";
+}
+
 function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
   if (row.daily.length === 0) {
     return <div className="mt-3 rounded-md border border-dashed border-slate-200 p-3 text-center text-xs text-slate-400">Нет данных за этот месяц.</div>;
   }
+  const planOrdersPerDay = row.orders.plan_day_units;
   return (
     <div className="mt-3 overflow-x-auto">
       <table className="text-left text-xs">
@@ -400,7 +408,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
           <tr className="border-b border-slate-200 text-slate-500">
             <th className="py-1 pr-3">Показатель</th>
             {row.daily.map((d) => (
-              <th key={d.date} className="whitespace-nowrap px-2">
+              <th key={d.date} className="whitespace-nowrap px-2 text-center">
                 {d.date}
               </th>
             ))}
@@ -410,7 +418,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
           <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">Заказы, шт</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
+              <td key={d.date} className={`whitespace-nowrap px-2 text-center ${dailyComparisonClass(d.orders_units, planOrdersPerDay)}`}>
                 {d.orders_units}
               </td>
             ))}
@@ -418,7 +426,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
           <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">Заказы, ₽</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
+              <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.orders_sum_rub)}
               </td>
             ))}
@@ -426,7 +434,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
           <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
+              <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {d.buyouts_units}
               </td>
             ))}
@@ -434,23 +442,23 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
           <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, ₽</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
+              <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.buyouts_sum_rub)}
               </td>
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Рекламный бюджет</td>
+            <td className="py-1 pr-3 font-medium text-slate-600">Рекламный бюджет, ДРР %</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
-                {fmtRub(d.ad_spend_rub)}
+              <td key={d.date} className="whitespace-nowrap px-2 text-center">
+                {fmtPct(d.buyouts_sum_rub > 0 ? (d.ad_spend_rub / d.buyouts_sum_rub) * 100 : null)}
               </td>
             ))}
           </tr>
           <tr>
             <td className="py-1 pr-3 font-medium text-slate-600">Прибыль</td>
             {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2">
+              <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.profit_rub)}
               </td>
             ))}
@@ -484,13 +492,12 @@ function BulkPlanTable({
   month: number;
   onSaved: () => void;
 }) {
-  const [edits, setEdits] = useState<Record<string, { orders_units: string; orders_sum: string; ad_budget_pct: string }>>(() =>
+  const [edits, setEdits] = useState<Record<string, { orders_units: string; ad_budget_pct: string }>>(() =>
     Object.fromEntries(
       rows.map((r) => [
         r.product_id as string,
         {
           orders_units: r.orders.plan_month_units?.toString() ?? "",
-          orders_sum: r.orders.plan_month_rub?.toString() ?? "",
           ad_budget_pct: r.ad_budget.plan_pct?.toString() ?? "",
         },
       ])
@@ -499,7 +506,7 @@ function BulkPlanTable({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const setField = (productId: string, field: "orders_units" | "orders_sum" | "ad_budget_pct", value: string) => {
+  const setField = (productId: string, field: "orders_units" | "ad_budget_pct", value: string) => {
     setEdits((prev) => ({ ...prev, [productId]: { ...prev[productId], [field]: value } }));
   };
 
@@ -509,10 +516,14 @@ function BulkPlanTable({
     setSaving(true);
     setNotice(null);
     try {
+      // plan_orders_sum_rub is deliberately omitted here (not just left
+      // undefined-but-present) — this screen doesn't show/edit it at all,
+      // and the backend's PATCH semantics (see _upsert_plan's own
+      // docstring) leave an omitted field untouched rather than wiping a
+      // rubles plan entered earlier via the per-product card.
       const entries: BulkPlanEntryType[] = rows.map((r) => ({
         product_id: r.product_id as string,
         plan_orders_units: parseNum(edits[r.product_id as string]?.orders_units ?? ""),
-        plan_orders_sum_rub: parseNum(edits[r.product_id as string]?.orders_sum ?? ""),
         plan_ad_budget_pct: parseNum(edits[r.product_id as string]?.ad_budget_pct ?? ""),
       }));
       await api.put(`/stores/${storeId}/product-planner/plans/bulk?year=${year}&month=${month}`, { entries });
@@ -546,14 +557,13 @@ function BulkPlanTable({
             <tr className="border-b border-slate-200 text-slate-500">
               <th className="py-1">Товар</th>
               <th>План заказов, шт</th>
-              <th>План заказов, ₽</th>
               <th>План ДРР, %</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
               const productId = r.product_id as string;
-              const e = edits[productId] ?? { orders_units: "", orders_sum: "", ad_budget_pct: "" };
+              const e = edits[productId] ?? { orders_units: "", ad_budget_pct: "" };
               return (
                 <tr key={productId} className="border-b border-slate-100">
                   <td className="max-w-[240px] truncate py-1.5 pr-2">
@@ -566,14 +576,6 @@ function BulkPlanTable({
                       value={e.orders_units}
                       onChange={(ev) => setField(productId, "orders_units", ev.target.value)}
                       className="w-24 rounded border border-slate-300 px-1.5 py-0.5"
-                    />
-                  </td>
-                  <td className="pr-2">
-                    <input
-                      type="number"
-                      value={e.orders_sum}
-                      onChange={(ev) => setField(productId, "orders_sum", ev.target.value)}
-                      className="w-28 rounded border border-slate-300 px-1.5 py-0.5"
                     />
                   </td>
                   <td>

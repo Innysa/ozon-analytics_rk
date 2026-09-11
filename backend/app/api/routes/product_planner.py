@@ -21,11 +21,18 @@ def _resolved_year_month(year: int | None, month: int | None) -> tuple[int, int]
     return year or today.year, month or today.month
 
 
-def _upsert_plan(db: Session, *, store_id: str, product_id: str, year: int, month: int, payload: ProductMonthlyPlanIn) -> None:
-    """Shared by the single-product and bulk plan-saving routes — both must
-    write the exact same fields the same way. Does not commit; callers
-    batch their own commit (one for a single save, one for the whole bulk
-    table)."""
+def _upsert_plan(db: Session, *, store_id: str, product_id: str, year: int, month: int, fields: dict) -> None:
+    """Shared by the single-product and bulk plan-saving routes. PATCH
+    semantics: only the keys actually present in `fields` are written —
+    a field the caller never mentioned is left untouched in the DB, not
+    reset to null. This matters for the mass plan-entry screen, which
+    doesn't show/edit plan_orders_sum_rub at all (see BulkPlanTable on the
+    frontend) — saving a row there must not silently wipe a rubles plan
+    entered earlier via the per-product card. Callers build `fields` via
+    `payload.model_dump(exclude_unset=True)` so a field literally absent
+    from the request body is excluded, while one explicitly sent as null
+    still clears it. Does not commit; callers batch their own commit (one
+    for a single save, one for the whole bulk table)."""
     plan = (
         db.query(ProductMonthlyPlan)
         .filter(
@@ -40,9 +47,8 @@ def _upsert_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
         plan = ProductMonthlyPlan(store_id=store_id, product_id=product_id, year=year, month=month)
         db.add(plan)
 
-    plan.plan_orders_units = payload.plan_orders_units
-    plan.plan_orders_sum_rub = payload.plan_orders_sum_rub
-    plan.plan_ad_budget_pct = payload.plan_ad_budget_pct
+    for key, value in fields.items():
+        setattr(plan, key, value)
 
 
 @router.get("", response_model=ProductPlannerOut)
@@ -79,7 +85,10 @@ def set_product_monthly_plan(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
 
     resolved_year, resolved_month = _resolved_year_month(year, month)
-    _upsert_plan(db, store_id=ctx.store_id, product_id=product_id, year=resolved_year, month=resolved_month, payload=payload)
+    _upsert_plan(
+        db, store_id=ctx.store_id, product_id=product_id, year=resolved_year, month=resolved_month,
+        fields=payload.model_dump(exclude_unset=True),
+    )
     db.commit()
 
     return compute_product_planner(db, store_id=ctx.store_id, year=resolved_year, month=resolved_month)
@@ -108,11 +117,7 @@ def bulk_set_product_monthly_plans(
             continue
         _upsert_plan(
             db, store_id=ctx.store_id, product_id=entry.product_id, year=resolved_year, month=resolved_month,
-            payload=ProductMonthlyPlanIn(
-                plan_orders_units=entry.plan_orders_units,
-                plan_orders_sum_rub=entry.plan_orders_sum_rub,
-                plan_ad_budget_pct=entry.plan_ad_budget_pct,
-            ),
+            fields=entry.model_dump(exclude_unset=True, exclude={"product_id"}),
         )
     db.commit()
 

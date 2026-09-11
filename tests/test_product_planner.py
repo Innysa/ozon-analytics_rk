@@ -283,6 +283,41 @@ def test_bulk_set_plans_updates_not_duplicates_on_second_call(client, db_session
     assert rows[0].plan_orders_units == 200
 
 
+def test_bulk_set_plans_never_wipes_orders_sum_rub_set_via_card_view(client, db_session, two_stores_with_users):
+    """Regression test: the mass plan-entry screen doesn't show/edit
+    plan_orders_sum_rub at all (removed from that table per user request,
+    2026-09-11 — "рубли по заказам вводить не нужно" in that screen
+    specifically). A bulk save that omits the field entirely must NOT
+    reset a rubles plan entered earlier through the per-product card —
+    PATCH semantics (see _upsert_plan's own docstring), not full replace."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    product = _seed_product(db_session, store_id)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    # First, set a rubles plan via the single-product route (as the card view would).
+    client.put(
+        f"/api/stores/{store_id}/product-planner/products/{product.id}/plan",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_pct": 5},
+    )
+    # Then bulk-save WITHOUT plan_orders_sum_rub in the body at all (as the
+    # mass-entry table now does) — only units and pct.
+    resp = client.put(
+        f"/api/stores/{store_id}/product-planner/plans/bulk",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"entries": [{"product_id": product.id, "plan_orders_units": 150, "plan_ad_budget_pct": 7}]},
+    )
+    assert resp.status_code == 200
+
+    from app.models.product_monthly_plan import ProductMonthlyPlan
+    row = db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product.id).one()
+    assert row.plan_orders_units == 150  # updated
+    assert float(row.plan_ad_budget_pct) == 7  # updated
+    assert float(row.plan_orders_sum_rub) == 10000  # untouched, NOT wiped to None
+
+
 def test_bulk_set_plans_skips_products_from_other_stores(client, db_session, two_stores_with_users):
     d = two_stores_with_users
     product_a = _seed_product(db_session, d["store_a"].id, sku="SKU-A-OWN")
