@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -137,25 +137,45 @@ def main() -> None:
 
         print()
         print("=" * 70)
-        print(f"2) CashFlowStatementPeriod.services_items_json — периоды, ЦЕЛИКОМ входящие в {date_from} — {date_to}")
+        print(f"2) CashFlowStatementPeriod.services_items_json — периоды, ПЕРЕСЕКАЮЩИЕСЯ с {date_from} — {date_to}")
         print("=" * 70)
+        # OVERLAP, not just full containment — a period that only partially
+        # overlaps still gets PRINTED (with a clear "ИСКЛЮЧЁН" label) instead
+        # of silently vanishing. Silently summing only fully-contained
+        # periods produced a real false conclusion here once already: an
+        # 11-day range (2026-09-01..09-11) had only ONE 6-day Ozon period
+        # (09-01..09-06) fully inside it, so a "253 863 vs 195 322" compare
+        # was actually "11 days of Performance API vs 6 days of cash-flow" —
+        # nowhere near apples-to-apples, independent of any real gap between
+        # the two sources.
         periods = list(
             db.scalars(
                 select(CashFlowStatementPeriod).where(
                     CashFlowStatementPeriod.store_id == args.store_id,
-                    CashFlowStatementPeriod.period_begin >= date_from,
-                    CashFlowStatementPeriod.period_end <= date_to,
+                    CashFlowStatementPeriod.period_begin <= date_to,
+                    CashFlowStatementPeriod.period_end >= date_from,
                 ).order_by(CashFlowStatementPeriod.period_begin)
             )
         )
         if not periods:
-            print("    (нет периодов Ozon, целиком входящих в этот диапазон — "
-                  "возможно, диапазон уже, чем шаг недельных периодов Ozon, "
-                  "или cash-flow ещё не синхронизировался за эти даты)")
+            print("    (нет ни одного периода Ozon, пересекающегося с этим диапазоном — "
+                  "cash-flow, похоже, ещё не синхронизировался за эти даты)")
         ad_total = 0.0
         all_names: dict[str, float] = {}
+        covered_days: set[date] = set()
+        excluded_any = False
         for p in periods:
-            print(f"    Период {p.period_begin} — {p.period_end} (services_total={p.services_total}):")
+            fully_contained = p.period_begin >= date_from and p.period_end <= date_to
+            label = "УЧТЁН" if fully_contained else "ИСКЛЮЧЁН (частично пересекает — период нельзя разрезать)"
+            print(f"    Период {p.period_begin} — {p.period_end} (services_total={p.services_total}) — {label}:")
+            if not fully_contained:
+                excluded_any = True
+                print("        (статьи не выводятся и не суммируются — см. предупреждение ниже)")
+                continue
+            d = p.period_begin
+            while d <= p.period_end:
+                covered_days.add(d)
+                d += timedelta(days=1)
             if not p.services_items_json:
                 print("        (services_items_json пуст)")
                 continue
@@ -173,6 +193,16 @@ def main() -> None:
                 if flag:
                     ad_total += price
 
+        requested_days = [date_from + timedelta(days=i) for i in range((date_to - date_from).days + 1)]
+        uncovered_days = sorted(d for d in requested_days if d not in covered_days)
+        if excluded_any or uncovered_days:
+            print()
+            print(f"    ⚠ Cash-flow покрывает НЕ весь запрошенный диапазон — учтённые периоды "
+                  f"покрывают {len(covered_days)} из {(date_to - date_from).days + 1} дней.")
+            if uncovered_days:
+                print(f"    ⚠ Дни БЕЗ учтённых cash-flow данных: {uncovered_days[0]} — {uncovered_days[-1]} "
+                      f"({len(uncovered_days)} дн.)")
+
         print()
         print(f"    ИТОГО по статьям, похожим на рекламу ({'/'.join(AD_NAME_HINTS)}): {round(ad_total, 2)} "
               "(отрицательное — это НОРМАЛЬНО, в cash-flow суммы хранятся как списания)")
@@ -182,9 +212,18 @@ def main() -> None:
         print("СРАВНЕНИЕ (по модулю — знаки у двух источников разные по смыслу, не по ошибке):")
         auto_abs = abs(float(auto_total))
         ad_abs = abs(ad_total)
-        print(f"    Performance API (Дашборд), |spend_rub|: {auto_abs}")
-        print(f"    Cash-flow, |похоже на рекламу|: {round(ad_abs, 2)}")
-        if auto_abs and ad_abs:
+        print(f"    Performance API за ВЕСЬ запрошенный диапазон, |spend_rub|: {auto_abs}")
+        print(f"    Cash-flow за УЧТЁННЫЕ периоды (см. ⚠ выше, если диапазон покрыт не полностью), "
+              f"|похоже на рекламу|: {round(ad_abs, 2)}")
+        if uncovered_days:
+            print("    Эти два числа НЕ сравнивайте напрямую — разные диапазоны дней. "
+                  "Честное сравнение — по дням, реально покрытым cash-flow, ниже:")
+            auto_abs_covered = abs(sum(float(total) for d, total in by_day if d in covered_days))
+            print(f"    Performance API ЗА ТЕ ЖЕ {len(covered_days)} дн., что покрыл cash-flow: {auto_abs_covered}")
+            if auto_abs_covered and ad_abs:
+                print(f"    Разница (честная, по одному диапазону): {round(ad_abs - auto_abs_covered, 2)} "
+                      f"({round((ad_abs - auto_abs_covered) / auto_abs_covered * 100, 2)}%)")
+        elif auto_abs and ad_abs:
             print(f"    Разница: {round(ad_abs - auto_abs, 2)} ({round((ad_abs - auto_abs) / auto_abs * 100, 2)}%)")
     finally:
         db.close()
