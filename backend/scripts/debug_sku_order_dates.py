@@ -1,52 +1,47 @@
-"""One-off diagnostic script: investigates a per-SKU daily order-count
-discrepancy reported by the seller (2026-09-11) — the «РНП Товары» page's
-"Заказы" counts for SKU 3249061904 (Магазин "Комфорт дом") don't match a
-row-by-row export from Ozon's own cabinet, and the most recent days are
-missing entirely.
+"""One-off diagnostic script: investigates a per-SKU order-count discrepancy
+reported by the seller (2026-09-11) — the «РНП Товары» page's "Заказы"
+counts for SKU 3249061904 (Магазин "Комфорт дом") don't match Ozon's own
+cabinet export, and most of the recent postings seem to be missing
+entirely: the first version of this script (narrow ~14-day window) found
+only 29 matching postings against ~86 in the seller's own export for
+roughly the same period.
 
-SUMMARY-ONLY output (rewritten 2026-09-11 — the first version dumped raw
-JSON per posting, which came out to ~5900 lines; the seller can only work
-from the server console, with no scroll-back or copy, so anything longer
-than a screen is useless to her). Prints only aggregated counts — no raw
-postings.
+SUMMARY-ONLY output (the very first version dumped raw JSON per posting —
+~5900 lines on a real account; the seller works from a server console with
+no scroll-back or copy, so anything longer than one screen is useless to
+her). This version adds three specific checks, none of which need the
+seller to interpret raw JSON:
 
-Two working hypotheses from reading app.services.order_daily_sync_service
-(NOT yet confirmed against real data — that's what this script is for):
-
-  1. `aggregate_postings_by_day()`/`aggregate_postings_by_sku_and_day()`
-     bucket every posting by `posting.in_process_at`'s DATE, and SILENTLY
-     SKIP any posting where `in_process_at` is null. If Ozon only sets
-     `in_process_at` once it starts actively processing an order (which
-     can lag behind when the order was placed), very recent orders could
-     have `in_process_at` still null at sync time — dropped entirely, not
-     just miscounted. This would explain missing days that are otherwise
-     fully in the past.
-  2. Even where `in_process_at` IS set, its date might not match the date
-     Ozon's own export attributes the order to (e.g. the export using
-     order/creation date, `in_process_at` being when processing actually
-     started, a day or more later) — reshuffling counts between
-     neighboring days without any day being empty.
-
-This script pulls the SAME FBO+FBS postings this app's own sync would
-fetch (same CONFIRMED client methods, same `filter.since/to` window),
-filters to just the reported SKU, and prints:
-  - how many matching postings have an empty in_process_at
-  - a by-date count using in_process_at, side by side with a by-date count
-    using `created_at` (if Ozon sends that field at all — OzonPostingItem
-    has `extra="allow"`, so it's captured even though nothing in this app
-    currently reads it; a real example the seller sent earlier suggested
-    the two fields might just match, but that was one posting, not a
-    pattern — this checks it across everything in range)
-  - a status breakdown (delivered/cancelled/unfinished)
-  - how many postings have in_process_at and created_at landing on
-    DIFFERENT dates
+  1. **Real field names** — the previous version guessed the order/creation
+     date lives in a field called `created_at`; it found that field on 0 of
+     29 postings, meaning that guess was simply wrong (not that Ozon omits
+     the date). This version prints the ACTUAL top-level field names Ozon
+     sent on one real posting instead of guessing again — see
+     app.services.ozon.schemas.OzonPostingItem's `extra="allow"`, which
+     means every field Ozon sends is captured even though this app doesn't
+     parse most of them.
+  2. **Pagination, made visible** — _fetch_all_postings() (the same
+     function app.services.order_daily_sync_service's real sync uses)
+     loops pages via `offset`/`has_next` silently; this script logs each
+     page's offset/rows-returned/has_next so a silent pagination cutoff (if
+     that's what's losing 2/3 of the postings) is directly visible instead
+     of inferred.
+  3. **A widened re-query** — if Ozon's `filter.since`/`filter.to` filters
+     by `in_process_at` (or another field that lags behind when the order
+     was actually placed — the current working hypothesis from
+     order_daily_sync_service's own docstring), postings placed inside the
+     seller's reported window could simply fall OUTSIDE it once dated by
+     whatever field Ozon actually filters on. This re-runs the same
+     per-SKU count over a window widened 30 days back and 14 days forward
+     and reports the total, for direct comparison against the narrow-window
+     count.
 
 Usage (inside the running container):
 
     docker compose exec app python backend/scripts/debug_sku_order_dates.py \\
         --store-id <id> --sku 3249061904
 
-    # widen/narrow the window (default: 14 days back from --date-to):
+    # override the narrow window (default: 14 days back from --date-to):
     docker compose exec app python backend/scripts/debug_sku_order_dates.py \\
         --store-id <id> --sku 3249061904 --date-from 2026-08-28 --date-to 2026-09-11
 """
@@ -54,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -63,32 +57,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.core.encryption import decrypt_secret  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models.ozon_credentials import OzonCredentials  # noqa: E402
-from app.services.order_daily_sync_service import _fetch_all_postings, _parse_in_process_at  # noqa: E402
+from app.services.order_daily_sync_service import MAX_PAGES, PAGE_LIMIT, _parse_in_process_at  # noqa: E402
 from app.services.ozon.client import OzonCredentials as ClientCredentials  # noqa: E402
 from app.services.ozon.client import OzonSellerClient  # noqa: E402
 from app.services.ozon.exceptions import OzonAPIError  # noqa: E402
 
-_EMPTY = "(пусто)"
-_NO_FIELD = "(нет поля)"
+def _fetch_with_page_log(label: str, fetch_fn, *, date_from: str, date_to: str) -> list:
+    all_postings: list = []
+    offset = 0
+    for page_num in range(1, MAX_PAGES + 1):
+        try:
+            response = fetch_fn(date_from=date_from, date_to=date_to, offset=offset, limit=PAGE_LIMIT)
+        except OzonAPIError as exc:
+            print(f"  {label} — OzonAPIError на странице {page_num}: {exc}")
+            break
+        result = response.result
+        if result is None:
+            print(f"  {label} — страница {page_num}: пустой result, останавливаюсь")
+            break
+        postings = result if isinstance(result, list) else result.postings
+        has_next = False if isinstance(result, list) else bool(result.has_next)
+        print(f"  {label} — страница {page_num}: offset={offset} получено={len(postings)} has_next={has_next}")
+        if not postings:
+            break
+        all_postings.extend(postings)
+        if not has_next:
+            break
+        offset += PAGE_LIMIT
+    return all_postings
 
 
-def _parse_date_field(value: object) -> date | None:
-    if not value or not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
-    except ValueError:
-        return None
-
-
-def _fetch_matching(fetch_fn, *, date_from: str, date_to: str, sku: int) -> tuple[int, list]:
-    try:
-        postings = _fetch_all_postings(fetch_fn, date_from=date_from, date_to=date_to)
-    except OzonAPIError as exc:
-        print(f"  OzonAPIError: {exc}")
-        return 0, []
-    matching = [p for p in postings if any(prod.sku == sku for prod in p.products)]
-    return len(postings), matching
+def _count_matching(postings: list, sku: int) -> list:
+    return [p for p in postings if any(prod.sku == sku for prod in p.products)]
 
 
 def main() -> None:
@@ -102,8 +102,13 @@ def main() -> None:
     today = datetime.now(timezone.utc).date()
     date_to = date.fromisoformat(args.date_to) if args.date_to else today
     date_from = date.fromisoformat(args.date_from) if args.date_from else date_to - timedelta(days=14)
-    date_from_ts = f"{date_from.isoformat()}T00:00:00Z"
-    date_to_ts = f"{date_to.isoformat()}T23:59:59Z"
+    narrow_from_ts = f"{date_from.isoformat()}T00:00:00Z"
+    narrow_to_ts = f"{date_to.isoformat()}T23:59:59Z"
+
+    wide_from = date_from - timedelta(days=30)
+    wide_to = date_to + timedelta(days=14)
+    wide_from_ts = f"{wide_from.isoformat()}T00:00:00Z"
+    wide_to_ts = f"{wide_to.isoformat()}T23:59:59Z"
 
     db = SessionLocal()
     try:
@@ -114,53 +119,36 @@ def main() -> None:
         client_id = decrypt_secret(creds.client_id_encrypted)
         api_key = decrypt_secret(creds.api_key_encrypted)
 
-        print(f"SKU: {args.sku} | период: {date_from} — {date_to} | сегодня: {today}")
+        print(f"SKU: {args.sku} | узкое окно: {date_from} — {date_to} | сегодня: {today}")
 
         with OzonSellerClient(ClientCredentials(client_id=client_id, api_key=api_key)) as client:
-            fbo_total, fbo_matching = _fetch_matching(client.list_fbo_postings, date_from=date_from_ts, date_to=date_to_ts, sku=args.sku)
-            fbs_total, fbs_matching = _fetch_matching(client.list_fbs_postings, date_from=date_from_ts, date_to=date_to_ts, sku=args.sku)
+            print("Узкое окно, постранично:")
+            fbo_narrow = _fetch_with_page_log("FBO", client.list_fbo_postings, date_from=narrow_from_ts, date_to=narrow_to_ts)
+            fbs_narrow = _fetch_with_page_log("FBS", client.list_fbs_postings, date_from=narrow_from_ts, date_to=narrow_to_ts)
+
+            print(f"Широкое окно ({wide_from} — {wide_to}), постранично:")
+            fbo_wide = _fetch_with_page_log("FBO", client.list_fbo_postings, date_from=wide_from_ts, date_to=wide_to_ts)
+            fbs_wide = _fetch_with_page_log("FBS", client.list_fbs_postings, date_from=wide_from_ts, date_to=wide_to_ts)
     finally:
         db.close()
 
-    print(f"FBO отправлений всего: {fbo_total}, с этим SKU: {len(fbo_matching)}")
-    print(f"FBS отправлений всего: {fbs_total}, с этим SKU: {len(fbs_matching)}")
+    narrow_matching = _count_matching(fbo_narrow, args.sku) + _count_matching(fbs_narrow, args.sku)
+    wide_matching = _count_matching(fbo_wide, args.sku) + _count_matching(fbs_wide, args.sku)
 
-    matching = fbo_matching + fbs_matching
-    if not matching:
-        print("Отправлений с этим SKU в этом периоде не найдено.")
-        return
+    print(f"\nВсего отправлений (все SKU) — узкое окно: FBO={len(fbo_narrow)} FBS={len(fbs_narrow)}")
+    print(f"Всего отправлений (все SKU) — широкое окно: FBO={len(fbo_wide)} FBS={len(fbs_wide)}")
+    print(f"С этим SKU — узкое окно: {len(narrow_matching)} | широкое окно: {len(wide_matching)}")
 
-    empty_in_process = sum(1 for p in matching if not p.in_process_at)
-    no_created_field = sum(1 for p in matching if getattr(p, "created_at", None) is None)
-    print(f"Отправлений с пустым in_process_at: {empty_in_process} из {len(matching)}")
-    print(f"Отправлений без поля created_at вообще: {no_created_field} из {len(matching)}")
+    if narrow_matching:
+        example = narrow_matching[0]
+        print("\nПоля одного реального отправления с этим SKU (все ключи, без значений):")
+        print(f"  {sorted(example.model_dump().keys())}")
 
-    by_in_process: Counter[str] = Counter()
-    by_created: Counter[str] = Counter()
-    by_status: Counter[str] = Counter()
-    mismatch = 0
-
-    for posting in matching:
-        qty = sum(prod.quantity or 0 for prod in posting.products if prod.sku == args.sku)
-        in_process_day = _parse_in_process_at(posting.in_process_at)
-        created_day = _parse_date_field(getattr(posting, "created_at", None))
-
-        by_in_process[str(in_process_day) if in_process_day else _EMPTY] += qty
-        by_created[str(created_day) if created_day else (_NO_FIELD if getattr(posting, "created_at", None) is None else _EMPTY)] += qty
-        by_status[posting.status or "(нет статуса)"] += qty
-        if in_process_day and created_day and in_process_day != created_day:
-            mismatch += 1
-
-    all_days = sorted(set(by_in_process) | set(by_created), key=lambda d: (d in (_EMPTY, _NO_FIELD), d))
-    print(f"\n{'Дата':<14}{'in_process_at':>15}{'created_at':>13}  (штук этого SKU)")
-    for day in all_days:
-        print(f"{day:<14}{by_in_process.get(day, 0):>15}{by_created.get(day, 0):>13}")
-
-    print(f"\nОтправлений, где даты in_process_at и created_at НЕ совпадают: {mismatch}")
-
-    print("\nПо статусу (штук этого SKU):")
-    for status, qty in sorted(by_status.items()):
-        print(f"  {status}: {qty}")
+    if len(wide_matching) > len(narrow_matching):
+        narrow_ids = {p.posting_number for p in narrow_matching}
+        extra = [p for p in wide_matching if p.posting_number not in narrow_ids]
+        outside_dates = sorted({_parse_in_process_at(p.in_process_at) for p in extra}, key=lambda d: (d is None, d))
+        print(f"\nОтправления, которые нашлись в широком окне, но не в узком — их даты in_process_at: {outside_dates}")
 
 
 if __name__ == "__main__":
