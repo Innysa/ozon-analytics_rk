@@ -14,7 +14,16 @@ function fmtPct(v: number | null): string {
 }
 
 function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  // Local calendar date, NOT toISOString().slice(0, 10) — that converts to
+  // UTC first, which silently shifts the 1st of the month back to the last
+  // day of the PREVIOUS month for any timezone ahead of UTC (e.g. Moscow,
+  // UTC+3: local midnight Sept 1 is Aug 31 21:00 UTC). CONFIRMED as the
+  // actual reason defaultDateFrom() below still wasn't landing on the 1st
+  // for a real user despite already computing "1st of this month" (2026-09-11).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function defaultDateTo(): string {

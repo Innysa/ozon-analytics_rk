@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -101,6 +101,42 @@ def _sum_manual_ad_spend(db: Session, *, store_id: str, date_from: date, date_to
 
 def _has_any_manual_ad_stats(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(AdvertisingStatistic.id).where(AdvertisingStatistic.store_id == store_id).limit(1)) is not None
+
+
+def _manual_ad_spend_incomplete(db: Session, *, store_id: str, date_from: date, date_to: date) -> bool:
+    """True when at least one AdvertisingStatistic row OVERLAPS [date_from,
+    date_to] without being fully contained in it — meaning
+    _sum_manual_ad_spend's total for this exact window is a known
+    UNDERCOUNT (real spend from a straddling period excluded, per that
+    function's own "can't be split" rule), not the true total for the
+    window.
+
+    CONFIRMED root cause (2026-09-11) of a real account's Дашборд showing
+    an absurd "+1070%" jump in "Расход (загружено вручную)" for a recent
+    period vs. the immediately preceding one: the PREVIOUS-period window
+    compute_dashboard() compares against is synthesized (same length,
+    immediately before) — the user never chose it and can't align it to
+    their own upload periods, unlike the current period. A manually
+    uploaded row spanning (e.g.) most of August straddled that synthetic
+    boundary, got fully excluded, and left a small-but-nonzero total from
+    whatever other rows happened to fit — a real number, just not the
+    real total, which read as a huge fake swing once compared to a normal
+    current-period total. Used by compute_dashboard() to suppress the
+    delta_pct/direction comparison (not the current-period figure itself)
+    whenever the baseline it would compare against is known-incomplete —
+    same "never fabricate a comparison" spirit as DashboardMetric's
+    existing zero-baseline rule, extended to a known-partial one."""
+    return (
+        db.scalar(
+            select(AdvertisingStatistic.id).where(
+                AdvertisingStatistic.store_id == store_id,
+                AdvertisingStatistic.period_start <= date_to,
+                AdvertisingStatistic.period_end >= date_from,
+                or_(AdvertisingStatistic.period_start < date_from, AdvertisingStatistic.period_end > date_to),
+            ).limit(1)
+        )
+        is not None
+    )
 
 
 def _review_stats(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[int, float | None]:
@@ -346,7 +382,17 @@ def compute_dashboard(
         total_spend_current += auto_current
     if has_manual_ads:
         manual_current = _sum_manual_ad_spend(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
-        manual_previous = _sum_manual_ad_spend(db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to)
+        # See _manual_ad_spend_incomplete's own docstring: a straddling upload
+        # excluded from the PREVIOUS window's total makes that total a known
+        # undercount, not a real (small) baseline — comparing against it
+        # produces a fabricated swing, so previous stays None (no delta_pct/
+        # direction) rather than showing one. Does NOT affect manual_current
+        # itself, which is the user's own chosen window and shown as-is.
+        manual_previous = (
+            None
+            if _manual_ad_spend_incomplete(db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to)
+            else _sum_manual_ad_spend(db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to)
+        )
         spend_manual_metric = _compare(manual_current, manual_previous)
         total_spend_current += manual_current
 

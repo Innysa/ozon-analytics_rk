@@ -20,7 +20,16 @@ function fmtInt(v: number | null): string {
 }
 
 function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  // Local calendar date, NOT toISOString().slice(0, 10) — that converts to
+  // UTC first, which silently shifts the 1st of the month back to the last
+  // day of the PREVIOUS month for any timezone ahead of UTC (e.g. Moscow,
+  // UTC+3: local midnight Sept 1 is Aug 31 21:00 UTC). Confirmed as the
+  // actual cause of defaultDateFrom() below not landing on the 1st for a
+  // real user (2026-09-11).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function defaultDateTo(): string {
@@ -28,9 +37,10 @@ function defaultDateTo(): string {
 }
 
 function defaultDateFrom(): string {
+  // 1-е число текущего месяца — подтверждено пользователем (2026-09-11):
+  // открывать страницу сразу с начала месяца, без ручной перестановки дат.
   const d = new Date();
-  d.setDate(d.getDate() - 29);
-  return isoDate(d);
+  return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
 export function DashboardPage() {

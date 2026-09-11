@@ -449,6 +449,55 @@ def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_sessi
     assert block["spend_share_of_revenue_pct"] == 10.0
 
 
+def test_manual_ad_spend_straddling_previous_window_does_not_fabricate_delta_pct(client, db_session, two_stores_with_users):
+    """Regression for a real Дашборд bug (2026-09-11): a manually uploaded
+    AdvertisingStatistic row spanning most of August straddled the
+    auto-computed "previous period" boundary, got excluded by
+    _sum_manual_ad_spend's fully-contained rule, and left a tiny leftover
+    total that made a normal current-period spend look like a "+1070%"
+    jump. previous must come back None (no delta_pct/direction) whenever
+    the previous window has a straddling row — not a fabricated small
+    number — while the current period's own figure is untouched."""
+    from app.models.advertising_statistic import AdvertisingStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    # Straddles the previous window (2026-08-21..2026-08-30) on both ends —
+    # real spend, but not fully contained in either half.
+    db_session.add(AdvertisingStatistic(
+        store_id=store_id, ozon_sku="111", ozon_campaign_id="1",
+        period_start=date(2026, 8, 1), period_end=date(2026, 8, 25),
+        spend_rub=100000, source="csv_import",
+    ))
+    # A small row that IS fully contained in the previous window — this is
+    # the misleading "real but not the real total" leftover.
+    db_session.add(AdvertisingStatistic(
+        store_id=store_id, ozon_sku="111", ozon_campaign_id="1",
+        period_start=date(2026, 8, 26), period_end=date(2026, 8, 30),
+        spend_rub=100, source="csv_import",
+    ))
+    # Current period's own upload, fully contained — a normal figure.
+    db_session.add(AdvertisingStatistic(
+        store_id=store_id, ozon_sku="111", ozon_campaign_id="1",
+        period_start=date(2026, 8, 31), period_end=date(2026, 9, 9),
+        spend_rub=1200, source="csv_import",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-31", "date_to": "2026-09-09"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["advertising"]
+    metric = block["spend_manual_rub"]
+    assert metric["current"] == 1200
+    assert metric["previous"] is None
+    assert metric["delta_pct"] is None
+    assert metric["direction"] is None
+
+
 def test_advertising_block_without_revenue_has_no_share_pct(client, db_session, two_stores_with_users):
     from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 
