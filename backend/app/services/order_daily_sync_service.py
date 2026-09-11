@@ -78,6 +78,14 @@ class SyncOutcome:
     created: int = 0
     updated: int = 0
     errors: list[str] = field(default_factory=list)
+    # Postings whose in_process_at was empty at sync time — aggregate_postings_by_day()/
+    # aggregate_postings_by_sku_and_day() silently drop these from every day's totals
+    # (see _parse_in_process_at's own callers). NOT an error — likely just an order that
+    # hasn't entered processing at Ozon's warehouse yet, so its true date isn't knowable
+    # yet — but worth surfacing on every run (success included), not just discoverable via
+    # a one-off diagnostic script (see backend/scripts/debug_sku_order_dates.py, added
+    # 2026-09-11 investigating exactly this).
+    skipped_no_process_date: int = 0
 
 
 def _to_float(value: object) -> float:
@@ -243,6 +251,20 @@ def _apply_bucket(stat: OrderDailyStatistic, bucket: dict) -> None:
     stat.commission_rub = bucket["commission_rub"]
 
 
+def skipped_no_process_date_note(outcome: SyncOutcome) -> str | None:
+    """A one-line, human-readable note for SyncRun.error_message when
+    outcome.skipped_no_process_date > 0 — surfaced on EVERY run (success
+    included, not just partial/failed) so this doesn't require a one-off
+    diagnostic script to notice (see SyncOutcome.skipped_no_process_date's
+    own docstring for why these postings get dropped)."""
+    if not outcome.skipped_no_process_date:
+        return None
+    return (
+        f"Пропущено отправлений без даты in_process_at (ещё не в обработке у Ozon, "
+        f"дата появится позже): {outcome.skipped_no_process_date}"
+    )
+
+
 def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonPostingItem]:
     all_postings: list[OzonPostingItem] = []
     offset = 0
@@ -297,6 +319,7 @@ def sync_order_daily_statistics(
             continue
 
         outcome.fetched += len(postings)
+        outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)
         daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku)
 
         for day, bucket in daily.items():

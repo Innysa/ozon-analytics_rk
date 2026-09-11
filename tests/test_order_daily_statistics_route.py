@@ -126,6 +126,62 @@ def test_sync_end_to_end_creates_order_daily_statistics_and_syncrun(client, db_s
     assert items[0]["commission_rub"] == -100.0
 
 
+def test_sync_notes_postings_skipped_for_missing_in_process_at_even_on_success(client, db_session, two_stores_with_users, monkeypatch):
+    """Regression test for a real production investigation (2026-09-11):
+    aggregate_postings_by_day()/aggregate_postings_by_sku_and_day() silently
+    drop any posting whose in_process_at is empty — a real, not hypothetical,
+    way for recent orders to go missing from every day's totals without the
+    sync ever reporting an error. SyncOutcome.skipped_no_process_date (and
+    skipped_no_process_date_note()) surface this as an informational note on
+    SyncRun.error_message even when the run is otherwise a clean SUCCESS —
+    see order_daily_sync_service.py's own docstring for the reasoning."""
+    import app.api.routes.sync as sync_routes
+
+    class _FakeSellerClientWithNullDatePosting(_FakeSellerClient):
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            if offset > 0:
+                return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+            dated = _posting("delivered", "2026-09-01", 777, "1000.00", 1500.0, -100)
+            not_yet_processed = OzonPostingItem(
+                posting_number="777-0002-1",
+                status="awaiting_packaging",
+                in_process_at=None,
+                products=[OzonPostingProductItem(sku=777, offer_id="art-777", name="Товар 777", quantity=1, price="1000.00")],
+            )
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[dated, not_yet_processed], has_next=False))
+
+    monkeypatch.setattr(sync_routes, "OzonSellerClient", _FakeSellerClientWithNullDatePosting)
+
+    class _NoCloseSessionWrapper:
+        def __init__(self, session):
+            self._session = session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sync_routes, "SessionLocal", lambda: _NoCloseSessionWrapper(db_session))
+
+    d = two_stores_with_users
+    _setup_store_with_seller_creds(db_session, d["store_a"].id)
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.post(
+        f"/api/stores/{d['store_a'].id}/sync/ozon-orders",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-01"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    runs = client.get(f"/api/stores/{d['store_a'].id}/sync/runs")
+    finished_run = next(r for r in runs.json() if r["id"] == body["id"])
+    assert finished_run["status"] == "success"  # the missing-date posting is NOT an error
+    assert finished_run["items_fetched"] == 2  # both postings were fetched...
+    assert "1" in finished_run["error_message"]  # ...but the note says 1 was skipped for it
+
+
 def test_store_isolation_on_daily_statistics_listing(client, db_session, two_stores_with_users, monkeypatch):
     import app.api.routes.sync as sync_routes
 

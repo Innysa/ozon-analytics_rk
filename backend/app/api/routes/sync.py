@@ -20,7 +20,7 @@ from app.models.user import User
 from app.services.advertising_daily_sync_service import sync_advertising_daily_statistics
 from app.services.audit import record_audit
 from app.services.cash_flow_statement_sync_service import sync_cash_flow_statement_periods
-from app.services.order_daily_sync_service import sync_order_daily_statistics
+from app.services.order_daily_sync_service import skipped_no_process_date_note, sync_order_daily_statistics
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
@@ -764,7 +764,11 @@ def _run_order_daily_statistics_sync(
             run.items_fetched = outcome.fetched
             run.items_created = outcome.created
             run.items_skipped_duplicate = outcome.updated
-            error_message = "; ".join(outcome.errors[:20]) if outcome.errors else None
+            notes = list(outcome.errors[:20])
+            skipped_note = skipped_no_process_date_note(outcome)
+            if skipped_note:
+                notes.append(skipped_note)
+            error_message = "; ".join(notes) if notes else None
             run.status = SyncStatus.SUCCESS if not outcome.errors else (
                 SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
             )
