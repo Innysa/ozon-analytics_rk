@@ -22,9 +22,10 @@ function defaultDateTo(): string {
 }
 
 function defaultDateFrom(): string {
+  // 1-е число текущего месяца — подтверждено пользователем (2026-09-11):
+  // открывать страницу сразу с начала месяца, без ручной перестановки дат.
   const d = new Date();
-  d.setDate(d.getDate() - 29); // 30-day window, matches ORDER_STATS_DEFAULT_LOOKBACK_DAYS
-  return isoDate(d);
+  return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
 interface DayRow {
