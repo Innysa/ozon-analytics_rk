@@ -403,9 +403,10 @@ def _retry_empty_batch_per_sku(
                 limit_by_sku=limit_by_sku,
                 page_size=page_size,
             )
-        except OzonRateLimited as exc:
-            # OzonSellerClient._post() already retries a 429 internally with
-            # exponential backoff (currently 4 waits: 1, 2, 4, 8s) before
+        except OzonRateLimited:
+            # OzonSellerClient._post() already retries a 429 internally
+            # (currently 7 waits — honoring Ozon's own Retry-After header
+            # when present, exponential backoff up to 30s otherwise) before
             # ever raising this — reaching here means Ozon kept rate-limiting
             # through all of that, confirmed live during a burst of many
             # single-SKU fallback requests in a row. Worth its own message:

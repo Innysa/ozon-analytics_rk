@@ -166,6 +166,34 @@ from app.services.ozon.schemas import (
 
 BASE_URL = "https://api-seller.ozon.ru"
 
+_FALLBACK_RATE_LIMIT_WAIT = wait_exponential(multiplier=1, min=1, max=30)
+
+
+def _parse_retry_after(header_value: str | None) -> float | None:
+    """Ozon's `Retry-After` on a 429, when present, per HTTP convention is
+    either a whole number of seconds or an HTTP-date. Only the
+    seconds form has been observed in practice; the HTTP-date form isn't
+    parsed (no confirmed real example to build against) — a header in that
+    form is treated the same as no header, falling back to plain
+    exponential backoff rather than guessing a parse."""
+    if not header_value:
+        return None
+    try:
+        return float(header_value)
+    except ValueError:
+        return None
+
+
+def _wait_for_ozon_rate_limit(retry_state):
+    """tenacity `wait` callable: honors Ozon's own `Retry-After` seconds
+    when the failing attempt's OzonRateLimited carried one, otherwise falls
+    back to exponential backoff — see _post()'s own retry decorator for why
+    this exists."""
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, OzonRateLimited) and exc.retry_after_s is not None:
+        return max(exc.retry_after_s, 0.0)
+    return _FALLBACK_RATE_LIMIT_WAIT(retry_state)
+
 
 @dataclass
 class OzonCredentials:
@@ -204,16 +232,26 @@ class OzonSellerClient:
 
     @retry(
         reraise=True,
-        # 5 attempts -> 4 waits of 1, 2, 4, 8s (wait_exponential caps at
-        # max=8) before finally giving up — bumped up from 3 (only 2 waits,
-        # ~3s total) after this was confirmed too impatient live: the
-        # search-query-details sync's per-SKU fallback retry (see
-        # app.services.search_query_details_sync_service) fires many
-        # individual requests in a row when a grouped batch comes back
-        # empty, and Ozon started rate-limiting mid-burst with 3 attempts'
-        # worth of patience not being enough to ride it out.
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
+        # 8 attempts -> 7 waits, honoring Ozon's own `Retry-After` header
+        # when it sends one (see _wait_for_ozon_rate_limit below), falling
+        # back to exponential backoff (1, 2, 4, 8, 16, 30, 30s — capped at
+        # max=30) when it doesn't. Bumped up from the previous 5
+        # attempts/8s-cap budget (itself already bumped once before, from 3)
+        # after that budget was confirmed too impatient live AGAIN
+        # (2026-09-11): a real account's /v2/posting/fbo/list (FBO orders —
+        # see app.services.order_daily_sync_service) hit SUSTAINED 429s that
+        # outlasted the old ~15s total budget, exhausting every retry and
+        # dropping that store's whole day of FBO order data into a PARTIAL
+        # sync run — confirmed via a diagnostic run
+        # (backend/scripts/debug_sku_order_dates.py) that reproduced the
+        # same 429 standalone, outside any scheduled sync. FBS on the same
+        # account, same run, did not 429 — so this is not a blanket
+        # every-endpoint problem, just this client's patience being too
+        # short for whatever real rate limit Ozon enforces on this
+        # particular (heavy — `with: analytics_data+financial_data`)
+        # endpoint for this account.
+        stop=stop_after_attempt(8),
+        wait=_wait_for_ozon_rate_limit,
         retry=retry_if_exception_type(OzonRateLimited),
     )
     def _post(self, path: str, json: dict) -> dict:
@@ -228,7 +266,9 @@ class OzonSellerClient:
         if response.status_code == 401 or response.status_code == 403:
             raise OzonAuthError("Ozon отклонил Client-Id/Api-Key (401/403)")
         if response.status_code == 429:
-            raise OzonRateLimited("Ozon вернул 429 Too Many Requests")
+            raise OzonRateLimited(
+                "Ozon вернул 429 Too Many Requests", retry_after_s=_parse_retry_after(response.headers.get("Retry-After"))
+            )
         if response.status_code == 404:
             # Beta/plan-gated methods can 404 for stores without the required subscription.
             raise OzonFeatureUnavailable(

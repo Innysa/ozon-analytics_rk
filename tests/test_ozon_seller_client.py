@@ -9,11 +9,12 @@ from app.services.ozon.client import OzonCredentials, OzonSellerClient
 from app.services.ozon.exceptions import OzonRateLimited
 
 
-def _mock_post(status_code: int, json_body: dict):
+def _mock_post(status_code: int, json_body: dict, *, headers: dict | None = None):
     response = MagicMock()
     response.status_code = status_code
     response.json.return_value = json_body
     response.text = str(json_body)
+    response.headers = headers or {}
     return response
 
 
@@ -298,8 +299,11 @@ def test_post_retries_on_429_and_succeeds_once_ozon_stops_limiting(monkeypatch):
 def test_post_gives_up_after_max_attempts_on_persistent_429(monkeypatch):
     """If Ozon keeps rate-limiting past every retry attempt, _post() must
     eventually give up and raise OzonRateLimited rather than retry forever —
-    bumped from 3 to 5 attempts (4 waits: 1, 2, 4, 8s) after 3 was confirmed
-    too impatient live for the per-SKU fallback's request burst."""
+    bumped from 5 to 8 attempts (7 waits: 1, 2, 4, 8, 16, 30, 30s, capped at
+    max=30) after a real account's FBO postings sync (2026-09-11) hit
+    sustained 429s that outlasted the old ~15s total budget, silently
+    dropping that store's FBO order data for the day — see _post()'s own
+    retry decorator comment."""
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
     client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
     client._client.post = MagicMock(return_value=_mock_post(429, {"message": "too many requests"}))
@@ -310,4 +314,45 @@ def test_post_gives_up_after_max_attempts_on_persistent_429(monkeypatch):
     except OzonRateLimited:
         pass
 
-    assert client._client.post.call_count == 5
+    assert client._client.post.call_count == 8
+
+
+def test_post_honors_ozon_retry_after_header(monkeypatch):
+    """When Ozon's 429 carries a `Retry-After` header (seconds), the retry
+    must wait exactly that long instead of guessing via exponential
+    backoff — see OzonRateLimited.retry_after_s's own docstring for why
+    this was added (2026-09-11, real FBO postings 429s)."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        side_effect=[
+            _mock_post(429, {"message": "too many requests"}, headers={"Retry-After": "12"}),
+            _mock_post(200, {"reviews": [], "has_next": False}),
+        ]
+    )
+
+    result = client.check_connection()
+
+    assert result["ok"] is True
+    assert client._client.post.call_count == 2
+    assert 12 in sleep_calls
+
+
+def test_post_falls_back_to_exponential_backoff_without_retry_after_header(monkeypatch):
+    """No `Retry-After` header on the 429 -> falls back to plain exponential
+    backoff (1s on the first retry) rather than failing to wait at all."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        side_effect=[
+            _mock_post(429, {"message": "too many requests"}),
+            _mock_post(200, {"reviews": [], "has_next": False}),
+        ]
+    )
+
+    result = client.check_connection()
+
+    assert result["ok"] is True
+    assert 1 in sleep_calls
