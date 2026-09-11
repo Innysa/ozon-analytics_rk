@@ -17,6 +17,7 @@ from app.api.routes import (
     ozon_connection,
     ozon_performance,
     product_analytics,
+    product_planner,
     products,
     reviews,
     review_upload,
@@ -98,6 +99,7 @@ app.include_router(dashboard.router)
 app.include_router(orders.router)
 app.include_router(products.router)
 app.include_router(product_analytics.router)
+app.include_router(product_planner.router)
 app.include_router(search_queries.router)
 app.include_router(change_history.router)
 

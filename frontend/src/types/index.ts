@@ -741,6 +741,89 @@ export interface Dashboard {
   logistics: LogisticsBlock;
 }
 
+// «РНП Товары» — per-product monthly planner, see backend
+// app.services.product_planner_service's module docstring for the full
+// computation and what "Локализация"/"Прогноз"/"Хватит на" mean here.
+export interface MetricPlanFactActual {
+  plan_day_rub: number | null;
+  plan_month_rub: number | null;
+  forecast_month_rub: number | null;
+  actual_month_rub: number | null;
+  plan_day_units: number | null;
+  plan_month_units: number | null;
+  forecast_month_units: number | null;
+  actual_month_units: number | null;
+}
+
+export interface DailyBreakdownEntry {
+  date: string;
+  orders_sum_rub: number;
+  orders_units: number;
+  buyouts_sum_rub: number;
+  buyouts_units: number;
+  ad_spend_rub: number;
+  profit_rub: number | null;
+}
+
+export interface ProductPlannerRow {
+  product_id: string | null;
+  product_name: string;
+  product_sku: string | null;
+  product_offer_id: string | null;
+  product_image_url: string | null;
+
+  orders: MetricPlanFactActual;
+  buyouts: MetricPlanFactActual;
+  ad_budget: MetricPlanFactActual;
+  profit: MetricPlanFactActual;
+
+  drr_pct_actual: number | null;
+
+  stock_total_units: number | null;
+  stock_fbo_units: number | null;
+  stock_fbs_units: number | null;
+  days_of_stock_remaining: number | null;
+
+  cost_known: boolean;
+  krpp_pct: number | null;
+  margin_before_ad_pct: number | null;
+  margin_after_ad_pct: number | null;
+
+  localization_pct: number | null;
+
+  daily: DailyBreakdownEntry[];
+}
+
+export interface ProductPlannerOut {
+  year: number;
+  month: number;
+  days_in_month: number;
+  elapsed_days: number;
+  has_data: boolean;
+  total: ProductPlannerRow | null;
+  rows: ProductPlannerRow[];
+}
+
+export interface ProductMonthlyPlanIn {
+  plan_orders_units?: number | null;
+  plan_orders_sum_rub?: number | null;
+  plan_buyouts_units?: number | null;
+  plan_buyouts_sum_rub?: number | null;
+  plan_ad_budget_rub?: number | null;
+  plan_profit_rub?: number | null;
+}
+
+export interface SuggestedPlan {
+  product_id: string;
+  based_on_months: number;
+  suggested_orders_units: number | null;
+  suggested_orders_sum_rub: number | null;
+  suggested_buyouts_units: number | null;
+  suggested_buyouts_sum_rub: number | null;
+  suggested_ad_budget_rub: number | null;
+  suggested_profit_rub: number | null;
+}
+
 // "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon
 // Seller API postings (FBO/FBS), see backend
 // app.models.order_daily_statistic's module docstring for the confirmed

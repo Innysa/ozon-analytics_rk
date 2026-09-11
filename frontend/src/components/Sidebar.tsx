@@ -15,6 +15,9 @@ export function Sidebar() {
         <NavLink to="/rnp" className={linkClass}>
           РНП
         </NavLink>
+        <NavLink to="/rnp-tovary" className={linkClass}>
+          РНП Товары
+        </NavLink>
         <NavLink to="/reviews" className={linkClass}>
           Отзывы
         </NavLink>
