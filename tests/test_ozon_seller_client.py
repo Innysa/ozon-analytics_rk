@@ -169,6 +169,9 @@ def test_list_fbo_postings_sends_expected_path_and_body():
     sent_path, sent_kwargs = client._client.post.call_args
     assert sent_path[0] == "/v2/posting/fbo/list"
     assert sent_kwargs["json"]["filter"] == {"since": "2026-08-08T00:00:00Z", "to": "2026-09-04T23:59:59Z"}
+    # analytics_data deliberately dropped (2026-09-11) — nothing reads it,
+    # and it was unused weight on a call prone to sustained 429s.
+    assert sent_kwargs["json"]["with"] == {"financial_data": True}
     assert result.result.postings[0].posting_number == "123-0001-1"
 
 
@@ -181,6 +184,7 @@ def test_list_fbs_postings_sends_expected_path_and_body():
     sent_path, sent_kwargs = client._client.post.call_args
     assert sent_path[0] == "/v3/posting/fbs/list"
     assert sent_kwargs["json"]["filter"] == {"since": "2026-08-08T00:00:00Z", "to": "2026-09-04T23:59:59Z"}
+    assert sent_kwargs["json"]["with"] == {"financial_data": True}
 
 
 def test_list_fbo_postings_tolerates_an_unexpected_response_shape():

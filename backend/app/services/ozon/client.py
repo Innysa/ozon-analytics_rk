@@ -142,11 +142,12 @@ callers must never share credentials across stores.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.services.ozon.exceptions import (
     OzonAPIError,
@@ -165,6 +166,8 @@ from app.services.ozon.schemas import (
 )
 
 BASE_URL = "https://api-seller.ozon.ru"
+
+logger = logging.getLogger(__name__)
 
 _FALLBACK_RATE_LIMIT_WAIT = wait_exponential(multiplier=1, min=1, max=30)
 
@@ -235,24 +238,30 @@ class OzonSellerClient:
         # 8 attempts -> 7 waits, honoring Ozon's own `Retry-After` header
         # when it sends one (see _wait_for_ozon_rate_limit below), falling
         # back to exponential backoff (1, 2, 4, 8, 16, 30, 30s — capped at
-        # max=30) when it doesn't. Bumped up from the previous 5
-        # attempts/8s-cap budget (itself already bumped once before, from 3)
-        # after that budget was confirmed too impatient live AGAIN
-        # (2026-09-11): a real account's /v2/posting/fbo/list (FBO orders —
-        # see app.services.order_daily_sync_service) hit SUSTAINED 429s that
-        # outlasted the old ~15s total budget, exhausting every retry and
-        # dropping that store's whole day of FBO order data into a PARTIAL
-        # sync run — confirmed via a diagnostic run
-        # (backend/scripts/debug_sku_order_dates.py) that reproduced the
-        # same 429 standalone, outside any scheduled sync. FBS on the same
-        # account, same run, did not 429 — so this is not a blanket
-        # every-endpoint problem, just this client's patience being too
-        # short for whatever real rate limit Ozon enforces on this
-        # particular (heavy — `with: analytics_data+financial_data`)
-        # endpoint for this account.
+        # max=30, ~121s worst case) when it doesn't.
+        #
+        # CONFIRMED STILL NOT ENOUGH for a real account's /v2/posting/fbo/
+        # list (2026-09-11): even after this exact 8-attempt/Retry-After
+        # budget was deployed, a real manual "Обновить заказы (авто)" run
+        # exhausted it and still got "FBO: Ozon вернул 429 Too Many
+        # Requests" (FBS on the same account, same run, succeeded — 547
+        # fetched, all FBS). That rules out "our own retry just isn't
+        # patient enough within one request" as the whole story — either
+        # this account's real limit for this specific (heavy —
+        # `with: financial_data`, previously also `analytics_data`, now
+        # dropped below since this app never reads it) endpoint is a
+        # sustained/longer-window block that no single-request retry budget
+        # can bridge, or the account had an hour/day-level quota already
+        # used up. NOT YET DISTINGUISHED — no confirmed Ozon documentation
+        # of the real limit for this method, and this sandbox can't reach
+        # api-seller.ozon.ru to test directly. before_sleep_log below logs
+        # every retry attempt (level, attempt count, wait chosen) so the
+        # NEXT real occurrence is observable in the app's own logs instead
+        # of needing another bespoke diagnostic run.
         stop=stop_after_attempt(8),
         wait=_wait_for_ozon_rate_limit,
         retry=retry_if_exception_type(OzonRateLimited),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def _post(self, path: str, json: dict) -> dict:
         self._throttle()
@@ -444,13 +453,24 @@ class OzonSellerClient:
         docstring and OrderDailyStatistic's docstring for the confirmed
         field-level contract. date_from/date_to per Ozon's public docs are
         full ISO-8601 timestamps, same convention as
-        get_product_query_details()."""
+        get_product_query_details().
+
+        `with.analytics_data` is deliberately NOT requested (dropped
+        2026-09-11) — nothing in this codebase reads `posting.
+        analytics_data` (confirmed: only ever noted "for the future", never
+        parsed), so asking Ozon to attach it was pure unused weight on an
+        already-heavy call. Dropped as one concrete step after a real
+        account's FBO sync started hitting sustained 429s that this
+        client's retry budget couldn't ride out — see _post()'s own retry
+        decorator comment for the full incident and what's still
+        unconfirmed. `financial_data` stays — commission/old_price from it
+        ARE used (see OrderDailyStatistic's docstring)."""
         body = {
             "dir": "ASC",
             "filter": {"since": date_from, "to": date_to},
             "offset": offset,
             "limit": limit,
-            "with": {"analytics_data": True, "financial_data": True},
+            "with": {"financial_data": True},
         }
         data = self._post("/v2/posting/fbo/list", body)
         return OzonPostingListResponse.model_validate(data)
@@ -464,13 +484,15 @@ class OzonSellerClient:
         limit: int = 1000,
     ) -> OzonPostingListResponse:
         """POST /v3/posting/fbs/list — orders fulfilled by the seller (FBS).
-        Same CONFIRMED status as list_fbo_postings() — see there."""
+        Same CONFIRMED status as list_fbo_postings() — see there, including
+        why `with.analytics_data` is deliberately not requested here
+        either (dropped 2026-09-11, unused weight)."""
         body = {
             "dir": "ASC",
             "filter": {"since": date_from, "to": date_to},
             "offset": offset,
             "limit": limit,
-            "with": {"analytics_data": True, "financial_data": True},
+            "with": {"financial_data": True},
         }
         data = self._post("/v3/posting/fbs/list", body)
         return OzonPostingListResponse.model_validate(data)

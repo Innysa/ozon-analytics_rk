@@ -11,11 +11,14 @@ discipline exists — see that script's own docstring):
   1. Both endpoints accept `filter: {since, to}` (full ISO-8601 timestamps,
      same "...T00:00:00Z" convention already used for
      get_product_query_details) plus `offset`/`limit` pagination and
-     `with: {analytics_data, financial_data}`. Response is `{"result":
-     {"postings": [...], "has_next": bool}}` for both endpoints — CONFIRMED
-     (OzonPostingListResponse's `result: ... | list[...] | None` union
-     exists only as a defensive fallback in case a future response comes
-     back as a bare list; it hasn't been observed).
+     `with: {financial_data}` (`analytics_data` dropped 2026-09-11 — this
+     module never reads it, and it was extra weight on a call that turned
+     out to be prone to sustained 429s on a real account; see
+     OzonSellerClient._post()'s own retry-decorator comment). Response is
+     `{"result": {"postings": [...], "has_next": bool}}` for both endpoints
+     — CONFIRMED (OzonPostingListResponse's `result: ... | list[...] |
+     None` union exists only as a defensive fallback in case a future
+     response comes back as a bare list; it hasn't been observed).
   2. `has_next` pagination is REAL — a real account's finance-transactions
      call (same style of pagination) came back with exactly `page_size`
      rows for a 7-day window, meaning more rows existed beyond that page.
