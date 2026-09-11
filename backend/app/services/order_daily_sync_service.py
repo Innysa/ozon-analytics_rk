@@ -363,7 +363,10 @@ def sync_order_daily_statistics(
     intermittent sustained 429s on a real account's FBO postings that even
     an 8-attempt/Retry-After-aware retry couldn't reliably survive (see
     OzonSellerClient._post()'s own retry decorator comment for that
-    incident). Each chunk is fetched (with its own has_next pagination, same
+    incident — and for Ozon support's 2026-09-11 answer confirming this
+    isn't the documented 50 req/s account-wide cap, which this client
+    stays well under regardless; it's an undisclosed stricter limit on
+    this specific method). Each chunk is fetched (with its own has_next pagination, same
     as before) and failures are per-chunk: one chunk exhausting retries adds
     a note to outcome.errors and is skipped, but does NOT discard postings
     already fetched from other chunks in the same run — a real improvement

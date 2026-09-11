@@ -254,7 +254,21 @@ class OzonSellerClient:
         # can bridge, or the account had an hour/day-level quota already
         # used up. NOT YET DISTINGUISHED — no confirmed Ozon documentation
         # of the real limit for this method, and this sandbox can't reach
-        # api-seller.ozon.ru to test directly. before_sleep_log below logs
+        # api-seller.ozon.ru to test directly.
+        #
+        # Ozon support's own answer (2026-09-11, in response to a support
+        # ticket asking exactly this): the account-wide cap is 50 req/s per
+        # Client-Id, "also method-specific limits apply" (no number given
+        # for this method). This RULES OUT the account-wide cap as the
+        # cause — this client's own throttle (_min_interval_s=0.25s, i.e.
+        # 4 req/s) plus the chunk-to-chunk pause below are already far
+        # under 50/s, yet FBO still hit sustained 429s. So the real
+        # bottleneck is a stricter, undisclosed per-method quota on this
+        # specific (heavy, `with: financial_data`) endpoint — the
+        # chunking/adaptive-pause/retry strategy already in place is the
+        # right mitigation for that (there's no fixed number to size it
+        # against), not something to relax based on the 50/s figure.
+        # before_sleep_log below logs
         # every retry attempt (level, attempt count, wait chosen) so the
         # NEXT real occurrence is observable in the app's own logs instead
         # of needing another bespoke diagnostic run.
