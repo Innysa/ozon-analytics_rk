@@ -67,7 +67,7 @@ from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
-from app.services.ozon.exceptions import OzonAPIError
+from app.services.ozon.exceptions import OzonAPIError, OzonRateLimited
 from app.services.ozon.schemas import OzonPostingItem
 
 MAX_PAGES = 50
@@ -384,6 +384,17 @@ def sync_order_daily_statistics(
         .all()
     }
 
+    # Shared across BOTH schemas (FBO, FBS) and every chunk in this run —
+    # see ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS's own comment. Starts at the
+    # configured base pause; DOUBLES (capped at
+    # ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS) every time a chunk's own
+    # retry budget still ends in OzonRateLimited, so a run that keeps
+    # tripping the quota keeps slowing itself down further rather than
+    # retrying at the same losing pace for the rest of the run. Resets on
+    # the NEXT call to sync_order_daily_statistics() (i.e. the next
+    # scheduled/manual run), not persisted anywhere.
+    chunk_pause_s = settings.ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS
+
     for schema_label, fetch_fn in (("FBO", client.list_fbo_postings), ("FBS", client.list_fbs_postings)):
         postings: list[OzonPostingItem] = []
         for chunk_from, chunk_to in chunks:
@@ -391,6 +402,11 @@ def sync_order_daily_statistics(
             chunk_to_ts = f"{chunk_to.isoformat()}T23:59:59Z"
             try:
                 postings.extend(_fetch_all_postings(fetch_fn, date_from=chunk_from_ts, date_to=chunk_to_ts))
+            except OzonRateLimited as exc:
+                outcome.errors.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}: {exc}")
+                if chunk_pause_s > 0:
+                    chunk_pause_s = min(chunk_pause_s * 2, settings.ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS)
+                continue
             except OzonAPIError as exc:
                 outcome.errors.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}: {exc}")
                 continue
@@ -401,8 +417,8 @@ def sync_order_daily_statistics(
                 # why: real evidence points to a request-RATE quota, which
                 # more (smaller) chunks make easier to trip, not harder,
                 # without something actively slowing the rate back down.
-                if settings.ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS > 0:
-                    time.sleep(settings.ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS)
+                if chunk_pause_s > 0:
+                    time.sleep(chunk_pause_s)
 
         outcome.fetched += len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)

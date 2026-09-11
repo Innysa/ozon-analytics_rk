@@ -165,20 +165,36 @@ class Settings(BaseSettings):
     # retries is recorded in SyncOutcome.errors and does NOT abort the
     # other chunks (each chunk's postings that DID fetch are still used).
     ORDER_STATS_SYNC_CHUNK_DAYS: int = 5
-    # Deliberate pause between consecutive chunk requests (added 2026-09-11)
-    # — real evidence shifted the working theory: a real account's FBO
-    # sync kept 429ing on a DIFFERENT random subset of chunks each run
-    # (e.g. run 1 failed on 08-18–08-22 and 08-28–09-01; run 2, same
-    # store, same chunking, failed on 08-13–08-17, 08-23–08-27 and
-    # 09-02–09-06 instead) — smaller-but-more chunk requests did NOT
-    # reduce the failure rate. That pattern fits a request-RATE quota
-    # (N calls per rolling window) better than a request-WEIGHT limit —
-    # for a rate quota, more chunks per run (each its own has_next-paginated
-    # call) means MORE chances to trip it, not fewer. This pause directly
-    # targets rate rather than size: still just a starting point (Ozon
-    # publishes no confirmed number), so if 429s persist even with this,
-    # the next step is Ozon support, not tuning this blindly further.
-    ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS: float = 3.0
+    # Deliberate, ADAPTIVE pause between consecutive chunk requests (2026-09-11,
+    # revised same day after a fixed 3s pause still 429'd — on yet another
+    # random subset of chunks than either prior run, on the same store with
+    # the same chunking: 08-18–08-22 + 08-28–09-01 the first time, then
+    # 08-13–08-17 + 08-23–08-27 + 09-02–09-06, then 08-13–08-17 +
+    # 08-23–08-27 + 09-07–09-11 — three DIFFERENT sets. A rate quota that a
+    # flat 3s pause can still trip confirms it's not about picking the
+    # exactly-right flat number; the pause needs to actually RESPOND when
+    # it's clearly not enough yet, not sit at a fixed guess.
+    #
+    # ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS is now the STARTING pause before
+    # any 429 (bumped 3s -> 10s, the low end of what was asked for). Every
+    # time a chunk exhausts OzonSellerClient._post()'s own retry budget and
+    # still comes back OzonRateLimited, sync_order_daily_statistics()
+    # DOUBLES the pause used for every subsequent chunk in that same run
+    # (see order_daily_sync_service.py), capped at
+    # ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS — so a run that keeps
+    # hitting 429 keeps backing off harder within itself, rather than
+    # retrying at the same losing pace all the way through. Does not
+    # persist across separate runs (each new sync starts back at the base
+    # pause) — a later run may simply be luckier, which is consistent with
+    # this being a rate quota that recovers over time, not a permanent
+    # block.
+    #
+    # If 429s still show up even with this — genuinely no further tuning of
+    # these two numbers on a guess. The honest next step at that point is
+    # asking Ozon support for the real limit on this method, not another
+    # round of adjusting constants blind.
+    ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS: float = 10.0
+    ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS: float = 60.0
     ORDER_STATS_SCHEDULER_ENABLED: bool = True
     # Moved to 00:00 UTC (confirmed 2026-09-11, explicit seller request) —
     # was 03:30 UTC ("after the advertising-stats/search-query-stats jobs",

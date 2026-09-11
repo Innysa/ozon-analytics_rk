@@ -322,3 +322,52 @@ def test_sync_skips_pause_when_configured_to_zero(db_session, monkeypatch):
         config_module.get_settings.cache_clear()
 
     assert sleep_calls == []
+
+
+def test_sync_pause_doubles_on_rate_limit_and_caps_at_max(db_session, monkeypatch):
+    """Regression test for a real production finding (2026-09-11): a FLAT
+    pause between chunks (tried at 3s) still 429'd — on a different random
+    subset of chunks each run, consistent with a rate quota rather than a
+    fixed number of "safe" chunks. The pause must actually escalate within
+    a run that keeps tripping the quota, not sit at whatever flat guess was
+    configured — see ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS's own comment.
+    FBO here always 429s (every chunk exhausts its own retry budget and
+    still fails) -> pause should double each time, capped at the max, and
+    that elevated pause should carry over into FBS (shared for the whole
+    run, not reset per schema)."""
+    import app.core.config as config_module
+    import app.services.order_daily_sync_service as svc
+    from app.models.store import Store
+    from app.services.ozon.exceptions import OzonRateLimited
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "1")
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS", "4")
+    config_module.get_settings.cache_clear()
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(svc.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    class _FakeAlwaysRateLimitedFbo:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            raise OzonRateLimited("Ozon вернул 429 Too Many Requests")
+
+        def list_fbs_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+
+    try:
+        outcome = svc.sync_order_daily_statistics(
+            db_session, store_id=store.id, client=_FakeAlwaysRateLimitedFbo(),
+            date_from=date(2026, 9, 1), date_to=date(2026, 9, 15),  # 15 days / 5-day chunks = 3 chunks
+        )
+    finally:
+        config_module.get_settings.cache_clear()
+
+    assert len(outcome.errors) == 3  # all 3 FBO chunks failed
+    # FBO: 1 -> 2 -> 4 (capped, 4*2=8 > max=4). FBS then inherits the
+    # already-elevated 4s pause for its own 3 (successful) chunks.
+    assert sleep_calls == [2.0, 4.0, 4.0, 4.0, 4.0, 4.0]
