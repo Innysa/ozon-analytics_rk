@@ -14,7 +14,11 @@ class MetricPlanFactActual(BaseModel):
     ProductMonthlyPlan's own docstring). Unit fields (*_units) stay None for
     Рекламный бюджет/Прибыль, which are money-only groups on the planner
     page, exactly like AdvertisingDailyStatistic.spend_rub has no unit
-    count of its own."""
+    count of its own. plan_day_rub/plan_month_rub/plan_day_units/
+    plan_month_units also stay None for Выкупы/Прибыль specifically — not
+    because there's nothing to show, but because the user never plans
+    those two groups at all (confirmed 2026-09-11); forecast_*/actual_*
+    are still populated for them from real order/cost data."""
 
     plan_day_rub: float | None = None
     plan_month_rub: float | None = None
@@ -83,10 +87,19 @@ class ProductPlannerOut(BaseModel):
 class ProductMonthlyPlanIn(BaseModel):
     plan_orders_units: int | None = None
     plan_orders_sum_rub: float | None = None
-    plan_buyouts_units: int | None = None
-    plan_buyouts_sum_rub: float | None = None
     plan_ad_budget_rub: float | None = None
-    plan_profit_rub: float | None = None
+
+
+class BulkPlanEntry(ProductMonthlyPlanIn):
+    product_id: str
+
+
+class BulkPlanIn(BaseModel):
+    """Body for the mass plan-entry screen — one PUT saves every row's plan
+    at once instead of N separate per-product requests (see
+    app.api.routes.product_planner.bulk_set_product_monthly_plans)."""
+
+    entries: list[BulkPlanEntry] = []
 
 
 class SuggestedPlan(BaseModel):
@@ -100,7 +113,4 @@ class SuggestedPlan(BaseModel):
     based_on_months: int
     suggested_orders_units: int | None = None
     suggested_orders_sum_rub: float | None = None
-    suggested_buyouts_units: int | None = None
-    suggested_buyouts_sum_rub: float | None = None
     suggested_ad_budget_rub: float | None = None
-    suggested_profit_rub: float | None = None

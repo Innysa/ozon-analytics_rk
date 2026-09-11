@@ -211,6 +211,121 @@ def test_set_plan_persists_and_is_reflected_in_response(client, db_session, two_
     assert len(rows2) == 1
 
 
+def test_buyouts_and_profit_never_have_a_plan(client, db_session, two_stores_with_users):
+    """Confirmed 2026-09-11: plan is only ever entered for Заказы/Рекламный
+    бюджет — Выкупы/Прибыль must never show plan_day_rub/plan_month_rub (or
+    unit equivalents), even after saving a plan for the other two groups."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    product = _seed_product(db_session, store_id)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.put(
+        f"/api/stores/{store_id}/product-planner/products/{product.id}/plan",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_rub": 500},
+    )
+    row = resp.json()["rows"][0]
+    for metric_key in ("buyouts", "profit"):
+        assert row[metric_key]["plan_day_rub"] is None
+        assert row[metric_key]["plan_month_rub"] is None
+        assert row[metric_key]["plan_day_units"] is None
+        assert row[metric_key]["plan_month_units"] is None
+
+
+def test_bulk_set_plans_saves_multiple_products_in_one_call(client, db_session, two_stores_with_users):
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    p1 = _seed_product(db_session, store_id, sku="SKU-BULK-1", name="Товар 1")
+    p2 = _seed_product(db_session, store_id, sku="SKU-BULK-2", name="Товар 2")
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.put(
+        f"/api/stores/{store_id}/product-planner/plans/bulk",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"entries": [
+            {"product_id": p1.id, "plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_rub": 500},
+            {"product_id": p2.id, "plan_orders_units": 50, "plan_orders_sum_rub": 5000, "plan_ad_budget_rub": 250},
+        ]},
+    )
+    assert resp.status_code == 200
+    rows_by_id = {r["product_id"]: r for r in resp.json()["rows"]}
+    assert rows_by_id[p1.id]["orders"]["plan_month_units"] == 100
+    assert rows_by_id[p1.id]["ad_budget"]["plan_month_rub"] == 500
+    assert rows_by_id[p2.id]["orders"]["plan_month_units"] == 50
+    assert rows_by_id[p2.id]["ad_budget"]["plan_month_rub"] == 250
+
+    from app.models.product_monthly_plan import ProductMonthlyPlan
+    assert db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.store_id == store_id).count() == 2
+
+
+def test_bulk_set_plans_updates_not_duplicates_on_second_call(client, db_session, two_stores_with_users):
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    product = _seed_product(db_session, store_id)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    for units in (100, 200):
+        client.put(
+            f"/api/stores/{store_id}/product-planner/plans/bulk",
+            params={"year": CUR_YEAR, "month": CUR_MONTH},
+            json={"entries": [{"product_id": product.id, "plan_orders_units": units}]},
+        )
+
+    from app.models.product_monthly_plan import ProductMonthlyPlan
+    rows = db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product.id).all()
+    assert len(rows) == 1
+    assert rows[0].plan_orders_units == 200
+
+
+def test_bulk_set_plans_skips_products_from_other_stores(client, db_session, two_stores_with_users):
+    d = two_stores_with_users
+    product_a = _seed_product(db_session, d["store_a"].id, sku="SKU-A-OWN")
+    product_b = _seed_product(db_session, d["store_b"].id, sku="SKU-B-FOREIGN")
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.put(
+        f"/api/stores/{d['store_a'].id}/product-planner/plans/bulk",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"entries": [
+            {"product_id": product_a.id, "plan_orders_units": 10},
+            {"product_id": product_b.id, "plan_orders_units": 999},
+        ]},
+    )
+    assert resp.status_code == 200
+
+    from app.models.product_monthly_plan import ProductMonthlyPlan
+    assert db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product_b.id).count() == 0
+    assert db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product_a.id).count() == 1
+
+
+def test_bulk_set_plans_requires_manager_role(client, db_session, two_stores_with_users):
+    from app.core.security import hash_password
+    from app.models.membership import StoreMembership, StoreRole
+    from app.models.user import User
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    product = _seed_product(db_session, store_id)
+    viewer = User(email="viewer_bulk@example.com", password_hash=hash_password("password123"), full_name="Viewer")
+    db_session.add(viewer)
+    db_session.flush()
+    db_session.add(StoreMembership(user_id=viewer.id, store_id=store_id, role=StoreRole.VIEWER))
+    db_session.commit()
+
+    login(client, "viewer_bulk@example.com", "password123")
+    resp = client.put(
+        f"/api/stores/{store_id}/product-planner/plans/bulk",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"entries": [{"product_id": product.id, "plan_orders_units": 10}]},
+    )
+    assert resp.status_code == 403
+
+
 def test_set_plan_requires_manager_role(client, db_session, two_stores_with_users):
     from app.core.security import hash_password
     from app.models.membership import StoreMembership, StoreRole
@@ -268,7 +383,6 @@ def test_suggest_plan_averages_history_and_never_persists(client, db_session, tw
     body = resp.json()
     assert body["based_on_months"] == 2
     assert body["suggested_orders_units"] == 15  # average of 10 and 20
-    assert body["suggested_buyouts_sum_rub"] == 1500
 
     from app.models.product_monthly_plan import ProductMonthlyPlan
     assert db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product.id).count() == 0

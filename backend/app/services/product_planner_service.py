@@ -40,6 +40,13 @@ on the CURRENT calendar month's pace (same elapsed-days window as the
 forecast above, not a rolling 7/14/30-day window) — stock / (факт_буyouts_
 so_far / elapsed_days). None when there's no stock, or no buyout units yet
 this month to derive a pace from.
+
+Plan is only ever entered for TWO of the four groups — CONFIRMED with the
+user (2026-09-11): "Планы ставим только по «Заказы» и «Рекламный бюджет» —
+по «Выкупы» и «Прибыль» план никогда не вводим." ProductMonthlyPlan
+therefore has no buyouts/profit columns at all (removed, not just hidden —
+see that model's own docstring); Выкупы/Прибыль still get real Прогноз/
+Факт here, just never a plan_month value.
 """
 from __future__ import annotations
 
@@ -224,10 +231,10 @@ def _row_for_product(
             actual_month_units=agg.orders_units,
         ),
         buyouts=_metric(
-            plan_month=float(plan.plan_buyouts_sum_rub) if plan and plan.plan_buyouts_sum_rub is not None else None,
+            # Никогда не планируется (см. модуль-docstring) — только Прогноз/Факт.
+            plan_month=None,
             actual_month=round(agg.buyouts_sum_rub, 2),
             elapsed_days=elapsed_days, days_in_month=days_in_month,
-            plan_month_units=plan.plan_buyouts_units if plan else None,
             actual_month_units=agg.buyouts_units,
         ),
         ad_budget=_metric(
@@ -236,7 +243,8 @@ def _row_for_product(
             elapsed_days=elapsed_days, days_in_month=days_in_month,
         ),
         profit=_metric(
-            plan_month=float(plan.plan_profit_rub) if plan and plan.plan_profit_rub is not None else None,
+            # Никогда не планируется (см. модуль-docstring) — только Прогноз/Факт.
+            plan_month=None,
             actual_month=round(profit_after_ad, 2) if profit_after_ad is not None else None,
             elapsed_days=elapsed_days, days_in_month=days_in_month,
         ),
@@ -276,8 +284,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
 
     rows = []
     total_agg = _ProductAgg()
-    total_plan_orders_units = total_plan_orders_sum = total_plan_buyouts_units = total_plan_buyouts_sum = 0.0
-    total_plan_ad_budget = total_plan_profit = 0.0
+    total_plan_orders_units = total_plan_orders_sum = total_plan_ad_budget = 0.0
     any_plan = False
     total_stock = 0
     any_stock = False
@@ -307,10 +314,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             any_plan = True
             total_plan_orders_units += plan.plan_orders_units or 0
             total_plan_orders_sum += float(plan.plan_orders_sum_rub or 0)
-            total_plan_buyouts_units += plan.plan_buyouts_units or 0
-            total_plan_buyouts_sum += float(plan.plan_buyouts_sum_rub or 0)
             total_plan_ad_budget += float(plan.plan_ad_budget_rub or 0)
-            total_plan_profit += float(plan.plan_profit_rub or 0)
 
         if row.stock_total_units is not None:
             any_stock = True
@@ -336,16 +340,16 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             plan_month_units=int(total_plan_orders_units) if any_plan else None, actual_month_units=total_agg.orders_units,
         ),
         buyouts=_metric(
-            plan_month=total_plan_buyouts_sum if any_plan else None, actual_month=round(total_agg.buyouts_sum_rub, 2),
+            plan_month=None, actual_month=round(total_agg.buyouts_sum_rub, 2),
             elapsed_days=elapsed_days, days_in_month=days_in_month,
-            plan_month_units=int(total_plan_buyouts_units) if any_plan else None, actual_month_units=total_agg.buyouts_units,
+            actual_month_units=total_agg.buyouts_units,
         ),
         ad_budget=_metric(
             plan_month=total_plan_ad_budget if any_plan else None, actual_month=round(total_agg.ad_spend_rub, 2),
             elapsed_days=elapsed_days, days_in_month=days_in_month,
         ),
         profit=_metric(
-            plan_month=total_plan_profit if any_plan else None,
+            plan_month=None,
             actual_month=round(total_cost_known_profit_after, 2) if any_cost_known else None,
             elapsed_days=elapsed_days, days_in_month=days_in_month,
         ),
@@ -403,8 +407,7 @@ def suggest_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
             m, y = 12, y - 1
         months.append((y, m))
 
-    orders_units = orders_sum = buyouts_units = buyouts_sum = ad_spend = 0.0
-    profit_sum = 0.0
+    orders_units = orders_sum = ad_spend = 0.0
     months_with_data = 0
     for hy, hm in months:
         date_from, date_to, _ = _month_bounds(hy, hm)
@@ -427,18 +430,9 @@ def suggest_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
         if not rows and not ad_rows:
             continue
         months_with_data += 1
-        month_orders_units = sum(r.ordered_units for r in rows)
-        month_orders_sum = sum(float(r.ordered_sum_rub or 0) for r in rows)
-        month_buyouts_units = sum(r.delivered_units for r in rows)
-        month_buyouts_sum = sum(float(r.delivered_sum_rub or 0) for r in rows)
-        month_ad_spend = sum(float(s or 0) for s in ad_rows)
-        orders_units += month_orders_units
-        orders_sum += month_orders_sum
-        buyouts_units += month_buyouts_units
-        buyouts_sum += month_buyouts_sum
-        ad_spend += month_ad_spend
-        if product.cost_price_rub is not None:
-            profit_sum += month_buyouts_sum - float(product.cost_price_rub) * month_buyouts_units - month_ad_spend
+        orders_units += sum(r.ordered_units for r in rows)
+        orders_sum += sum(float(r.ordered_sum_rub or 0) for r in rows)
+        ad_spend += sum(float(s or 0) for s in ad_rows)
 
     if months_with_data == 0:
         return SuggestedPlan(product_id=product_id, based_on_months=0)
@@ -448,8 +442,5 @@ def suggest_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
         based_on_months=months_with_data,
         suggested_orders_units=round(orders_units / months_with_data),
         suggested_orders_sum_rub=round(orders_sum / months_with_data, 2),
-        suggested_buyouts_units=round(buyouts_units / months_with_data),
-        suggested_buyouts_sum_rub=round(buyouts_sum / months_with_data, 2),
         suggested_ad_budget_rub=round(ad_spend / months_with_data, 2),
-        suggested_profit_rub=round(profit_sum / months_with_data, 2) if product.cost_price_rub is not None else None,
     )

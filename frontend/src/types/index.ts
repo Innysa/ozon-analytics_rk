@@ -807,10 +807,11 @@ export interface ProductPlannerOut {
 export interface ProductMonthlyPlanIn {
   plan_orders_units?: number | null;
   plan_orders_sum_rub?: number | null;
-  plan_buyouts_units?: number | null;
-  plan_buyouts_sum_rub?: number | null;
   plan_ad_budget_rub?: number | null;
-  plan_profit_rub?: number | null;
+}
+
+export interface BulkPlanEntry extends ProductMonthlyPlanIn {
+  product_id: string;
 }
 
 export interface SuggestedPlan {
@@ -818,10 +819,7 @@ export interface SuggestedPlan {
   based_on_months: number;
   suggested_orders_units: number | null;
   suggested_orders_sum_rub: number | null;
-  suggested_buyouts_units: number | null;
-  suggested_buyouts_sum_rub: number | null;
   suggested_ad_budget_rub: number | null;
-  suggested_profit_rub: number | null;
 }
 
 // "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon

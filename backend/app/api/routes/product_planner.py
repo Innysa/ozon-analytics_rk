@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.models.membership import StoreRole
 from app.models.product import Product
 from app.models.product_monthly_plan import ProductMonthlyPlan
-from app.schemas.product_planner import ProductMonthlyPlanIn, ProductPlannerOut, SuggestedPlan
+from app.schemas.product_planner import BulkPlanIn, ProductMonthlyPlanIn, ProductPlannerOut, SuggestedPlan
 from app.services.product_planner_service import compute_product_planner, suggest_plan
 
 router = APIRouter(prefix="/api/stores/{store_id}/product-planner", tags=["product-planner"])
@@ -19,6 +19,30 @@ def _resolved_year_month(year: int | None, month: int | None) -> tuple[int, int]
         return year, month
     today = datetime.now(timezone.utc).date()
     return year or today.year, month or today.month
+
+
+def _upsert_plan(db: Session, *, store_id: str, product_id: str, year: int, month: int, payload: ProductMonthlyPlanIn) -> None:
+    """Shared by the single-product and bulk plan-saving routes — both must
+    write the exact same fields the same way. Does not commit; callers
+    batch their own commit (one for a single save, one for the whole bulk
+    table)."""
+    plan = (
+        db.query(ProductMonthlyPlan)
+        .filter(
+            ProductMonthlyPlan.store_id == store_id,
+            ProductMonthlyPlan.product_id == product_id,
+            ProductMonthlyPlan.year == year,
+            ProductMonthlyPlan.month == month,
+        )
+        .first()
+    )
+    if not plan:
+        plan = ProductMonthlyPlan(store_id=store_id, product_id=product_id, year=year, month=month)
+        db.add(plan)
+
+    plan.plan_orders_units = payload.plan_orders_units
+    plan.plan_orders_sum_rub = payload.plan_orders_sum_rub
+    plan.plan_ad_budget_rub = payload.plan_ad_budget_rub
 
 
 @router.get("", response_model=ProductPlannerOut)
@@ -46,34 +70,50 @@ def set_product_monthly_plan(
     year: int | None = None,
     month: int | None = None,
 ) -> ProductPlannerOut:
-    """Upserts the manual plan for one product/month — the only
-    user-editable input on this page. Returns the recomputed planner so the
+    """Upserts the manual plan for one product/month (Заказы/Рекламный
+    бюджет only — see ProductMonthlyPlan's own docstring for why Выкупы/
+    Прибыль are never planned). Returns the recomputed planner so the
     frontend can refresh from one response instead of a second round-trip."""
     product = db.get(Product, product_id)
     if not product or product.store_id != ctx.store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
 
     resolved_year, resolved_month = _resolved_year_month(year, month)
-    plan = (
-        db.query(ProductMonthlyPlan)
-        .filter(
-            ProductMonthlyPlan.store_id == ctx.store_id,
-            ProductMonthlyPlan.product_id == product_id,
-            ProductMonthlyPlan.year == resolved_year,
-            ProductMonthlyPlan.month == resolved_month,
-        )
-        .first()
-    )
-    if not plan:
-        plan = ProductMonthlyPlan(store_id=ctx.store_id, product_id=product_id, year=resolved_year, month=resolved_month)
-        db.add(plan)
+    _upsert_plan(db, store_id=ctx.store_id, product_id=product_id, year=resolved_year, month=resolved_month, payload=payload)
+    db.commit()
 
-    plan.plan_orders_units = payload.plan_orders_units
-    plan.plan_orders_sum_rub = payload.plan_orders_sum_rub
-    plan.plan_buyouts_units = payload.plan_buyouts_units
-    plan.plan_buyouts_sum_rub = payload.plan_buyouts_sum_rub
-    plan.plan_ad_budget_rub = payload.plan_ad_budget_rub
-    plan.plan_profit_rub = payload.plan_profit_rub
+    return compute_product_planner(db, store_id=ctx.store_id, year=resolved_year, month=resolved_month)
+
+
+@router.put("/plans/bulk", response_model=ProductPlannerOut)
+def bulk_set_product_monthly_plans(
+    payload: BulkPlanIn,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    year: int | None = None,
+    month: int | None = None,
+) -> ProductPlannerOut:
+    """Saves the plan for MANY products in one request — the mass plan-entry
+    screen on the «РНП Товары» page (one table, one save button, instead of
+    opening every product's card and calling PUT .../plan one at a time).
+    Any product_id not belonging to this store is skipped rather than
+    failing the whole batch — same reasoning as bulk_generate_drafts in
+    reviews.py: one bad row shouldn't block every other row's save."""
+    resolved_year, resolved_month = _resolved_year_month(year, month)
+    store_product_ids = {
+        p.id for p in db.query(Product.id).filter(Product.store_id == ctx.store_id).all()
+    }
+    for entry in payload.entries:
+        if entry.product_id not in store_product_ids:
+            continue
+        _upsert_plan(
+            db, store_id=ctx.store_id, product_id=entry.product_id, year=resolved_year, month=resolved_month,
+            payload=ProductMonthlyPlanIn(
+                plan_orders_units=entry.plan_orders_units,
+                plan_orders_sum_rub=entry.plan_orders_sum_rub,
+                plan_ad_budget_rub=entry.plan_ad_budget_rub,
+            ),
+        )
     db.commit()
 
     return compute_product_planner(db, store_id=ctx.store_id, year=resolved_year, month=resolved_month)

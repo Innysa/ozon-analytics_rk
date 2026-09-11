@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { MetricPlanFactActual, ProductMonthlyPlanIn, ProductPlannerOut, ProductPlannerRow, SuggestedPlan } from "../types";
+import type { BulkPlanEntry as BulkPlanEntryType, ProductPlannerOut, ProductPlannerRow, SuggestedPlan } from "../types";
+import type { MetricPlanFactActual } from "../types";
 
 const MONTH_NAMES = [
   "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
@@ -23,6 +24,8 @@ function fmtPct(v: number | null): string {
   return `${v.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%`;
 }
 
+type ViewMode = "cards" | "bulk";
+
 export function RnpTovaryPage() {
   const { currentStore } = useStore();
   const today = new Date();
@@ -30,6 +33,7 @@ export function RnpTovaryPage() {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [data, setData] = useState<ProductPlannerOut | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [view, setView] = useState<ViewMode>("cards");
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -65,28 +69,42 @@ export function RnpTovaryPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold text-slate-800">РНП Товары — {currentStore.name}</h1>
-        <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1">
-          <button onClick={() => changeMonth(-1)} className="px-2 text-slate-500 hover:text-slate-800" aria-label="Предыдущий месяц">
-            ←
-          </button>
-          <span className="min-w-[140px] text-center text-sm font-medium text-slate-700">
-            {MONTH_NAMES[month - 1]} {year}
-          </span>
-          <button onClick={() => changeMonth(1)} className="px-2 text-slate-500 hover:text-slate-800" aria-label="Следующий месяц">
-            →
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center rounded-md border border-slate-200 bg-white p-0.5">
+            <button
+              onClick={() => setView("cards")}
+              className={`rounded px-3 py-1 text-xs font-medium ${view === "cards" ? "bg-indigo-100 text-indigo-700" : "text-slate-500 hover:bg-slate-100"}`}
+            >
+              По карточкам
+            </button>
+            <button
+              onClick={() => setView("bulk")}
+              className={`rounded px-3 py-1 text-xs font-medium ${view === "bulk" ? "bg-indigo-100 text-indigo-700" : "text-slate-500 hover:bg-slate-100"}`}
+            >
+              Массовый ввод плана
+            </button>
+          </div>
+          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1">
+            <button onClick={() => changeMonth(-1)} className="px-2 text-slate-500 hover:text-slate-800" aria-label="Предыдущий месяц">
+              ←
+            </button>
+            <span className="min-w-[140px] text-center text-sm font-medium text-slate-700">
+              {MONTH_NAMES[month - 1]} {year}
+            </span>
+            <button onClick={() => changeMonth(1)} className="px-2 text-slate-500 hover:text-slate-800" aria-label="Следующий месяц">
+              →
+            </button>
+          </div>
         </div>
       </div>
 
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-        План вводится вручную по каждому товару (кнопка «Предложить план» подставит среднее за последние месяцы в
-        поля — само по себе нажатие ничего не сохраняет, план нужно сохранить отдельно). «Прогноз мес.» — линейная
-        экстраполяция факта на основе прошедших дней месяца. «Хватит на» — по темпу продаж текущего календарного
-        месяца. «Локализация» пока не реализована — Ozon не подтвердил метод Seller API для получения доли локальных
-        продаж по товару программно (в кабинете это раздел «Локальность продаж», без API-эквивалента в списке
-        методов, доступных этому ключу).
+        План вводится только по «Заказы» и «Рекламный бюджет» — «Выкупы» и «Прибыль» показывают только прогноз и
+        факт. «Прогноз мес.» — линейная экстраполяция факта на основе прошедших дней месяца. «Хватит на» — по темпу
+        продаж текущего календарного месяца. «Локализация» пока не реализована — Ozon не подтвердил метод Seller
+        API для получения доли локальных продаж по товару программно (в кабинете это раздел «Локальность продаж»).
       </div>
 
       {!data ? (
@@ -95,6 +113,8 @@ export function RnpTovaryPage() {
         <div className="rounded-md border border-slate-200 bg-white p-6 text-center text-slate-500">
           В магазине нет товаров.
         </div>
+      ) : view === "bulk" ? (
+        <BulkPlanTable rows={data.rows} storeId={currentStore.id} year={year} month={month} onSaved={load} />
       ) : (
         <div className="space-y-3">
           {data.total && <ProductPlannerCard row={data.total} isTotal />}
@@ -118,7 +138,7 @@ function MetricGroupRow({
   label,
   metric,
   unit,
-  editable,
+  plannable,
   editSumValue,
   editUnitsValue,
   onEditSum,
@@ -127,23 +147,25 @@ function MetricGroupRow({
   label: string;
   metric: MetricPlanFactActual;
   unit: "sum_and_units" | "sum_only";
-  editable: boolean;
+  plannable: boolean;
   editSumValue?: string;
   editUnitsValue?: string;
   onEditSum?: (v: string) => void;
   onEditUnits?: (v: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 border-b border-slate-100 py-2 last:border-b-0 md:grid-cols-6">
+    <div
+      className={`grid grid-cols-2 gap-2 border-b border-slate-100 py-2 last:border-b-0 ${plannable ? "md:grid-cols-6" : "md:grid-cols-4"}`}
+    >
       <div className="text-xs font-medium text-slate-600 md:col-span-1">{label}</div>
-      <div className="text-xs text-slate-500">
-        План день
-        <div className="font-medium text-slate-700">{fmtRub(metric.plan_day_rub)}</div>
-        {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.plan_day_units)} шт</div>}
-      </div>
-      <div className="text-xs text-slate-500">
-        {editable ? (
-          <>
+      {plannable && (
+        <>
+          <div className="text-xs text-slate-500">
+            План день
+            <div className="font-medium text-slate-700">{fmtRub(metric.plan_day_rub)}</div>
+            {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.plan_day_units)} шт</div>}
+          </div>
+          <div className="text-xs text-slate-500">
             План месяц
             <input
               type="number"
@@ -161,15 +183,9 @@ function MetricGroupRow({
                 placeholder="шт"
               />
             )}
-          </>
-        ) : (
-          <>
-            План месяц
-            <div className="font-medium text-slate-700">{fmtRub(metric.plan_month_rub)}</div>
-            {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.plan_month_units)} шт</div>}
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
       <div className="text-xs text-slate-500">
         Прогноз мес.
         <div className="font-medium text-slate-700">{fmtRub(metric.forecast_month_rub)}</div>
@@ -206,10 +222,7 @@ function ProductPlannerCard({
   const [edit, setEdit] = useState({
     orders_units: row.orders.plan_month_units?.toString() ?? "",
     orders_sum: row.orders.plan_month_rub?.toString() ?? "",
-    buyouts_units: row.buyouts.plan_month_units?.toString() ?? "",
-    buyouts_sum: row.buyouts.plan_month_rub?.toString() ?? "",
     ad_budget: row.ad_budget.plan_month_rub?.toString() ?? "",
-    profit: row.profit.plan_month_rub?.toString() ?? "",
   });
 
   const parseNum = (v: string): number | null => (v.trim() === "" ? null : Number(v));
@@ -219,15 +232,11 @@ function ProductPlannerCard({
     setSaving(true);
     setNotice(null);
     try {
-      const payload: ProductMonthlyPlanIn = {
+      await api.put(`/stores/${storeId}/product-planner/products/${row.product_id}/plan?year=${year}&month=${month}`, {
         plan_orders_units: parseNum(edit.orders_units),
         plan_orders_sum_rub: parseNum(edit.orders_sum),
-        plan_buyouts_units: parseNum(edit.buyouts_units),
-        plan_buyouts_sum_rub: parseNum(edit.buyouts_sum),
         plan_ad_budget_rub: parseNum(edit.ad_budget),
-        plan_profit_rub: parseNum(edit.profit),
-      };
-      await api.put(`/stores/${storeId}/product-planner/products/${row.product_id}/plan?year=${year}&month=${month}`, payload);
+      });
       setNotice("План сохранён.");
       onSaved?.();
     } catch (err) {
@@ -251,10 +260,7 @@ function ProductPlannerCard({
       setEdit({
         orders_units: suggestion.suggested_orders_units?.toString() ?? "",
         orders_sum: suggestion.suggested_orders_sum_rub?.toString() ?? "",
-        buyouts_units: suggestion.suggested_buyouts_units?.toString() ?? "",
-        buyouts_sum: suggestion.suggested_buyouts_sum_rub?.toString() ?? "",
         ad_budget: suggestion.suggested_ad_budget_rub?.toString() ?? "",
-        profit: suggestion.suggested_profit_rub?.toString() ?? "",
       });
       setNotice(`Предложено по среднему за ${suggestion.based_on_months} мес. — проверьте и сохраните, если подходит.`);
     } catch (err) {
@@ -313,38 +319,22 @@ function ProductPlannerCard({
               label="Заказы"
               metric={row.orders}
               unit="sum_and_units"
-              editable={!isTotal}
+              plannable={!isTotal}
               editSumValue={edit.orders_sum}
               editUnitsValue={edit.orders_units}
               onEditSum={(v) => setEdit((s) => ({ ...s, orders_sum: v }))}
               onEditUnits={(v) => setEdit((s) => ({ ...s, orders_units: v }))}
             />
-            <MetricGroupRow
-              label="Выкупы"
-              metric={row.buyouts}
-              unit="sum_and_units"
-              editable={!isTotal}
-              editSumValue={edit.buyouts_sum}
-              editUnitsValue={edit.buyouts_units}
-              onEditSum={(v) => setEdit((s) => ({ ...s, buyouts_sum: v }))}
-              onEditUnits={(v) => setEdit((s) => ({ ...s, buyouts_units: v }))}
-            />
+            <MetricGroupRow label="Выкупы" metric={row.buyouts} unit="sum_and_units" plannable={false} />
             <MetricGroupRow
               label={`Рекламный бюджет (ДРР ${fmtPct(row.drr_pct_actual)})`}
               metric={row.ad_budget}
               unit="sum_only"
-              editable={!isTotal}
+              plannable={!isTotal}
               editSumValue={edit.ad_budget}
               onEditSum={(v) => setEdit((s) => ({ ...s, ad_budget: v }))}
             />
-            <MetricGroupRow
-              label="Прибыль (с ДРР)"
-              metric={row.profit}
-              unit="sum_only"
-              editable={!isTotal}
-              editSumValue={edit.profit}
-              onEditSum={(v) => setEdit((s) => ({ ...s, profit: v }))}
-            />
+            <MetricGroupRow label="Прибыль (с ДРР)" metric={row.profit} unit="sum_only" plannable={false} />
           </div>
 
           {!isTotal && (
@@ -372,45 +362,65 @@ function ProductPlannerCard({
             </div>
           )}
 
-          {showDaily && (
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500">
-                    <th className="py-1">Дата</th>
-                    <th>Заказы, шт (сумма)</th>
-                    <th>Выкупы, шт (сумма)</th>
-                    <th>Реклама</th>
-                    <th>Прибыль</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {row.daily.map((d) => (
-                    <tr key={d.date} className="border-b border-slate-100">
-                      <td className="py-1">{d.date}</td>
-                      <td>
-                        {d.orders_units} ({fmtRub(d.orders_sum_rub)})
-                      </td>
-                      <td>
-                        {d.buyouts_units} ({fmtRub(d.buyouts_sum_rub)})
-                      </td>
-                      <td>{fmtRub(d.ad_spend_rub)}</td>
-                      <td>{fmtRub(d.profit_rub)}</td>
-                    </tr>
-                  ))}
-                  {row.daily.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="py-2 text-center text-slate-400">
-                        Нет данных за этот месяц.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {showDaily && <DailyBreakdownTable row={row} />}
         </div>
       )}
+    </div>
+  );
+}
+
+function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
+  if (row.daily.length === 0) {
+    return <div className="mt-3 rounded-md border border-dashed border-slate-200 p-3 text-center text-xs text-slate-400">Нет данных за этот месяц.</div>;
+  }
+  return (
+    <div className="mt-3 overflow-x-auto">
+      <table className="text-left text-xs">
+        <thead>
+          <tr className="border-b border-slate-200 text-slate-500">
+            <th className="py-1 pr-3">Показатель</th>
+            {row.daily.map((d) => (
+              <th key={d.date} className="whitespace-nowrap px-2">
+                {d.date}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, шт (сумма)</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {d.orders_units} ({fmtRub(d.orders_sum_rub)})
+              </td>
+            ))}
+          </tr>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт (сумма)</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {d.buyouts_units} ({fmtRub(d.buyouts_sum_rub)})
+              </td>
+            ))}
+          </tr>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Рекламный бюджет</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {fmtRub(d.ad_spend_rub)}
+              </td>
+            ))}
+          </tr>
+          <tr>
+            <td className="py-1 pr-3 font-medium text-slate-600">Прибыль</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {fmtRub(d.profit_rub)}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -421,6 +431,129 @@ function IndicatorTile({ label, value, sub, muted }: { label: string; value: str
       <div className="text-[11px] text-slate-500">{label}</div>
       <div className={`text-sm font-medium ${muted ? "text-slate-400" : "text-slate-800"}`}>{value}</div>
       {sub && <div className="text-[10px] text-slate-400">{sub}</div>}
+    </div>
+  );
+}
+
+function BulkPlanTable({
+  rows,
+  storeId,
+  year,
+  month,
+  onSaved,
+}: {
+  rows: ProductPlannerRow[];
+  storeId: string;
+  year: number;
+  month: number;
+  onSaved: () => void;
+}) {
+  const [edits, setEdits] = useState<Record<string, { orders_units: string; orders_sum: string; ad_budget: string }>>(() =>
+    Object.fromEntries(
+      rows.map((r) => [
+        r.product_id as string,
+        {
+          orders_units: r.orders.plan_month_units?.toString() ?? "",
+          orders_sum: r.orders.plan_month_rub?.toString() ?? "",
+          ad_budget: r.ad_budget.plan_month_rub?.toString() ?? "",
+        },
+      ])
+    )
+  );
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const setField = (productId: string, field: "orders_units" | "orders_sum" | "ad_budget", value: string) => {
+    setEdits((prev) => ({ ...prev, [productId]: { ...prev[productId], [field]: value } }));
+  };
+
+  const parseNum = (v: string): number | null => (v.trim() === "" ? null : Number(v));
+
+  const saveAll = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const entries: BulkPlanEntryType[] = rows.map((r) => ({
+        product_id: r.product_id as string,
+        plan_orders_units: parseNum(edits[r.product_id as string]?.orders_units ?? ""),
+        plan_orders_sum_rub: parseNum(edits[r.product_id as string]?.orders_sum ?? ""),
+        plan_ad_budget_rub: parseNum(edits[r.product_id as string]?.ad_budget ?? ""),
+      }));
+      await api.put(`/stores/${storeId}/product-planner/plans/bulk?year=${year}&month=${month}`, { entries });
+      setNotice(`План сохранён для ${entries.length} товаров.`);
+      onSaved();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка сохранения плана");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-slate-500">
+          Проставьте план по заказам и рекламному бюджету сразу для всех товаров, затем сохраните одной кнопкой.
+        </p>
+        <button
+          onClick={saveAll}
+          disabled={saving}
+          className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {saving ? "Сохранение..." : "Сохранить план для всех"}
+        </button>
+      </div>
+      {notice && <p className="mb-2 text-xs text-slate-500">{notice}</p>}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-200 text-slate-500">
+              <th className="py-1">Товар</th>
+              <th>План заказов, шт</th>
+              <th>План заказов, ₽</th>
+              <th>План рекламного бюджета, ₽</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const productId = r.product_id as string;
+              const e = edits[productId] ?? { orders_units: "", orders_sum: "", ad_budget: "" };
+              return (
+                <tr key={productId} className="border-b border-slate-100">
+                  <td className="max-w-[240px] truncate py-1.5 pr-2">
+                    <div className="truncate font-medium text-slate-700">{r.product_name}</div>
+                    {r.product_sku && <div className="text-[10px] text-slate-400">SKU {r.product_sku}</div>}
+                  </td>
+                  <td className="pr-2">
+                    <input
+                      type="number"
+                      value={e.orders_units}
+                      onChange={(ev) => setField(productId, "orders_units", ev.target.value)}
+                      className="w-24 rounded border border-slate-300 px-1.5 py-0.5"
+                    />
+                  </td>
+                  <td className="pr-2">
+                    <input
+                      type="number"
+                      value={e.orders_sum}
+                      onChange={(ev) => setField(productId, "orders_sum", ev.target.value)}
+                      className="w-28 rounded border border-slate-300 px-1.5 py-0.5"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      value={e.ad_budget}
+                      onChange={(ev) => setField(productId, "ad_budget", ev.target.value)}
+                      className="w-28 rounded border border-slate-300 px-1.5 py-0.5"
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

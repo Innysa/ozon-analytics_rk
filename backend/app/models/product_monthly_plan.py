@@ -10,19 +10,19 @@ stores only MONTHLY figures, not a separate daily one: the planner's "План
 (confirmed from the user's own reference spreadsheet screenshot — День ≈
 Месяц / 30), not stored redundantly.
 
-Four plan figures, matching the four metric groups on the planner page:
+Only TWO of the planner page's four metric groups are ever planned here —
+confirmed with the user (2026-09-11): "Планы ставим только по «Заказы» и
+«Рекламный бюджет» — по «Выкупы» и «Прибыль» план никогда не вводим."
+Выкупы/Прибыль still show Прогноз/Факт on the page — computed straight
+from ProductOrderDailyStatistic/ad spend/cost price, nothing to plan
+against — this table simply has no columns for them (an earlier version
+did; removed once the user clarified they're never used, rather than kept
+as permanently-unused nullable columns):
   - Заказы: plan_orders_units, plan_orders_sum_rub
-  - Выкупы: plan_buyouts_units, plan_buyouts_sum_rub
   - Рекламный бюджет: plan_ad_budget_rub (no unit — money only, like
     AdvertisingDailyStatistic.spend_rub)
-  - Прибыль: plan_profit_rub (one figure, no unit — the "Прибыль" group on
-    the planner page is money-only, unlike Заказы/Выкупы)
 
-All four are nullable — a product can have a plan for some metrics and not
-others (e.g. a seller might only ever set a Заказы plan and leave Прибыль
-unplanned), and the planner page must show "план не задан" per metric
-rather than a fabricated 0.
-"""
+Both nullable — a product can have one planned and not the other."""
 from sqlalchemy import ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,10 +44,7 @@ class ProductMonthlyPlan(TimestampMixin, Base):
 
     plan_orders_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_orders_sum_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
-    plan_buyouts_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    plan_buyouts_sum_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     plan_ad_budget_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
-    plan_profit_rub: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
 
     store = relationship("Store")
     product = relationship("Product")
