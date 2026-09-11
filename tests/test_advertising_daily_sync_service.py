@@ -74,7 +74,11 @@ def test_no_active_campaigns_reports_a_clear_error(db_session, two_stores_with_u
     assert "активных кампаний" in outcome.errors[0]
 
 
-def test_paused_campaign_is_not_synced(db_session, two_stores_with_users):
+def test_paused_campaign_is_skipped_on_default_recent_window(db_session, two_stores_with_users):
+    """No explicit date_from/date_to — the routine scheduled path, a recent
+    rolling window. A stopped campaign is unlikely to have fresh spend
+    there, so skipping it is a real optimization (fewer batches per
+    routine run)."""
     d = two_stores_with_users
     _make_running_campaign(db_session, d["store_a"].id, "111")
     from app.models.advertising_campaign import AdvertisingCampaign
@@ -85,11 +89,39 @@ def test_paused_campaign_is_not_synced(db_session, two_stores_with_users):
     db_session.flush()
 
     client = FakeOzonPerformanceClient({"uuid:111": _zip_for_ids(["111"])})
-    sync_advertising_daily_statistics(
+    sync_advertising_daily_statistics(db_session, store_id=d["store_a"].id, client=client)
+
+    assert client.create_calls == [("111",)]
+
+
+def test_paused_campaign_is_included_on_explicit_historical_backfill(db_session, two_stores_with_users):
+    """An explicit date_from/date_to (a manual historical backfill) DOES
+    include a since-stopped campaign — its current state says nothing
+    about whether it was running during that past window, and state has
+    no history to check instead. Regression for a real account (2026-09-11)
+    whose Performance-API ad spend for a past window came in ~29% below
+    the same window's cash-flow figure because a campaign stopped between
+    that window and the backfill was silently excluded."""
+    d = two_stores_with_users
+    _make_running_campaign(db_session, d["store_a"].id, "111")
+    from app.models.advertising_campaign import AdvertisingCampaign
+    paused = AdvertisingCampaign(
+        store_id=d["store_a"].id, ozon_campaign_id="222", name="Пауза", state="CAMPAIGN_STATE_STOPPED",
+    )
+    db_session.add(paused)
+    db_session.flush()
+
+    client = FakeOzonPerformanceClient({
+        "uuid:111,222": _zip_for_ids(["111", "222"]),
+        "uuid:222,111": _zip_for_ids(["111", "222"]),
+    })
+    outcome = sync_advertising_daily_statistics(
         db_session, store_id=d["store_a"].id, client=client, date_from=date(2026, 9, 1), date_to=date(2026, 9, 1),
     )
 
-    assert client.create_calls == [("111",)]
+    assert len(client.create_calls) == 1
+    assert set(client.create_calls[0]) == {"111", "222"}
+    assert outcome.errors == []
 
 
 def test_single_batch_creates_rows(db_session, two_stores_with_users):

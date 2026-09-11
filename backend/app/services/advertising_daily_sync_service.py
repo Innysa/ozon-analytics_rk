@@ -177,14 +177,38 @@ def sync_advertising_daily_statistics(
     date_from_str = resolved_date_from.isoformat()
     date_to_str = resolved_date_to.isoformat()
 
-    campaigns = (
-        db.query(AdvertisingCampaign)
-        .filter(AdvertisingCampaign.store_id == store_id, AdvertisingCampaign.state == "CAMPAIGN_STATE_RUNNING")
-        .all()
-    )
+    campaigns_query = db.query(AdvertisingCampaign).filter(AdvertisingCampaign.store_id == store_id)
+    if date_from is None and date_to is None:
+        # Default/scheduled path (no explicit range — the recent rolling
+        # ADVERTISING_STATS_DEFAULT_LOOKBACK_DAYS window): a campaign that's
+        # already stopped is very unlikely to have fresh spend in that
+        # window, so skipping it is a real optimization (fewer batches per
+        # routine run) with little real cost.
+        #
+        # NOT applied when the caller passes an explicit date_from/date_to
+        # (a manual historical backfill) — see below.
+        campaigns_query = campaigns_query.filter(AdvertisingCampaign.state == "CAMPAIGN_STATE_RUNNING")
+    # `state` is a single mutable column, overwritten to whatever Ozon
+    # reports as CURRENT on every campaign-list sync — no history is kept
+    # (AdvertisingCampaign.date_from/date_to exist on the model but are
+    # never actually populated by the campaign-list sync route, so they
+    # can't be used either). That means a campaign's state at sync time says
+    # nothing about whether it was running during an EXPLICITLY requested
+    # historical window — filtering it out there silently and permanently
+    # drops real spend for any campaign paused/archived since. CONFIRMED
+    # real-account symptom (2026-09-11): a store's Дашборд ad spend for
+    # 2026-09-01..09-06 (151 063.82 ₽, Performance API) came in ~29% below
+    # the SAME window's cash-flow MarketplaceServiceCostPerClick figure
+    # (195 322.22 ₽) even after ruling out the two earlier bugs (a real
+    # data gap, and comparing mismatched date windows) — a campaign that
+    # stopped between 09-06 and whenever this sync last ran is the leading
+    # remaining explanation, so a backfill must not exclude it.
+    campaigns = campaigns_query.all()
     if not campaigns:
         outcome.errors.append(
-            "Нет активных кампаний (CAMPAIGN_STATE_RUNNING) — сначала синхронизируйте список кампаний."
+            "Нет кампаний для синхронизации — сначала синхронизируйте список кампаний."
+            if date_from or date_to
+            else "Нет активных кампаний (CAMPAIGN_STATE_RUNNING) — сначала синхронизируйте список кампаний."
         )
         return outcome
 
