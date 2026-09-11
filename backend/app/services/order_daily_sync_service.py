@@ -65,11 +65,55 @@ from app.core.config import get_settings
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
+from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.services.ozon.exceptions import OzonAPIError
 from app.services.ozon.schemas import OzonPostingItem
 
 MAX_PAGES = 50
 PAGE_LIMIT = 1000
+
+# A RUNNING SyncRun older than this is treated as abandoned (crashed worker,
+# container restart mid-run), not a real in-flight sync — see
+# find_blocking_running_sync()'s own docstring for why this exists at all.
+RUNNING_LOCK_STALE_MINUTES = 30
+
+
+def find_blocking_running_sync(db: Session, *, store_id: str) -> SyncRun | None:
+    """Returns an already-RUNNING orders SyncRun for this store if one
+    genuinely appears still in flight, else None — callers should refuse to
+    start a new run rather than let two overlap.
+
+    CONFIRMED real bug on a real account (2026-09-11): nothing previously
+    stopped two order-sync runs for the same store from overlapping — e.g.
+    a manual "Обновить заказы (авто)" click while the daily scheduled job
+    (or an earlier manual click still finishing its retries) was mid-run.
+    sync_order_daily_statistics() fully REPLACES each day's row from that
+    run's own freshly-fetched data (see _apply_sku_bucket/_apply_bucket),
+    so this isn't an additive double-count — but with no ordering guarantee
+    between two concurrent runs' commits, whichever one happens to commit
+    LAST for a given day simply wins, even if it started with an older or
+    narrower fetch than the other. On the real account this investigation
+    started from, a burst of manual re-triggers while chasing an unrelated
+    429 issue left exactly this kind of stale-overwrites-fresh result: a
+    "successful" run's correct numbers for several days got silently
+    clobbered moments later by a slower, already-in-flight older run
+    finishing after it.
+
+    A RUNNING row older than RUNNING_LOCK_STALE_MINUTES is NOT treated as
+    blocking — otherwise one interrupted run (worker crash, deploy restart)
+    would wedge this store's orders sync forever with nothing to unstick
+    it."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=RUNNING_LOCK_STALE_MINUTES)
+    return (
+        db.query(SyncRun)
+        .filter(
+            SyncRun.store_id == store_id,
+            SyncRun.source_type == SyncSourceType.OZON_ORDERS_API,
+            SyncRun.status == SyncStatus.RUNNING,
+            SyncRun.started_at >= cutoff,
+        )
+        .first()
+    )
 
 
 @dataclass

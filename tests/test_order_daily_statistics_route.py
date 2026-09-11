@@ -77,6 +77,30 @@ def test_sync_without_seller_credentials_returns_400(client, two_stores_with_use
     assert resp.status_code == 400
 
 
+def test_sync_returns_409_when_a_sync_is_already_running(client, db_session, two_stores_with_users):
+    """Regression test for a real production race (2026-09-11): two
+    concurrent order-sync runs for the same store (a manual click while
+    another was still finishing) had no mutual exclusion — REPLACE-style
+    upserts mean whichever run commits LAST simply wins, even with older
+    data than the other. See order_daily_sync_service.find_blocking_running_sync's
+    own docstring."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
+
+    d = two_stores_with_users
+    _setup_store_with_seller_creds(db_session, d["store_a"].id)
+    db_session.add(SyncRun(
+        store_id=d["store_a"].id, source_type=SyncSourceType.OZON_ORDERS_API, status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-orders")
+    assert resp.status_code == 409
+
+
 def test_sync_end_to_end_creates_order_daily_statistics_and_syncrun(client, db_session, two_stores_with_users, monkeypatch):
     import app.api.routes.sync as sync_routes
     from app.db.session import SessionLocal as RealSessionLocal

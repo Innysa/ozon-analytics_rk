@@ -20,7 +20,11 @@ from app.db.session import SessionLocal
 from app.models.ozon_credentials import OzonCredentials
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.services.audit import record_audit
-from app.services.order_daily_sync_service import skipped_no_process_date_note, sync_order_daily_statistics
+from app.services.order_daily_sync_service import (
+    find_blocking_running_sync,
+    skipped_no_process_date_note,
+    sync_order_daily_statistics,
+)
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError
@@ -32,6 +36,16 @@ _scheduler: BackgroundScheduler | None = None
 
 def _run_one_store(db: Session, creds: OzonCredentials) -> None:
     store_id = creds.store_id
+    if find_blocking_running_sync(db, store_id=store_id):
+        # A manual "Обновить заказы (авто)" run (or a still-finishing earlier
+        # scheduled run) is already in flight for this store — see
+        # find_blocking_running_sync()'s own docstring for the real race this
+        # guards against. Skip this store this tick rather than risk two
+        # overlapping runs clobbering each other's writes; tomorrow's run
+        # picks it up as usual.
+        logger.info("Заказы: пропускаю плановый автосбор для store_id=%s — синхронизация уже выполняется", store_id)
+        return
+
     run = SyncRun(
         store_id=store_id,
         source_type=SyncSourceType.OZON_ORDERS_API,

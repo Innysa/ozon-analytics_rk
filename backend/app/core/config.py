@@ -166,12 +166,17 @@ class Settings(BaseSettings):
     # other chunks (each chunk's postings that DID fetch are still used).
     ORDER_STATS_SYNC_CHUNK_DAYS: int = 5
     ORDER_STATS_SCHEDULER_ENABLED: bool = True
-    # Runs after the advertising-stats (3:00) and search-query-stats (4:00)
-    # jobs, same fixed-daily-slot approximation as those — this app has no
-    # job-chaining primitive (see advertising_ai_review_scheduler's own
-    # docstring for why "run right after X" is always a fixed time here).
-    ORDER_STATS_SCHEDULER_HOUR_UTC: int = 3
-    ORDER_STATS_SCHEDULER_MINUTE_UTC: int = 30
+    # Moved to 00:00 UTC (confirmed 2026-09-11, explicit seller request) —
+    # was 03:30 UTC ("after the advertising-stats/search-query-stats jobs",
+    # same fixed-daily-slot approximation those still use), but 03:30 UTC =
+    # 06:30 Moscow time left this seller looking at yesterday's numbers for
+    # most of their morning in a timezone ahead of Moscow. No longer
+    # sequenced after the other 3:00/4:00 UTC jobs — this app has no
+    # job-chaining primitive anyway (see advertising_ai_review_scheduler's
+    # own docstring), so that ordering was never guaranteed in the first
+    # place, just a coincidence of the old fixed times.
+    ORDER_STATS_SCHEDULER_HOUR_UTC: int = 0
+    ORDER_STATS_SCHEDULER_MINUTE_UTC: int = 0
 
     # Automatic per-product funnel sync (app.services.product_analytics_daily_
     # sync_service) — Ozon Seller API POST /v1/analytics/data, Premium Plus/Pro

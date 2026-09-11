@@ -20,7 +20,11 @@ from app.models.user import User
 from app.services.advertising_daily_sync_service import sync_advertising_daily_statistics
 from app.services.audit import record_audit
 from app.services.cash_flow_statement_sync_service import sync_cash_flow_statement_periods
-from app.services.order_daily_sync_service import skipped_no_process_date_note, sync_order_daily_statistics
+from app.services.order_daily_sync_service import (
+    find_blocking_running_sync,
+    skipped_no_process_date_note,
+    sync_order_daily_statistics,
+)
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
@@ -825,6 +829,14 @@ def sync_ozon_orders(
     creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
     if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+
+    if find_blocking_running_sync(db, store_id=ctx.store_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Синхронизация заказов для этого магазина уже выполняется — дождитесь её завершения "
+            "(см. «Журнал синхронизаций»). Повторный запуск сейчас рискует тем, что более старый прогон "
+            "допишется позже и перезапишет более свежие данные.",
+        )
 
     run = SyncRun(
         store_id=ctx.store_id,
