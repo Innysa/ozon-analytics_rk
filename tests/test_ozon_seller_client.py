@@ -232,6 +232,30 @@ def test_get_cash_flow_statement_sends_expected_path_and_body():
     assert result["result"]["cash_flows"][0]["orders_amount"] == 5197686
 
 
+def test_get_rating_summary_sends_expected_path_and_body():
+    """CONFIRMED contract (real account, 2026-09-11, via
+    backend/scripts/debug_rating_summary.py) — see get_rating_summary()'s
+    own docstring and app.models.store_rating_summary.StoreRatingSummary's
+    docstring for the full shape."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        return_value=_mock_post(
+            200,
+            {
+                "localization_index": {"localization_percentage": 65, "calculation_date": "2026-09-04T00:00:00Z"},
+                "premium": True,
+            },
+        )
+    )
+
+    result = client.get_rating_summary()
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v1/rating/summary"
+    assert sent_kwargs["json"] == {}
+    assert result["localization_index"]["localization_percentage"] == 65
+
+
 def test_probe_finance_endpoint_posts_caller_supplied_path_and_body():
     """probe_finance_endpoint() is a generic diagnostic passthrough (see its
     own docstring) — it must send exactly the path/body the caller gives it,

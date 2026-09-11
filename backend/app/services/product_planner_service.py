@@ -13,12 +13,18 @@ sync services — this module reads, it never calls Ozon itself:
   - Прибыль/КРПП/маржа: computed here from the above plus
     Product.cost_price_rub (manually entered — no Ozon API exposes it)
 
-The only thing NOT computed here is «Локализация» (% локальных заказов):
-confirmed 2026-09-11 that Ozon's own support answer only points to a
-seller-cabinet UI report ("Локальность продаж"), not a Seller API method —
-nothing in this account's own full method list matches it either. Every
-ProductPlannerRow.localization_pct is therefore always None until a real
-API contract is confirmed (see README's "Заказы и финансы" section).
+«Локализация» (% локальных заказов) is a partial exception: CONFIRMED
+2026-09-11 (via backend/scripts/debug_rating_summary.py against a real
+account) that Ozon Seller API's POST /v1/rating/summary returns this, but
+only as a SINGLE ACCOUNT-WIDE number (`localization_index.
+localization_percentage`) — no per-product breakdown exists via API (Ozon's
+own "Локальность продаж" UI report remains the only place to see it broken
+down by SKU). So `ProductPlannerRow.localization_pct` is populated ONLY on
+the aggregated "Итого" row (from app.models.store_rating_summary.
+StoreRatingSummary, itself only ever refreshed by a manual sync — see
+app.api.routes.sync.sync_ozon_rating_summary — never by this function,
+which stays a pure read like everything else here); every per-product row's
+localization_pct stays always None.
 
 КРПП (Коэффициент рентабельности рекламных расходов) — formula CONFIRMED
 by the user directly (2026-09-11, from their own reference spreadsheet's
@@ -61,6 +67,7 @@ from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.product import Product
 from app.models.product_monthly_plan import ProductMonthlyPlan
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
+from app.models.store_rating_summary import StoreRatingSummary
 from app.schemas.product_planner import (
     DailyBreakdownEntry,
     MetricPlanFactActual,
@@ -289,6 +296,9 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
         return ProductPlannerOut(year=year, month=month, days_in_month=days_in_month, elapsed_days=elapsed_days, has_data=False)
 
     agg_by_sku = _aggregate_month(db, store_id=store_id, date_from=date_from, date_to=date_to)
+    rating_summary = db.scalars(
+        select(StoreRatingSummary).where(StoreRatingSummary.store_id == store_id)
+    ).first()
     plans = {
         p.product_id: p
         for p in db.scalars(
@@ -400,7 +410,17 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             if any_cost_known and total_cost_known_buyouts_sum > 0
             else None
         ),
-        localization_pct=None,
+        # Store-wide only (see this module's own docstring) — never per-product.
+        localization_pct=(
+            float(rating_summary.localization_pct)
+            if rating_summary and rating_summary.localization_pct is not None
+            else None
+        ),
+        localization_calculation_date=(
+            rating_summary.localization_calculation_date.date()
+            if rating_summary and rating_summary.localization_calculation_date
+            else None
+        ),
         daily=[
             DailyBreakdownEntry(
                 date=d, orders_sum_rub=round(day.orders_sum_rub, 2), orders_units=day.orders_units,

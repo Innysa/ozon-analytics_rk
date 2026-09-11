@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { BulkPlanEntry as BulkPlanEntryType, ProductPlannerOut, ProductPlannerRow, SuggestedPlan } from "../types";
+import type { BulkPlanEntry as BulkPlanEntryType, ProductPlannerOut, ProductPlannerRow, SuggestedPlan, SyncRun } from "../types";
 import type { MetricPlanFactActual } from "../types";
 
 const MONTH_NAMES = [
@@ -34,6 +34,7 @@ export function RnpTovaryPage() {
   const [data, setData] = useState<ProductPlannerOut | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("cards");
+  const [syncingLocalization, setSyncingLocalization] = useState(false);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -63,6 +64,26 @@ export function RnpTovaryPage() {
     }
     setYear(y);
     setMonth(m);
+  };
+
+  const syncLocalization = async () => {
+    setSyncingLocalization(true);
+    setNotice("Запрос % локализации по магазину через Ozon Seller API...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-rating-summary`);
+      if (run.status === "failed") {
+        setNotice(`Не удалось обновить % локализации: ${run.error_message ?? "неизвестная ошибка"}`);
+      } else if (run.error_message) {
+        setNotice(run.error_message);
+      } else {
+        setNotice("% локализации по магазину обновлён.");
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка обновления % локализации");
+    } finally {
+      setSyncingLocalization(false);
+    }
   };
 
   return (
@@ -95,6 +116,14 @@ export function RnpTovaryPage() {
               →
             </button>
           </div>
+          <button
+            onClick={syncLocalization}
+            disabled={syncingLocalization}
+            className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+            title="Обновить % локализации по магазину через Ozon Seller API (POST /v1/rating/summary)"
+          >
+            {syncingLocalization ? "Обновление..." : "Обновить локализацию"}
+          </button>
         </div>
       </div>
 
@@ -103,8 +132,9 @@ export function RnpTovaryPage() {
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
         План вводится только по «Заказы» и «Рекламный бюджет» — «Выкупы» и «Прибыль» показывают только прогноз и
         факт. «Прогноз мес.» — линейная экстраполяция факта на основе прошедших дней месяца. «Хватит на» — по темпу
-        продаж текущего календарного месяца. «Локализация» пока не реализована — Ozon не подтвердил метод Seller
-        API для получения доли локальных продаж по товару программно (в кабинете это раздел «Локальность продаж»).
+        продаж текущего календарного месяца. «Локализация» по товарам недоступна из API Ozon — Seller API отдаёт
+        только один % на весь магазин (кнопка «Обновить локализацию» выше, строка «Итого» ниже); по каждому товару
+        отдельно эту долю можно увидеть только в кабинете Ozon, в разделе «Локальность продаж».
       </div>
 
       {!data ? (
@@ -313,7 +343,20 @@ function ProductPlannerCard({
       {expanded && (
         <div className="mt-3 border-t border-slate-100 pt-3">
           <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-5">
-            <IndicatorTile label="Локализация" value="не реализовано" muted />
+            {isTotal ? (
+              <IndicatorTile
+                label="Локализация (по магазину)"
+                value={row.localization_pct !== null ? fmtPct(row.localization_pct) : "нет данных"}
+                sub={
+                  row.localization_calculation_date
+                    ? `на ${row.localization_calculation_date}`
+                    : "нажмите «Обновить локализацию»"
+                }
+                muted={row.localization_pct === null}
+              />
+            ) : (
+              <IndicatorTile label="Локализация" value="недоступно по товару" sub="есть только по магазину в «Итого»" muted />
+            )}
             <IndicatorTile
               label="Остатки"
               value={row.stock_total_units !== null ? `${row.stock_total_units} шт` : "нет данных"}

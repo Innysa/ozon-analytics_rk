@@ -790,7 +790,8 @@ export interface ProductPlannerRow {
   margin_before_ad_pct: number | null;
   margin_after_ad_pct: number | null;
 
-  localization_pct: number | null;
+  localization_pct: number | null; // только для «Итого» — Ozon отдаёт одно число на весь магазин, без разбивки по товарам
+  localization_calculation_date: string | null; // дата расчёта Ozon (YYYY-MM-DD), только для «Итого»
 
   daily: DailyBreakdownEntry[];
 }

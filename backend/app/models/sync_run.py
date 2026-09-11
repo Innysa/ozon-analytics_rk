@@ -23,6 +23,7 @@ class SyncSourceType(str, enum.Enum):
     OZON_ORDERS_API = "ozon_orders_api"  # Ozon Seller API (FBO/FBS postings — orders/revenue/buyouts/cancellations)
     OZON_ANALYTICS_DATA_API = "ozon_analytics_data_api"  # Ozon Seller API (/v1/analytics/data — per-SKU funnel, Premium Plus only)
     OZON_CASH_FLOW_STATEMENT_API = "ozon_cash_flow_statement_api"  # Ozon Seller API (/v1/finance/cash-flow-statement/list — logistics/services, replaces the now-obsolete /v3/finance/transaction/list)
+    OZON_RATING_SUMMARY_API = "ozon_rating_summary_api"  # Ozon Seller API (/v1/rating/summary — store-wide localization_index for «РНП Товары»'s Итого row)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 

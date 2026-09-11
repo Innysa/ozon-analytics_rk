@@ -165,7 +165,7 @@ def test_no_stock_data_leaves_days_of_stock_remaining_none(client, db_session, t
     assert row["days_of_stock_remaining"] is None
 
 
-def test_localization_is_always_none(client, db_session, two_stores_with_users):
+def test_localization_is_none_without_a_synced_rating_summary(client, db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
     _seed_product(db_session, store_id)
@@ -175,6 +175,35 @@ def test_localization_is_always_none(client, db_session, two_stores_with_users):
     resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
     assert resp.json()["rows"][0]["localization_pct"] is None
     assert resp.json()["total"]["localization_pct"] is None
+
+
+def test_localization_pct_on_total_row_only_after_rating_summary_sync(client, db_session, two_stores_with_users):
+    """localization_pct/localization_calculation_date come from
+    StoreRatingSummary (populated by POST .../sync/ozon-rating-summary, see
+    tests/test_rating_summary_sync.py) — store-wide, so ONLY the "Итого" row
+    ever gets a value; per-product rows stay None regardless (Ozon's
+    /v1/rating/summary has no per-SKU breakdown — see this module's own
+    docstring)."""
+    from datetime import datetime, timezone
+
+    from app.models.store_rating_summary import StoreRatingSummary
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id)
+    db_session.add(StoreRatingSummary(
+        store_id=store_id, localization_pct=65,
+        localization_calculation_date=datetime(2026, 9, 4, tzinfo=timezone.utc),
+        fetched_at=datetime.now(timezone.utc),
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    body = resp.json()
+    assert body["rows"][0]["localization_pct"] is None
+    assert body["total"]["localization_pct"] == 65
+    assert body["total"]["localization_calculation_date"] == "2026-09-04"
 
 
 def test_set_plan_persists_and_is_reflected_in_response(client, db_session, two_stores_with_users):

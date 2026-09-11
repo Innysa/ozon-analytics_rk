@@ -14,6 +14,7 @@ from app.models.membership import StoreRole
 from app.models.ozon_credentials import OzonCredentials
 from app.models.product import Product
 from app.models.review import Review, ReviewSource, ReviewStatus
+from app.models.store_rating_summary import StoreRatingSummary
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.models.user import User
 from app.services.advertising_daily_sync_service import sync_advertising_daily_statistics
@@ -1039,4 +1040,96 @@ def sync_ozon_cash_flow_statement(
     api_key = decrypt_secret(creds.api_key_encrypted)
 
     background_tasks.add_task(_run_cash_flow_statement_sync, run.id, ctx.store_id, client_id, api_key, date_from, date_to)
+    return _serialize(run)
+
+
+@router.post("/ozon-rating-summary")
+def sync_ozon_rating_summary(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Pulls the store-wide «Локализация» % (share of local sales) from
+    Ozon Seller API's POST /v1/rating/summary — the "Итого" row's own
+    Локализация tile on «РНП Товары» (app.services.product_planner_service).
+    A single fast call with no pagination/async-report flow, so this runs
+    synchronously (like sync_ozon_advertising_campaigns above), not via
+    BackgroundTasks. See app.models.store_rating_summary.StoreRatingSummary's
+    own docstring for the confirmed contract, including why this can only
+    ever be account-wide, never per-product."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_RATING_SUMMARY_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    client_id = decrypt_secret(creds.client_id_encrypted)
+    api_key = decrypt_secret(creds.api_key_encrypted)
+
+    fetched = created = updated = 0
+    error_message = None
+    try:
+        with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
+            data = client.get_rating_summary()
+        fetched = 1
+        localization_index = data.get("localization_index") or {}
+        pct = localization_index.get("localization_percentage")
+        calc_date_raw = localization_index.get("calculation_date")
+        calc_date = datetime.fromisoformat(calc_date_raw.replace("Z", "+00:00")) if calc_date_raw else None
+
+        summary = db.query(StoreRatingSummary).filter(StoreRatingSummary.store_id == ctx.store_id).first()
+        if not summary:
+            summary = StoreRatingSummary(store_id=ctx.store_id)
+            db.add(summary)
+            created = 1
+        else:
+            updated = 1
+        summary.localization_pct = pct
+        summary.localization_calculation_date = calc_date
+        summary.fetched_at = datetime.now(timezone.utc)
+
+        if pct is None:
+            run.status = SyncStatus.PARTIAL
+            error_message = (
+                "Ozon не вернул localization_index — вероятно, за последние 14 дней не было продаж."
+            )
+        else:
+            run.status = SyncStatus.SUCCESS
+    except OzonAuthError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+    except OzonFeatureUnavailable as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+    except OzonAPIError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+
+    run.finished_at = datetime.now(timezone.utc)
+    run.items_fetched = fetched
+    run.items_created = created
+    run.items_skipped_duplicate = updated
+    run.error_message = error_message
+    db.flush()
+    record_audit(
+        db,
+        action="sync_finished",
+        user_id=user.id,
+        store_id=ctx.store_id,
+        target_type="sync_run",
+        target_id=run.id,
+        result="success" if run.status == SyncStatus.SUCCESS else "failure",
+        message=error_message,
+    )
+    db.commit()
     return _serialize(run)

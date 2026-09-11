@@ -506,3 +506,17 @@ class OzonSellerClient:
             "with_details": with_details,
         }
         return self._post("/v1/finance/cash-flow-statement/list", body)
+
+    def get_rating_summary(self) -> dict:
+        """POST /v1/rating/summary — CONFIRMED (2026-09-11, real account, via
+        backend/scripts/debug_rating_summary.py) as the source for the
+        store-wide «Локализация» % shown on the «РНП Товары» planner's
+        "Итого" row. Empty body. See
+        app.models.store_rating_summary.StoreRatingSummary's own docstring
+        for the confirmed response shape (`localization_index.
+        localization_percentage`/`.calculation_date`) and why this can only
+        ever be a single account-wide number, never per-product. Returns the
+        raw parsed dict — same "raw dict, caller picks fields" pattern as
+        get_cash_flow_statement(), since only
+        app.api.routes.sync's rating-summary sync route reads from it."""
+        return self._post("/v1/rating/summary", {})
