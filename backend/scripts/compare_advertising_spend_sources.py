@@ -56,6 +56,7 @@ from sqlalchemy import func, select  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic  # noqa: E402
 from app.models.cash_flow_statement_period import CashFlowStatementPeriod  # noqa: E402
+from app.models.store import Store  # noqa: E402
 
 # Substrings a services_items_json entry's `name` is checked against to be
 # counted as "advertising" here — only MarketplaceServiceCostPerClick has
@@ -66,17 +67,48 @@ from app.models.cash_flow_statement_period import CashFlowStatementPeriod  # noq
 AD_NAME_HINTS = ("CostPerClick", "Advert", "Promo", "Boost")
 
 
+def _resolve_store_id(db, *, store_id: str | None, store_name: str | None) -> str | None:
+    """--store-id is the internal UUID (Store.id) — NOT Ozon's own numeric
+    Client-Id, which looks similar (a plain number) but matches nothing
+    here and silently returns zero rows rather than an error. --store-name
+    sidesteps needing that UUID at all: a case-insensitive substring match
+    against Store.name, run right here (no separate lookup command/script,
+    no shell-quoting to get right)."""
+    if store_id:
+        return store_id
+    matches = db.query(Store).filter(Store.name.ilike(f"%{store_name}%")).all()
+    if len(matches) == 1:
+        print(f"Найден магазин: {matches[0].id} — {matches[0].name}")
+        return matches[0].id
+    if not matches:
+        print(f"Магазин с именем, похожим на «{store_name}», не найден.")
+        return None
+    print(f"Найдено несколько магазинов, подходящих под «{store_name}» — уточните --store-id:")
+    for m in matches:
+        print(f"    {m.id}  —  {m.name}")
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--store-id", required=True)
+    parser.add_argument("--store-id", default=None, help="внутренний UUID магазина")
+    parser.add_argument("--store-name", default=None, help="имя магазина (например, 'Комфорт дом') — альтернатива --store-id")
     parser.add_argument("--date-from", required=True, help="ГГГГ-ММ-ДД")
     parser.add_argument("--date-to", required=True, help="ГГГГ-ММ-ДД")
     args = parser.parse_args()
+    if not args.store_id and not args.store_name:
+        print("Укажите --store-id или --store-name.")
+        return
     date_from = date.fromisoformat(args.date_from)
     date_to = date.fromisoformat(args.date_to)
 
     db = SessionLocal()
     try:
+        store_id = _resolve_store_id(db, store_id=args.store_id, store_name=args.store_name)
+        if not store_id:
+            return
+        args.store_id = store_id
+
         print("=" * 70)
         print(f"1) AdvertisingDailyStatistic (Performance API) — {date_from} — {date_to}")
         print("=" * 70)
@@ -142,16 +174,18 @@ def main() -> None:
                     ad_total += price
 
         print()
-        print(f"    ИТОГО по статьям, похожим на рекламу ({'/'.join(AD_NAME_HINTS)}): {round(ad_total, 2)}")
+        print(f"    ИТОГО по статьям, похожим на рекламу ({'/'.join(AD_NAME_HINTS)}): {round(ad_total, 2)} "
+              "(отрицательное — это НОРМАЛЬНО, в cash-flow суммы хранятся как списания)")
 
         print()
         print("=" * 70)
-        print("СРАВНЕНИЕ:")
-        print(f"    Performance API (Дашборд): {auto_total}")
-        print(f"    Cash-flow (похоже на рекламу): {round(ad_total, 2)}")
-        if auto_total and ad_total:
-            print(f"    Разница: {round(float(ad_total) - float(auto_total), 2)} "
-                  f"({round((float(ad_total) - float(auto_total)) / float(auto_total) * 100, 2)}%)")
+        print("СРАВНЕНИЕ (по модулю — знаки у двух источников разные по смыслу, не по ошибке):")
+        auto_abs = abs(float(auto_total))
+        ad_abs = abs(ad_total)
+        print(f"    Performance API (Дашборд), |spend_rub|: {auto_abs}")
+        print(f"    Cash-flow, |похоже на рекламу|: {round(ad_abs, 2)}")
+        if auto_abs and ad_abs:
+            print(f"    Разница: {round(ad_abs - auto_abs, 2)} ({round((ad_abs - auto_abs) / auto_abs * 100, 2)}%)")
     finally:
         db.close()
 
