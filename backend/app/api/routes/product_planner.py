@@ -42,7 +42,7 @@ def _upsert_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
 
     plan.plan_orders_units = payload.plan_orders_units
     plan.plan_orders_sum_rub = payload.plan_orders_sum_rub
-    plan.plan_ad_budget_rub = payload.plan_ad_budget_rub
+    plan.plan_ad_budget_pct = payload.plan_ad_budget_pct
 
 
 @router.get("", response_model=ProductPlannerOut)
@@ -111,7 +111,7 @@ def bulk_set_product_monthly_plans(
             payload=ProductMonthlyPlanIn(
                 plan_orders_units=entry.plan_orders_units,
                 plan_orders_sum_rub=entry.plan_orders_sum_rub,
-                plan_ad_budget_rub=entry.plan_ad_budget_rub,
+                plan_ad_budget_pct=entry.plan_ad_budget_pct,
             ),
         )
     db.commit()

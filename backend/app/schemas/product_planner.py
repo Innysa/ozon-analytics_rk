@@ -28,6 +28,7 @@ class MetricPlanFactActual(BaseModel):
     plan_month_units: int | None = None
     forecast_month_units: int | None = None
     actual_month_units: int | None = None
+    plan_pct: float | None = None  # ONLY populated for Рекламный бюджет — the actual plan input (ДРР %); plan_month_rub/plan_day_rub above are then DERIVED from it (see ProductMonthlyPlan's own docstring), not independently entered
 
 
 class DailyBreakdownEntry(BaseModel):
@@ -87,7 +88,7 @@ class ProductPlannerOut(BaseModel):
 class ProductMonthlyPlanIn(BaseModel):
     plan_orders_units: int | None = None
     plan_orders_sum_rub: float | None = None
-    plan_ad_budget_rub: float | None = None
+    plan_ad_budget_pct: float | None = None  # target ДРР %, not rubles — see ProductMonthlyPlan's own docstring
 
 
 class BulkPlanEntry(ProductMonthlyPlanIn):
@@ -113,4 +114,4 @@ class SuggestedPlan(BaseModel):
     based_on_months: int
     suggested_orders_units: int | None = None
     suggested_orders_sum_rub: float | None = None
-    suggested_ad_budget_rub: float | None = None
+    suggested_ad_budget_pct: float | None = None  # weighted average: sum(historical ad spend) / sum(historical orders sum) × 100

@@ -116,7 +116,7 @@ def _forecast(actual: float | None, elapsed_days: int, days_in_month: int) -> fl
 
 def _metric(
     *, plan_month: float | None, actual_month: float | None, elapsed_days: int, days_in_month: int,
-    plan_month_units: int | None = None, actual_month_units: int | None = None,
+    plan_month_units: int | None = None, actual_month_units: int | None = None, plan_pct: float | None = None,
 ) -> MetricPlanFactActual:
     forecast_units = _forecast(float(actual_month_units), elapsed_days, days_in_month) if actual_month_units is not None else None
     return MetricPlanFactActual(
@@ -128,7 +128,19 @@ def _metric(
         plan_month_units=plan_month_units,
         forecast_month_units=round(forecast_units) if forecast_units is not None else None,
         actual_month_units=actual_month_units,
+        plan_pct=plan_pct,
     )
+
+
+def _ad_budget_plan_rub(*, plan_pct: float | None, orders_plan_rub: float | None) -> float | None:
+    """Рекламный бюджет is planned as a target ДРР % (confirmed 2026-09-11),
+    not a ruble amount — the ruble figure shown on the page is this,
+    derived from that % against the SAME row's Заказы plan (never
+    Выкупы — that group is never planned at all, see this module's own
+    docstring)."""
+    if plan_pct is None or not orders_plan_rub:
+        return None
+    return round(plan_pct / 100 * orders_plan_rub, 2)
 
 
 def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: date) -> dict[str, _ProductAgg]:
@@ -238,9 +250,13 @@ def _row_for_product(
             actual_month_units=agg.buyouts_units,
         ),
         ad_budget=_metric(
-            plan_month=float(plan.plan_ad_budget_rub) if plan and plan.plan_ad_budget_rub is not None else None,
+            plan_month=_ad_budget_plan_rub(
+                plan_pct=float(plan.plan_ad_budget_pct) if plan and plan.plan_ad_budget_pct is not None else None,
+                orders_plan_rub=float(plan.plan_orders_sum_rub) if plan and plan.plan_orders_sum_rub is not None else None,
+            ),
             actual_month=round(agg.ad_spend_rub, 2),
             elapsed_days=elapsed_days, days_in_month=days_in_month,
+            plan_pct=float(plan.plan_ad_budget_pct) if plan and plan.plan_ad_budget_pct is not None else None,
         ),
         profit=_metric(
             # Никогда не планируется (см. модуль-docstring) — только Прогноз/Факт.
@@ -314,7 +330,10 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             any_plan = True
             total_plan_orders_units += plan.plan_orders_units or 0
             total_plan_orders_sum += float(plan.plan_orders_sum_rub or 0)
-            total_plan_ad_budget += float(plan.plan_ad_budget_rub or 0)
+            total_plan_ad_budget += _ad_budget_plan_rub(
+                plan_pct=float(plan.plan_ad_budget_pct) if plan.plan_ad_budget_pct is not None else None,
+                orders_plan_rub=float(plan.plan_orders_sum_rub) if plan.plan_orders_sum_rub is not None else None,
+            ) or 0
 
         if row.stock_total_units is not None:
             any_stock = True
@@ -347,6 +366,15 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
         ad_budget=_metric(
             plan_month=total_plan_ad_budget if any_plan else None, actual_month=round(total_agg.ad_spend_rub, 2),
             elapsed_days=elapsed_days, days_in_month=days_in_month,
+            # Weighted average across products (total planned ad rub / total
+            # planned orders rub), not a naive average of each product's own
+            # % — same "recompute from underlying sums" rule as КРПП/margin
+            # above, so one product's outlier % doesn't skew the total.
+            plan_pct=(
+                round(total_plan_ad_budget / total_plan_orders_sum * 100, 2)
+                if any_plan and total_plan_orders_sum > 0
+                else None
+            ),
         ),
         profit=_metric(
             plan_month=None,
@@ -442,5 +470,10 @@ def suggest_plan(db: Session, *, store_id: str, product_id: str, year: int, mont
         based_on_months=months_with_data,
         suggested_orders_units=round(orders_units / months_with_data),
         suggested_orders_sum_rub=round(orders_sum / months_with_data, 2),
-        suggested_ad_budget_rub=round(ad_spend / months_with_data, 2),
+        # Weighted average ДРР% (total historical ad spend / total
+        # historical orders revenue) — same reasoning as the "Итого" row's
+        # plan_pct in compute_product_planner: not an average of monthly %
+        # values, which would let a low-revenue month's noisy ratio skew
+        # the suggestion.
+        suggested_ad_budget_pct=round(ad_spend / orders_sum * 100, 2) if orders_sum > 0 else None,
     )

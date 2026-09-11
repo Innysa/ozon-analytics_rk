@@ -753,6 +753,7 @@ export interface MetricPlanFactActual {
   plan_month_units: number | null;
   forecast_month_units: number | null;
   actual_month_units: number | null;
+  plan_pct: number | null;
 }
 
 export interface DailyBreakdownEntry {
@@ -807,7 +808,7 @@ export interface ProductPlannerOut {
 export interface ProductMonthlyPlanIn {
   plan_orders_units?: number | null;
   plan_orders_sum_rub?: number | null;
-  plan_ad_budget_rub?: number | null;
+  plan_ad_budget_pct?: number | null;
 }
 
 export interface BulkPlanEntry extends ProductMonthlyPlanIn {
@@ -819,7 +820,7 @@ export interface SuggestedPlan {
   based_on_months: number;
   suggested_orders_units: number | null;
   suggested_orders_sum_rub: number | null;
-  suggested_ad_budget_rub: number | null;
+  suggested_ad_budget_pct: number | null;
 }
 
 // "РНП" — daily order/revenue/buyout/cancellation statistics from Ozon

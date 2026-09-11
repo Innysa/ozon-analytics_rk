@@ -139,26 +139,32 @@ function MetricGroupRow({
   metric,
   unit,
   plannable,
+  planMode = "rub",
   editSumValue,
   editUnitsValue,
+  editPctValue,
   onEditSum,
   onEditUnits,
+  onEditPct,
 }: {
   label: string;
   metric: MetricPlanFactActual;
   unit: "sum_and_units" | "sum_only";
   plannable: boolean;
+  planMode?: "rub" | "pct";
   editSumValue?: string;
   editUnitsValue?: string;
+  editPctValue?: string;
   onEditSum?: (v: string) => void;
   onEditUnits?: (v: string) => void;
+  onEditPct?: (v: string) => void;
 }) {
   return (
     <div
       className={`grid grid-cols-2 gap-2 border-b border-slate-100 py-2 last:border-b-0 ${plannable ? "md:grid-cols-6" : "md:grid-cols-4"}`}
     >
       <div className="text-xs font-medium text-slate-600 md:col-span-1">{label}</div>
-      {plannable && (
+      {plannable && planMode === "rub" && (
         <>
           <div className="text-xs text-slate-500">
             План день
@@ -185,6 +191,19 @@ function MetricGroupRow({
             )}
           </div>
         </>
+      )}
+      {plannable && planMode === "pct" && (
+        <div className="text-xs text-slate-500 md:col-span-2">
+          План ДРР, %
+          <input
+            type="number"
+            value={editPctValue ?? ""}
+            onChange={(e) => onEditPct?.(e.target.value)}
+            className="mt-0.5 w-full max-w-[120px] rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+            placeholder="%"
+          />
+          {metric.plan_month_rub !== null && <div className="mt-0.5 text-slate-400">≈ {fmtRub(metric.plan_month_rub)}/мес</div>}
+        </div>
       )}
       <div className="text-xs text-slate-500">
         Прогноз мес.
@@ -222,7 +241,7 @@ function ProductPlannerCard({
   const [edit, setEdit] = useState({
     orders_units: row.orders.plan_month_units?.toString() ?? "",
     orders_sum: row.orders.plan_month_rub?.toString() ?? "",
-    ad_budget: row.ad_budget.plan_month_rub?.toString() ?? "",
+    ad_budget_pct: row.ad_budget.plan_pct?.toString() ?? "",
   });
 
   const parseNum = (v: string): number | null => (v.trim() === "" ? null : Number(v));
@@ -235,7 +254,7 @@ function ProductPlannerCard({
       await api.put(`/stores/${storeId}/product-planner/products/${row.product_id}/plan?year=${year}&month=${month}`, {
         plan_orders_units: parseNum(edit.orders_units),
         plan_orders_sum_rub: parseNum(edit.orders_sum),
-        plan_ad_budget_rub: parseNum(edit.ad_budget),
+        plan_ad_budget_pct: parseNum(edit.ad_budget_pct),
       });
       setNotice("План сохранён.");
       onSaved?.();
@@ -260,7 +279,7 @@ function ProductPlannerCard({
       setEdit({
         orders_units: suggestion.suggested_orders_units?.toString() ?? "",
         orders_sum: suggestion.suggested_orders_sum_rub?.toString() ?? "",
-        ad_budget: suggestion.suggested_ad_budget_rub?.toString() ?? "",
+        ad_budget_pct: suggestion.suggested_ad_budget_pct?.toString() ?? "",
       });
       setNotice(`Предложено по среднему за ${suggestion.based_on_months} мес. — проверьте и сохраните, если подходит.`);
     } catch (err) {
@@ -331,8 +350,9 @@ function ProductPlannerCard({
               metric={row.ad_budget}
               unit="sum_only"
               plannable={!isTotal}
-              editSumValue={edit.ad_budget}
-              onEditSum={(v) => setEdit((s) => ({ ...s, ad_budget: v }))}
+              planMode="pct"
+              editPctValue={edit.ad_budget_pct}
+              onEditPct={(v) => setEdit((s) => ({ ...s, ad_budget_pct: v }))}
             />
             <MetricGroupRow label="Прибыль (с ДРР)" metric={row.profit} unit="sum_only" plannable={false} />
           </div>
@@ -388,18 +408,34 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
         </thead>
         <tbody>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, шт (сумма)</td>
+            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, шт</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2">
-                {d.orders_units} ({fmtRub(d.orders_sum_rub)})
+                {d.orders_units}
               </td>
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт (сумма)</td>
+            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, ₽</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2">
-                {d.buyouts_units} ({fmtRub(d.buyouts_sum_rub)})
+                {fmtRub(d.orders_sum_rub)}
+              </td>
+            ))}
+          </tr>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {d.buyouts_units}
+              </td>
+            ))}
+          </tr>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, ₽</td>
+            {row.daily.map((d) => (
+              <td key={d.date} className="whitespace-nowrap px-2">
+                {fmtRub(d.buyouts_sum_rub)}
               </td>
             ))}
           </tr>
@@ -448,14 +484,14 @@ function BulkPlanTable({
   month: number;
   onSaved: () => void;
 }) {
-  const [edits, setEdits] = useState<Record<string, { orders_units: string; orders_sum: string; ad_budget: string }>>(() =>
+  const [edits, setEdits] = useState<Record<string, { orders_units: string; orders_sum: string; ad_budget_pct: string }>>(() =>
     Object.fromEntries(
       rows.map((r) => [
         r.product_id as string,
         {
           orders_units: r.orders.plan_month_units?.toString() ?? "",
           orders_sum: r.orders.plan_month_rub?.toString() ?? "",
-          ad_budget: r.ad_budget.plan_month_rub?.toString() ?? "",
+          ad_budget_pct: r.ad_budget.plan_pct?.toString() ?? "",
         },
       ])
     )
@@ -463,7 +499,7 @@ function BulkPlanTable({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const setField = (productId: string, field: "orders_units" | "orders_sum" | "ad_budget", value: string) => {
+  const setField = (productId: string, field: "orders_units" | "orders_sum" | "ad_budget_pct", value: string) => {
     setEdits((prev) => ({ ...prev, [productId]: { ...prev[productId], [field]: value } }));
   };
 
@@ -477,7 +513,7 @@ function BulkPlanTable({
         product_id: r.product_id as string,
         plan_orders_units: parseNum(edits[r.product_id as string]?.orders_units ?? ""),
         plan_orders_sum_rub: parseNum(edits[r.product_id as string]?.orders_sum ?? ""),
-        plan_ad_budget_rub: parseNum(edits[r.product_id as string]?.ad_budget ?? ""),
+        plan_ad_budget_pct: parseNum(edits[r.product_id as string]?.ad_budget_pct ?? ""),
       }));
       await api.put(`/stores/${storeId}/product-planner/plans/bulk?year=${year}&month=${month}`, { entries });
       setNotice(`План сохранён для ${entries.length} товаров.`);
@@ -511,13 +547,13 @@ function BulkPlanTable({
               <th className="py-1">Товар</th>
               <th>План заказов, шт</th>
               <th>План заказов, ₽</th>
-              <th>План рекламного бюджета, ₽</th>
+              <th>План ДРР, %</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
               const productId = r.product_id as string;
-              const e = edits[productId] ?? { orders_units: "", orders_sum: "", ad_budget: "" };
+              const e = edits[productId] ?? { orders_units: "", orders_sum: "", ad_budget_pct: "" };
               return (
                 <tr key={productId} className="border-b border-slate-100">
                   <td className="max-w-[240px] truncate py-1.5 pr-2">
@@ -543,9 +579,9 @@ function BulkPlanTable({
                   <td>
                     <input
                       type="number"
-                      value={e.ad_budget}
-                      onChange={(ev) => setField(productId, "ad_budget", ev.target.value)}
-                      className="w-28 rounded border border-slate-300 px-1.5 py-0.5"
+                      value={e.ad_budget_pct}
+                      onChange={(ev) => setField(productId, "ad_budget_pct", ev.target.value)}
+                      className="w-20 rounded border border-slate-300 px-1.5 py-0.5"
                     />
                   </td>
                 </tr>

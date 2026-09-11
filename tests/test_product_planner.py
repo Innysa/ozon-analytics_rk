@@ -187,13 +187,14 @@ def test_set_plan_persists_and_is_reflected_in_response(client, db_session, two_
     resp = client.put(
         f"/api/stores/{store_id}/product-planner/products/{product.id}/plan",
         params={"year": CUR_YEAR, "month": CUR_MONTH},
-        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_rub": 500},
+        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_pct": 5},
     )
     assert resp.status_code == 200
     row = resp.json()["rows"][0]
     assert row["orders"]["plan_month_units"] == 100
     assert row["orders"]["plan_month_rub"] == 10000
-    assert row["ad_budget"]["plan_month_rub"] == 500
+    assert row["ad_budget"]["plan_pct"] == 5
+    assert row["ad_budget"]["plan_month_rub"] == 500  # derived: 5% of orders plan (10000)
     days_in_month = resp.json()["days_in_month"]
     assert row["orders"]["plan_day_rub"] == round(10000 / days_in_month, 2)
 
@@ -224,7 +225,7 @@ def test_buyouts_and_profit_never_have_a_plan(client, db_session, two_stores_wit
     resp = client.put(
         f"/api/stores/{store_id}/product-planner/products/{product.id}/plan",
         params={"year": CUR_YEAR, "month": CUR_MONTH},
-        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_rub": 500},
+        json={"plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_pct": 5},
     )
     row = resp.json()["rows"][0]
     for metric_key in ("buyouts", "profit"):
@@ -246,13 +247,14 @@ def test_bulk_set_plans_saves_multiple_products_in_one_call(client, db_session, 
         f"/api/stores/{store_id}/product-planner/plans/bulk",
         params={"year": CUR_YEAR, "month": CUR_MONTH},
         json={"entries": [
-            {"product_id": p1.id, "plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_rub": 500},
-            {"product_id": p2.id, "plan_orders_units": 50, "plan_orders_sum_rub": 5000, "plan_ad_budget_rub": 250},
+            {"product_id": p1.id, "plan_orders_units": 100, "plan_orders_sum_rub": 10000, "plan_ad_budget_pct": 5},
+            {"product_id": p2.id, "plan_orders_units": 50, "plan_orders_sum_rub": 5000, "plan_ad_budget_pct": 5},
         ]},
     )
     assert resp.status_code == 200
     rows_by_id = {r["product_id"]: r for r in resp.json()["rows"]}
     assert rows_by_id[p1.id]["orders"]["plan_month_units"] == 100
+    assert rows_by_id[p1.id]["ad_budget"]["plan_pct"] == 5
     assert rows_by_id[p1.id]["ad_budget"]["plan_month_rub"] == 500
     assert rows_by_id[p2.id]["orders"]["plan_month_units"] == 50
     assert rows_by_id[p2.id]["ad_budget"]["plan_month_rub"] == 250
@@ -372,6 +374,8 @@ def test_suggest_plan_averages_history_and_never_persists(client, db_session, tw
     m2_year, m2_month = (m1_year, m1_month - 1) if m1_month > 1 else (m1_year - 1, 12)
     _seed_order_stat(db_session, store_id, "SKU-PLAN-1", date(m1_year, m1_month, 1), ordered_units=10, ordered_sum_rub=1000, delivered_units=10, delivered_sum_rub=1000)
     _seed_order_stat(db_session, store_id, "SKU-PLAN-1", date(m2_year, m2_month, 1), ordered_units=20, ordered_sum_rub=2000, delivered_units=20, delivered_sum_rub=2000)
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", date(m1_year, m1_month, 1), spend_rub=10)  # 10/1000 = 1%
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", date(m2_year, m2_month, 1), spend_rub=100)  # 100/2000 = 5%
     db_session.commit()
 
     login(client, "owner_a@example.com", "password123")
@@ -383,6 +387,10 @@ def test_suggest_plan_averages_history_and_never_persists(client, db_session, tw
     body = resp.json()
     assert body["based_on_months"] == 2
     assert body["suggested_orders_units"] == 15  # average of 10 and 20
+    # Weighted: total ad spend (110) / total orders sum (3000) * 100 = 3.67%
+    # — NOT a naive average of each month's own ratio (1% and 5% -> 3%),
+    # which would let a low-revenue month's noisy ratio skew the result.
+    assert body["suggested_ad_budget_pct"] == round(110 / 3000 * 100, 2)
 
     from app.models.product_monthly_plan import ProductMonthlyPlan
     assert db_session.query(ProductMonthlyPlan).filter(ProductMonthlyPlan.product_id == product.id).count() == 0
@@ -419,6 +427,36 @@ def test_total_row_sums_across_products(client, db_session, two_stores_with_user
     assert len(body["rows"]) == 2
     assert body["total"]["orders"]["actual_month_units"] == 8
     assert body["total"]["orders"]["actual_month_rub"] == 800
+
+
+def test_total_row_ad_budget_plan_is_weighted_average_pct(client, db_session, two_stores_with_users):
+    """The "Итого" row's ad_budget.plan_pct must be a weighted average
+    (total planned ad rub / total planned orders rub), not a naive average
+    of each product's own %, which would let a low-revenue product's plan
+    skew the total disproportionately."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    p1 = _seed_product(db_session, store_id, sku="SKU-TOT-1", name="Товар 1")
+    p2 = _seed_product(db_session, store_id, sku="SKU-TOT-2", name="Товар 2")
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    client.put(
+        f"/api/stores/{store_id}/product-planner/products/{p1.id}/plan",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"plan_orders_sum_rub": 9000, "plan_ad_budget_pct": 1},  # -> 90 ₽ planned ad spend
+    )
+    client.put(
+        f"/api/stores/{store_id}/product-planner/products/{p2.id}/plan",
+        params={"year": CUR_YEAR, "month": CUR_MONTH},
+        json={"plan_orders_sum_rub": 1000, "plan_ad_budget_pct": 10},  # -> 100 ₽ planned ad spend
+    )
+
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": CUR_YEAR, "month": CUR_MONTH})
+    total = resp.json()["total"]
+    # Naive average of 1% and 10% would be 5.5% — weighted is (90+100)/(9000+1000)*100 = 1.9%.
+    assert total["ad_budget"]["plan_pct"] == round(190 / 10000 * 100, 2)
+    assert total["ad_budget"]["plan_month_rub"] == 190
 
 
 def test_product_planner_store_isolation(client, db_session, two_stores_with_users):
