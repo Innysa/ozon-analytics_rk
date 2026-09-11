@@ -249,3 +249,76 @@ def test_date_chunks_never_exceeds_chunk_days_per_chunk():
     assert chunks[-1][1] == date(2026, 9, 11)
     for (_, prev_end), (next_start, _) in zip(chunks, chunks[1:]):
         assert next_start == prev_end + timedelta(days=1)
+
+
+def test_sync_pauses_between_chunk_requests(db_session, monkeypatch):
+    """Regression test for a real production finding (2026-09-11): with
+    smaller 5-day chunks, a real account's FBO sync still 429'd, but on a
+    DIFFERENT random subset of chunks each run — evidence for a request-RATE
+    quota (more chunk requests per run = more chances to trip it), not a
+    per-request weight limit. ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS adds a
+    deliberate pause between chunk requests to directly reduce that rate."""
+    import app.core.config as config_module
+    import app.services.order_daily_sync_service as svc
+    from app.models.store import Store
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "2")
+    config_module.get_settings.cache_clear()
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(svc.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    class _FakeEmptyClient:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+        list_fbs_postings = list_fbo_postings
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+
+    try:
+        svc.sync_order_daily_statistics(
+            db_session, store_id=store.id, client=_FakeEmptyClient(),
+            date_from=date(2026, 9, 1), date_to=date(2026, 9, 10),
+        )
+    finally:
+        config_module.get_settings.cache_clear()
+
+    # 10-day range / 5-day chunks = 2 chunks per schema x 2 schemas (FBO, FBS) = 4 pauses.
+    assert sleep_calls == [2.0, 2.0, 2.0, 2.0]
+
+
+def test_sync_skips_pause_when_configured_to_zero(db_session, monkeypatch):
+    import app.core.config as config_module
+    import app.services.order_daily_sync_service as svc
+    from app.models.store import Store
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "0")
+    config_module.get_settings.cache_clear()
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(svc.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    class _FakeEmptyClient:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+        list_fbs_postings = list_fbo_postings
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+
+    try:
+        svc.sync_order_daily_statistics(
+            db_session, store_id=store.id, client=_FakeEmptyClient(),
+            date_from=date(2026, 9, 1), date_to=date(2026, 9, 3),
+        )
+    finally:
+        config_module.get_settings.cache_clear()
+
+    assert sleep_calls == []

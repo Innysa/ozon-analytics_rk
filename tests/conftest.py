@@ -8,6 +8,12 @@ os.environ.setdefault("APP_ENCRYPTION_KEY", "Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9
 os.environ.setdefault("ENV", "test")
 os.environ.setdefault("AI_PROVIDER", "demo")
 os.environ.setdefault("DEMO_MODE", "true")
+# Real (non-zero) by default in production — a real pause between order-sync
+# chunk requests to avoid tripping Ozon's rate limit (see
+# ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS's own comment). Tests exercise
+# multi-chunk sync_order_daily_statistics() runs directly and would
+# otherwise burn real wall-clock seconds per chunk for no reason.
+os.environ.setdefault("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "0")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 

@@ -56,6 +56,7 @@ NOT covered by this sync (see README for the full status):
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -393,6 +394,15 @@ def sync_order_daily_statistics(
             except OzonAPIError as exc:
                 outcome.errors.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}: {exc}")
                 continue
+            finally:
+                # Deliberate pause BETWEEN chunk requests, on top of the
+                # client's own per-request throttle — see
+                # ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS's own comment for
+                # why: real evidence points to a request-RATE quota, which
+                # more (smaller) chunks make easier to trip, not harder,
+                # without something actively slowing the rate back down.
+                if settings.ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS > 0:
+                    time.sleep(settings.ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS)
 
         outcome.fetched += len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)

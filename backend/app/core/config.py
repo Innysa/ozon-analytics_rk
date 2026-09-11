@@ -165,6 +165,20 @@ class Settings(BaseSettings):
     # retries is recorded in SyncOutcome.errors and does NOT abort the
     # other chunks (each chunk's postings that DID fetch are still used).
     ORDER_STATS_SYNC_CHUNK_DAYS: int = 5
+    # Deliberate pause between consecutive chunk requests (added 2026-09-11)
+    # — real evidence shifted the working theory: a real account's FBO
+    # sync kept 429ing on a DIFFERENT random subset of chunks each run
+    # (e.g. run 1 failed on 08-18–08-22 and 08-28–09-01; run 2, same
+    # store, same chunking, failed on 08-13–08-17, 08-23–08-27 and
+    # 09-02–09-06 instead) — smaller-but-more chunk requests did NOT
+    # reduce the failure rate. That pattern fits a request-RATE quota
+    # (N calls per rolling window) better than a request-WEIGHT limit —
+    # for a rate quota, more chunks per run (each its own has_next-paginated
+    # call) means MORE chances to trip it, not fewer. This pause directly
+    # targets rate rather than size: still just a starting point (Ozon
+    # publishes no confirmed number), so if 429s persist even with this,
+    # the next step is Ozon support, not tuning this blindly further.
+    ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS: float = 3.0
     ORDER_STATS_SCHEDULER_ENABLED: bool = True
     # Moved to 00:00 UTC (confirmed 2026-09-11, explicit seller request) —
     # was 03:30 UTC ("after the advertising-stats/search-query-stats jobs",
