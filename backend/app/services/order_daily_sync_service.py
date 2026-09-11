@@ -284,6 +284,22 @@ def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonP
     return all_postings
 
 
+def _date_chunks(date_from: date, date_to: date, chunk_days: int) -> list[tuple[date, date]]:
+    """Splits [date_from, date_to] into consecutive (start, end) pairs of at
+    most chunk_days each — see ORDER_STATS_SYNC_CHUNK_DAYS's own comment for
+    why this exists. chunk_days <= 0 would loop forever, so it's floored at
+    1 rather than trusted blindly (this is a config value, not user input,
+    but a bad deploy value should degrade to "many small chunks", not hang)."""
+    chunks: list[tuple[date, date]] = []
+    step = max(chunk_days, 1)
+    start = date_from
+    while start <= date_to:
+        end = min(start + timedelta(days=step - 1), date_to)
+        chunks.append((start, end))
+        start = end + timedelta(days=1)
+    return chunks
+
+
 def sync_order_daily_statistics(
     db: Session,
     *,
@@ -294,15 +310,27 @@ def sync_order_daily_statistics(
 ) -> SyncOutcome:
     """Fetches FBO + FBS postings for the period, aggregates per day, and
     upserts into OrderDailyStatistic. Commits once per fulfillment scheme
-    (FBO, then FBS), so one failing entirely doesn't lose the other."""
+    (FBO, then FBS), so one failing entirely doesn't lose the other.
+
+    The requested [date_from, date_to] window is itself split into smaller
+    `since`/`to` chunks (ORDER_STATS_SYNC_CHUNK_DAYS) before ever calling
+    Ozon — one call covering the full 30-day window turned out to trigger
+    intermittent sustained 429s on a real account's FBO postings that even
+    an 8-attempt/Retry-After-aware retry couldn't reliably survive (see
+    OzonSellerClient._post()'s own retry decorator comment for that
+    incident). Each chunk is fetched (with its own has_next pagination, same
+    as before) and failures are per-chunk: one chunk exhausting retries adds
+    a note to outcome.errors and is skipped, but does NOT discard postings
+    already fetched from other chunks in the same run — a real improvement
+    over the old all-or-nothing per-schema behavior, not just smaller
+    requests for their own sake."""
     settings = get_settings()
     outcome = SyncOutcome()
 
     today = datetime.now(timezone.utc).date()
     resolved_date_to = date_to or today
     resolved_date_from = date_from or (resolved_date_to - timedelta(days=settings.ORDER_STATS_DEFAULT_LOOKBACK_DAYS - 1))
-    date_from_ts = f"{resolved_date_from.isoformat()}T00:00:00Z"
-    date_to_ts = f"{resolved_date_to.isoformat()}T23:59:59Z"
+    chunks = _date_chunks(resolved_date_from, resolved_date_to, settings.ORDER_STATS_SYNC_CHUNK_DAYS)
 
     cost_by_sku = {
         sku: float(cost)
@@ -312,11 +340,15 @@ def sync_order_daily_statistics(
     }
 
     for schema_label, fetch_fn in (("FBO", client.list_fbo_postings), ("FBS", client.list_fbs_postings)):
-        try:
-            postings = _fetch_all_postings(fetch_fn, date_from=date_from_ts, date_to=date_to_ts)
-        except OzonAPIError as exc:
-            outcome.errors.append(f"{schema_label}: {exc}")
-            continue
+        postings: list[OzonPostingItem] = []
+        for chunk_from, chunk_to in chunks:
+            chunk_from_ts = f"{chunk_from.isoformat()}T00:00:00Z"
+            chunk_to_ts = f"{chunk_to.isoformat()}T23:59:59Z"
+            try:
+                postings.extend(_fetch_all_postings(fetch_fn, date_from=chunk_from_ts, date_to=chunk_to_ts))
+            except OzonAPIError as exc:
+                outcome.errors.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}: {exc}")
+                continue
 
         outcome.fetched += len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)

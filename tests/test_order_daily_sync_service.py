@@ -5,10 +5,15 @@ docstring / the real account dump that confirmed them: sku/offer_id/name/
 quantity/price on products[], old_price/commission_amount matched by
 product_id in financial_data.products[], status "delivered"/"cancelled" as
 real observed values."""
-from datetime import date
+from datetime import date, timedelta
 
 from app.services.ozon.schemas import OzonPostingItem, OzonPostingProductItem
-from app.services.order_daily_sync_service import aggregate_postings_by_day, aggregate_postings_by_sku_and_day, _fetch_all_postings
+from app.services.order_daily_sync_service import (
+    _date_chunks,
+    _fetch_all_postings,
+    aggregate_postings_by_day,
+    aggregate_postings_by_sku_and_day,
+)
 
 
 def _posting(*, status: str, in_process_at: str, sku: int, price: str, old_price: float, commission: float, quantity: int = 1) -> OzonPostingItem:
@@ -209,3 +214,38 @@ def test_fetch_all_postings_stops_when_has_next_is_false():
 
     assert len(result) == 1
     assert len(fetch.calls) == 1
+
+
+def test_date_chunks_splits_exact_multiple():
+    chunks = _date_chunks(date(2026, 9, 1), date(2026, 9, 10), 5)
+    assert chunks == [(date(2026, 9, 1), date(2026, 9, 5)), (date(2026, 9, 6), date(2026, 9, 10))]
+
+
+def test_date_chunks_splits_with_remainder():
+    chunks = _date_chunks(date(2026, 9, 1), date(2026, 9, 12), 5)
+    assert chunks == [
+        (date(2026, 9, 1), date(2026, 9, 5)),
+        (date(2026, 9, 6), date(2026, 9, 10)),
+        (date(2026, 9, 11), date(2026, 9, 12)),
+    ]
+
+
+def test_date_chunks_single_day_range_is_one_chunk():
+    chunks = _date_chunks(date(2026, 9, 1), date(2026, 9, 1), 5)
+    assert chunks == [(date(2026, 9, 1), date(2026, 9, 1))]
+
+
+def test_date_chunks_chunk_days_larger_than_range_is_one_chunk():
+    chunks = _date_chunks(date(2026, 9, 1), date(2026, 9, 3), 30)
+    assert chunks == [(date(2026, 9, 1), date(2026, 9, 3))]
+
+
+def test_date_chunks_never_exceeds_chunk_days_per_chunk():
+    chunks = _date_chunks(date(2026, 8, 1), date(2026, 9, 11), 5)
+    for start, end in chunks:
+        assert (end - start).days < 5
+    # covers the whole range with no gaps or overlaps
+    assert chunks[0][0] == date(2026, 8, 1)
+    assert chunks[-1][1] == date(2026, 9, 11)
+    for (_, prev_end), (next_start, _) in zip(chunks, chunks[1:]):
+        assert next_start == prev_end + timedelta(days=1)

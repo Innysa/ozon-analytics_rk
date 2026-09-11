@@ -5,6 +5,7 @@ real end-to-end run through app.services.order_daily_sync_service (not
 mocked out), matching every other sync endpoint's test conventions. Only
 the Ozon Seller API client itself is a fake, duck-typed stand-in."""
 from app.core.encryption import encrypt_secret
+from app.services.ozon.exceptions import OzonRateLimited
 from app.services.ozon.schemas import OzonPostingItem, OzonPostingListResponse, OzonPostingListResult, OzonPostingProductItem
 from tests.conftest import login
 
@@ -180,6 +181,65 @@ def test_sync_notes_postings_skipped_for_missing_in_process_at_even_on_success(c
     assert finished_run["status"] == "success"  # the missing-date posting is NOT an error
     assert finished_run["items_fetched"] == 2  # both postings were fetched...
     assert "1" in finished_run["error_message"]  # ...but the note says 1 was skipped for it
+
+
+def test_sync_splits_window_into_chunks_and_survives_one_chunk_failing(client, db_session, two_stores_with_users, monkeypatch):
+    """Regression test for a real production finding (2026-09-11): a
+    single request covering the full lookback window intermittently hit
+    sustained 429s on FBO for one real account, even with an already-more-
+    patient retry. sync_order_daily_statistics() now splits the window into
+    ORDER_STATS_SYNC_CHUNK_DAYS-sized pieces (see _date_chunks) and fetches
+    each independently — this proves the key property that motivated it:
+    ONE chunk exhausting retries and failing must NOT discard postings
+    already fetched from OTHER chunks in the same run. Uses a 10-day window
+    with the default chunk size (5 days) -> exactly 2 chunks, the first of
+    which always 429s."""
+    import app.api.routes.sync as sync_routes
+
+    class _FakeSellerClientOneChunkFails(_FakeSellerClient):
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            if date_from.startswith("2026-09-01"):
+                raise OzonRateLimited("Ozon вернул 429 Too Many Requests")
+            if offset > 0:
+                return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+            posting = _posting("delivered", "2026-09-07", 777, "1000.00", 1500.0, -100)
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[posting], has_next=False))
+
+    monkeypatch.setattr(sync_routes, "OzonSellerClient", _FakeSellerClientOneChunkFails)
+
+    class _NoCloseSessionWrapper:
+        def __init__(self, session):
+            self._session = session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sync_routes, "SessionLocal", lambda: _NoCloseSessionWrapper(db_session))
+
+    d = two_stores_with_users
+    _setup_store_with_seller_creds(db_session, d["store_a"].id)
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.post(
+        f"/api/stores/{d['store_a'].id}/sync/ozon-orders",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-10"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    runs = client.get(f"/api/stores/{d['store_a'].id}/sync/runs")
+    finished_run = next(r for r in runs.json() if r["id"] == body["id"])
+    assert finished_run["status"] == "partial"
+    assert "2026-09-01" in finished_run["error_message"]
+    assert "429" in finished_run["error_message"]
+
+    # The second chunk's data (Sep 7) still made it in, despite the first chunk failing.
+    listing = client.get(f"/api/stores/{d['store_a'].id}/orders/daily-statistics")
+    items = listing.json()["items"]
+    assert any(item["date"] == "2026-09-07" and item["delivery_schema"] == "FBO" for item in items)
 
 
 def test_store_isolation_on_daily_statistics_listing(client, db_session, two_stores_with_users, monkeypatch):

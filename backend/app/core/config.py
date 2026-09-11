@@ -149,6 +149,22 @@ class Settings(BaseSettings):
     # immediately on the very next run — it backfills the whole new window in
     # one go, it does not grow gradually day by day.
     ORDER_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    # Splits the lookback window into smaller `since`/`to` chunks per
+    # request instead of one call covering the whole window — added
+    # 2026-09-11 after a real account's FBO sync (/v2/posting/fbo/list)
+    # kept hitting sustained 429s that even an 8-attempt/Retry-After-aware
+    # retry (see OzonSellerClient._post()) couldn't reliably ride out, on
+    # SOME runs but not others (same account, same window, intermittent —
+    # not a confirmed fixed quota). Ozon publishes no confirmed max
+    # date-range or request-weight limit for this method, so this number is
+    # a reasonable starting point (3-5 days), not a confirmed correct
+    # value — if 429s persist even chunked this small, the next step is
+    # investigating further with Ozon support, not shrinking this further
+    # on a guess. Every chunk still goes through has_next pagination
+    # (MAX_PAGES/PAGE_LIMIT) same as before; one chunk failing after
+    # retries is recorded in SyncOutcome.errors and does NOT abort the
+    # other chunks (each chunk's postings that DID fetch are still used).
+    ORDER_STATS_SYNC_CHUNK_DAYS: int = 5
     ORDER_STATS_SCHEDULER_ENABLED: bool = True
     # Runs after the advertising-stats (3:00) and search-query-stats (4:00)
     # jobs, same fixed-daily-slot approximation as those — this app has no
