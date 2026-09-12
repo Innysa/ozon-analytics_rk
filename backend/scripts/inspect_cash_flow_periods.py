@@ -167,7 +167,27 @@ def main() -> None:
             elif not match.raw_payload:
                 print("    raw_payload пуст для этой записи (возможно, сохранена до того, как это поле начали заполнять).")
             else:
-                print(json.dumps(json.loads(match.raw_payload), ensure_ascii=False, indent=2))
+                raw = json.loads(match.raw_payload)
+                print()
+                print("=" * 70)
+                print("details.delivery ЦЕЛИКОМ, без обрезки (чтобы не гадать по grep-окну, "
+                      "где именно вложен return_services/return/etc.):")
+                delivery = (raw.get("details") or {}).get("delivery") or {}
+                print(json.dumps(delivery, ensure_ascii=False, indent=2))
+                print()
+                print("=" * 70)
+                print("Что ИЗ ЭТОГО делает ТЕКУЩИЙ код (delivery.return + delivery.return_services, "
+                      "если это поменяется в будущем — сверяйте с cash_flow_statement_sync_service.py):")
+                delivery_return = delivery.get("return") or {}
+                delivery_return_services = delivery.get("return_services") or {}
+                print(f"    delivery.get('return').get('total') = {delivery_return.get('total')!r}")
+                print(f"    delivery.get('return_services').get('total') = {delivery_return_services.get('total')!r}")
+                print(f"    (пусто {{}} означает: такого ключа НЕТ на этом уровне вложенности вообще)")
+                print()
+                print("=" * 70)
+                print("Сохранённое в БД для ЭТОЙ записи (что реально сейчас в delivery_return_total):")
+                print(f"    delivery_return_total = {match.delivery_return_total!r}")
+                print(f"    delivery_return_items_json = {match.delivery_return_items_json!r}")
     finally:
         db.close()
 
