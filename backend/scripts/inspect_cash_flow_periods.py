@@ -44,6 +44,15 @@ period_begin matches — use this BEFORE re-syncing to capture what Ozon
 actually sent for a row that looks wrong, since a re-sync will overwrite
 it (the sync always UPSERTs by period_begin/period_end, so this evidence
 is gone once the row is refreshed).
+
+Pass --find-key SUBSTRING instead when you know an item's `name` (e.g.
+from a manually exported Ozon report) but not where it lives in the raw
+JSON tree, and can't scroll/copy a full JSON dump (e.g. over a VNC
+console) — this searches EVERY stored period's raw_payload recursively
+for any object whose "name" contains SUBSTRING and prints only the short
+dotted path to it (e.g. "details.delivery.return_services.items[0]") plus
+its price, one line per match, no full JSON. Skips all other output when
+given, to keep the result to a handful of lines.
 """
 from __future__ import annotations
 
@@ -61,12 +70,37 @@ from app.models.cash_flow_statement_period import CashFlowStatementPeriod  # noq
 DASHBOARD_DEFAULT_LOOKBACK_DAYS = 30  # mirrors app.core.config.Settings.DASHBOARD_DEFAULT_LOOKBACK_DAYS
 
 
+def _find_paths(obj, needle: str, path: list[str]) -> list[tuple[str, dict]]:
+    """Recursively walks obj (nested dicts/lists — exactly the shape a
+    json.loads'd raw_payload has) looking for any dict with a "name" field
+    containing `needle` (case-insensitive). Returns [(dotted path, the
+    matching dict itself), ...] — the path uses "a.b.c" / "a.b[2]" style,
+    short enough for a one-line answer instead of a full JSON dump."""
+    results: list[tuple[str, dict]] = []
+    if isinstance(obj, dict):
+        name = obj.get("name")
+        if isinstance(name, str) and needle.lower() in name.lower():
+            results.append((".".join(path) or "(корень)", obj))
+        for key, value in obj.items():
+            results.extend(_find_paths(value, needle, path + [key]))
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            new_path = path[:-1] + [f"{path[-1]}[{i}]"] if path else [f"[{i}]"]
+            results.extend(_find_paths(value, needle, new_path))
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--store-id", required=True)
     parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — как на Дашборде (30 дней назад)")
     parser.add_argument("--date-to", default=None, help="ГГГГ-ММ-ДД, по умолчанию — сегодня")
     parser.add_argument("--period-begin", default=None, help="ГГГГ-ММ-ДД — если задан, дополнительно печатает raw_payload для этого периода")
+    parser.add_argument(
+        "--find-key", default=None,
+        help="подстрока в поле 'name' статьи (например ReturnFlowLogistic) — печатает ТОЛЬКО короткий путь "
+             "вложенности до неё по всем сохранённым периодам, без полного JSON (для VNC-консолей без скролла/копирования)",
+    )
     args = parser.parse_args()
 
     today = datetime.now(timezone.utc).date()
@@ -81,6 +115,20 @@ def main() -> None:
             .order_by(CashFlowStatementPeriod.period_begin)
             .all()
         )
+
+        if args.find_key:
+            print(f"Поиск статьи с 'name', содержащим {args.find_key!r}, по всем сохранённым периодам:")
+            found_any = False
+            for r in rows:
+                if not r.raw_payload:
+                    continue
+                raw = json.loads(r.raw_payload)
+                for path, item in _find_paths(raw, args.find_key, []):
+                    found_any = True
+                    print(f"    {r.period_begin} — {r.period_end}: {path}  price={item.get('price')!r}")
+            if not found_any:
+                print("    Не найдено ни в одном сохранённом периоде (проверьте написание подстроки).")
+            return
 
         print("=" * 70)
         print(f"Всего сохранённых периодов для магазина {args.store_id}: {len(rows)}")
