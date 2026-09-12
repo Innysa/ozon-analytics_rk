@@ -136,22 +136,24 @@ def sync_cash_flow_statement_periods(
         detail = details_by_range.get((begin_raw, end_raw)) or {}
         delivery = detail.get("delivery") or {}
         delivery_services = delivery.get("delivery_services") or {}
-        delivery_return = delivery.get("return") or {}
-        # CONFIRMED 2026-09-12 (real account raw_payload, via
-        # inspect_cash_flow_periods.py --period-begin): delivery.return
-        # (return processing, e.g. MarketplaceServiceItemRedistributionReturnsPVZ
-        # via a pickup point) is NOT the only return-related bucket — Ozon
-        # ALSO has a sibling delivery.return_services ({"total", "items"},
-        # confirmed item MarketplaceServiceItemReturnFlowLogistic — "Обратная
-        # логистика", i.e. shipping the returned item back) that this sync
-        # never read at all, so its real money silently never reached
-        # "Обработка возвратов" on the Дашборд (showed 0 while real spend
-        # existed). Both are genuinely "cost of handling a return" from a
-        # seller's point of view, so they're summed/merged into the SAME
-        # delivery_return_total/_items_json columns rather than adding a new
-        # column+migration for a bucket the Дашборд would show right next to
-        # the existing one anyway.
-        delivery_return_services = delivery.get("return_services") or {}
+        # CONFIRMED 2026-09-12 (real account raw_payload, found via
+        # inspect_cash_flow_periods.py --find-key — a full JSON dump
+        # couldn't be copied off a VNC console with no scrollback, so the
+        # path itself had to be located programmatically): "return" is a
+        # TOP-LEVEL sibling of "delivery" inside `detail` — NOT nested
+        # inside delivery as `delivery.return` (that was this module's own
+        # earlier, never-actually-confirmed assumption — the model's
+        # docstring even called it "parsed ... defensively"). The real
+        # shape mirrors delivery: `detail.return = {"total", "amount",
+        # "return_services": {"total", "items"}}`, with
+        # MarketplaceServiceItemReturnFlowLogistic ("Обратная логистика")
+        # confirmed living in return.return_services.items[]. Reading the
+        # wrong path meant delivery_return_total was NEVER populated at
+        # all for this account (always None), not just missing one item —
+        # "Обработка возвратов" showed 0 while real return-handling spend
+        # existed the whole time.
+        return_bucket = detail.get("return") or {}
+        return_services = return_bucket.get("return_services") or {}
         services = detail.get("services") or {}
         others = detail.get("others") or {}
         rfbs = detail.get("rfbs") or {}
@@ -181,12 +183,13 @@ def sync_cash_flow_statement_periods(
         record.delivery_amount = delivery.get("amount")
         record.delivery_services_total = delivery_services.get("total")
         record.delivery_services_items_json = _items_json(delivery_services)
-        return_total = delivery_return.get("total")
-        return_services_total = delivery_return_services.get("total")
-        record.delivery_return_total = (
-            None if return_total is None and return_services_total is None else (return_total or 0) + (return_services_total or 0)
-        )
-        record.delivery_return_items_json = _merged_items_json(delivery_return, delivery_return_services)
+        # return.total already EQUALS return.amount + return_services.total
+        # (confirmed exactly on a real account: -51662.52 + -29752 =
+        # -81414.52) — it's the bucket's own grand total, already inclusive
+        # of return_services, not a sibling figure to add separately (doing
+        # so would double-count return_services.total).
+        record.delivery_return_total = return_bucket.get("total")
+        record.delivery_return_items_json = _merged_items_json(return_bucket, return_services)
         record.services_total = services.get("total")
         record.services_items_json = _items_json(services)
         record.others_total = others.get("total")

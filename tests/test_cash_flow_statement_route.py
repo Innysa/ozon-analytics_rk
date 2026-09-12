@@ -45,7 +45,19 @@ class _FakeSellerClient:
                                 "total": -121185.3,
                                 "items": [{"name": "MarketplaceServiceItemDirectFlowLogisticSum", "price": -112007.9}],
                             },
-                            "return": {"total": -81414.52, "items": [{"name": "MarketplaceServiceItemRedistributionReturnsPVZ", "price": -1650}]},
+                        },
+                        # TOP-LEVEL sibling of "delivery" — CONFIRMED
+                        # 2026-09-12 on a real account (located via
+                        # inspect_cash_flow_periods.py --find-key), NOT
+                        # nested inside "delivery" as an earlier,
+                        # unconfirmed guess had it.
+                        "return": {
+                            "total": -81414.52, "amount": -51662.52,
+                            "items": [{"name": "MarketplaceServiceItemRedistributionReturnsPVZ", "price": -1650}],
+                            "return_services": {
+                                "total": -29752,
+                                "items": [{"name": "MarketplaceServiceItemReturnFlowLogistic", "price": -28102}],
+                            },
                         },
                         "loan": 0, "invoice_transfer": 15717.64,
                         "rfbs": {"total": 0, "transfer_delivery": 0, "transfer_delivery_return": 0, "compensation_delivery_return": 0, "partial_compensation": 0, "partial_compensation_return": 0},

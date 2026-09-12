@@ -139,13 +139,13 @@ class LogisticsBlock(BaseModel):
     logistics_rub = sum of delivery.delivery_services.total (Ozon's own
     subtotal — real components confirmed: last-mile courier, dropoff,
     handover to Ozon, "direct flow" logistics). returns_logistics_rub =
-    sum of delivery.return.total AND delivery.return_services.total
-    together (return processing via a pickup point, e.g.
-    MarketplaceServiceItemRedistributionReturnsPVZ, PLUS the cost of
-    shipping the item back, MarketplaceServiceItemReturnFlowLogistic —
-    CONFIRMED 2026-09-12 to be a separate sibling bucket the sync used to
-    never read at all, silently showing 0 while real "Обратная логистика"
-    spend existed; see CashFlowStatementPeriod's own docstring).
+    sum of return.total, a TOP-LEVEL sibling of delivery (not nested
+    inside it — an earlier, unconfirmed guess had it as delivery.return
+    and was wrong, see CashFlowStatementPeriod's own docstring), already
+    inclusive of return.return_services.total (return processing via a
+    pickup point, e.g. MarketplaceServiceItemRedistributionReturnsPVZ,
+    PLUS the cost of shipping the item back,
+    MarketplaceServiceItemReturnFlowLogistic — "Обратная логистика").
 
     services.total is a MIXED bucket (storage + advertising cost-per-click
     + insurance + fines + possibly more) with no per-category subtotal from

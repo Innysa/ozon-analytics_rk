@@ -36,8 +36,8 @@ full methodology):
     checking a real response rather than guessing). Confirmed shape:
     {"period", "begin_balance_amount", "payments": [{"payment",
     "currency_code"}], "delivery": {"total", "amount", "delivery_services":
-    {"total", "items": [{"name", "price"}]}, "return": {"total", "items":
-    [...]}}, "loan", "invoice_transfer", "rfbs": {"total",
+    {"total", "items": [{"name", "price"}]}}, "return": {"total", "amount",
+    "return_services": {"total", "items": [...]}}, "loan", "invoice_transfer", "rfbs": {"total",
     "transfer_delivery", "transfer_delivery_return",
     "compensation_delivery_return", "partial_compensation",
     "partial_compensation_return"}, "services": {"total", "items":
@@ -61,22 +61,27 @@ full methodology):
     services_items_json for anyone who wants to inspect them. No item name
     resembling a "penalty"/"fine"/"штраф" has been observed yet — if Ozon
     exposes one at all through this method, it has not been confirmed.
-  - `delivery.return` was seen with an item named
-    MarketplaceServiceItemRedistributionReturnsPVZ (return processing via
-    a pickup point) — parsed the same {"total", "items"} shape as
-    delivery_services.
-  - UPDATE (2026-09-12, real account raw_payload via
-    inspect_cash_flow_periods.py --period-begin): `delivery.return` is NOT
-    the only return-related bucket — there is a SIBLING
-    `delivery.return_services` ({"total", "items"}, confirmed item
-    MarketplaceServiceItemReturnFlowLogistic — "Обратная логистика", the
-    cost of shipping a returned item back) that earlier rounds never saw
-    and the sync never read. delivery_return_total/_items_json now SUM/
-    MERGE delivery.return AND delivery.return_services (see
-    cash_flow_statement_sync_service's own comment) rather than only the
-    former — before this, real "Обратная логистика" spend silently never
-    reached delivery_return_total at all (showed 0 on the Дашборд's
-    "Обработка возвратов" while genuine money was being spent).
+  - CORRECTED (2026-09-12, real account raw_payload — located via
+    inspect_cash_flow_periods.py --find-key since a full JSON dump couldn't
+    be copied off a VNC console with no scrollback): `return` is a
+    TOP-LEVEL sibling of `delivery` inside a `details[]` entry, NOT nested
+    inside delivery as `delivery.return` — that was this docstring's own
+    earlier, admittedly unconfirmed ("parsed ... defensively") guess, and
+    it was wrong: reading `delivery.get("return")` always got {} on a real
+    account, so delivery_return_total was NEVER populated at all (always
+    None) — "Обработка возвратов" showed 0 while genuine return-handling
+    spend existed the whole time. The real shape mirrors delivery: `return
+    = {"total", "amount", "return_services": {"total", "items": [{"name",
+    "price"}]}}`. Confirmed exactly on a real period: return.total (-81
+    414.52) == return.amount (-51 662.52) + return_services.total
+    (-29 752) — i.e. return.total is already the bucket's grand total,
+    inclusive of return_services, not a sibling figure to add on top of it.
+    Confirmed real items: MarketplaceServiceItemRedistributionReturnsPVZ
+    (return processing via a pickup point — exact parent unconfirmed, kept
+    alongside return_services's own items when merging into
+    delivery_return_items_json) and, inside return.return_services.items[],
+    MarketplaceServiceItemReturnFlowLogistic ("Обратная логистика" — cost
+    of shipping the returned item back).
   - UPDATE (2026-09-10, user's own grep of their full saved diagnostic
     file, not a partial screenshot): `services.items[]` DOES contain a
     fine — real item name `FinesShipmentNonRecommendedSlot`. It is stored

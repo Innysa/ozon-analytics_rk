@@ -39,11 +39,15 @@ def _detail(begin: str, end: str, *, delivery_services_total=0, delivery_service
             "total": 1137907.3,
             "amount": 1259092.6,
             "delivery_services": {"total": delivery_services_total, "items": delivery_services_items or []},
-            "return": {"total": return_total, "items": return_items or []},
-            # Sibling bucket to "return" — CONFIRMED 2026-09-12 (real
-            # account raw_payload) to carry "Обратная логистика"
-            # (MarketplaceServiceItemReturnFlowLogistic), a bucket earlier
-            # test fixtures never modeled because it hadn't been found yet.
+        },
+        # TOP-LEVEL sibling of "delivery" — CONFIRMED 2026-09-12 (real
+        # account raw_payload, located via inspect_cash_flow_periods.py
+        # --find-key) to live here, NOT nested inside "delivery" as an
+        # earlier, unconfirmed guess had assumed. Carries
+        # MarketplaceServiceItemReturnFlowLogistic ("Обратная логистика")
+        # inside its own nested return_services sub-bucket.
+        "return": {
+            "total": return_total, "amount": return_total, "items": return_items or [],
             "return_services": {"total": return_services_total, "items": return_services_items or []},
         },
         "loan": 0,
@@ -145,14 +149,19 @@ def test_sync_stores_items_as_json_and_updates_existing_period(db_session, two_s
     assert float(rows[0].orders_amount) == 1500
 
 
-def test_sync_merges_return_and_return_services_into_delivery_return(db_session, two_stores_with_users):
-    """Regression for a real account (2026-09-12): delivery.return_services
-    is a sibling of delivery.return that the sync never read at all, so its
-    real money (a confirmed real item, MarketplaceServiceItemReturnFlowLogistic
-    — "Обратная логистика") silently never reached delivery_return_total —
-    the Дашборд's "Обработка возвратов" showed 0 while real spend existed.
-    Both buckets must now be summed into the same delivery_return_total,
-    and their items merged into delivery_return_items_json."""
+def test_sync_reads_return_as_top_level_sibling_of_delivery(db_session, two_stores_with_users):
+    """Regression for a real account (2026-09-12): "return" (with a nested
+    return_services sub-bucket carrying "Обратная логистика" —
+    MarketplaceServiceItemReturnFlowLogistic) is a TOP-LEVEL sibling of
+    "delivery" inside a details[] entry, NOT nested inside delivery as
+    `delivery.return` — an earlier, unconfirmed guess had it there and was
+    wrong, so delivery_return_total was NEVER populated at all (always
+    None), and "Обработка возвратов" showed 0 while real spend existed the
+    whole time. delivery_return_total must come from return.total directly
+    (already inclusive of return_services.total, confirmed by real numbers
+    adding up exactly — see cash_flow_statement_sync_service's own
+    comment), and delivery_return_items_json must merge items from both
+    return.items and return.return_services.items."""
     from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 
     d = two_stores_with_users
@@ -162,7 +171,7 @@ def test_sync_merges_return_and_return_services_into_delivery_return(db_session,
     flows = [_flow("2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z")]
     details = [_detail(
         "2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z",
-        return_total=-1650, return_items=return_items,
+        return_total=-31402, return_items=return_items,  # the bucket's own grand total, as Ozon reports it
         return_services_total=-29752, return_services_items=return_services_items,
     )]
 
@@ -170,7 +179,7 @@ def test_sync_merges_return_and_return_services_into_delivery_return(db_session,
     assert outcome.created == 1
 
     row = db_session.query(CashFlowStatementPeriod).filter(CashFlowStatementPeriod.store_id == store_id).one()
-    assert float(row.delivery_return_total) == -31402  # -1650 + -29752
+    assert float(row.delivery_return_total) == -31402  # taken directly from return.total, not re-summed
     assert "MarketplaceServiceItemRedistributionReturnsPVZ" in row.delivery_return_items_json
     assert "MarketplaceServiceItemReturnFlowLogistic" in row.delivery_return_items_json
 
