@@ -341,6 +341,20 @@ _PARTNER_SERVICE_HINTS_IN_SERVICES = ("InsuranceService",)
 _PARTNER_SERVICE_HINTS_IN_OTHERS = ("AcquiringItem", "AcquiringOperation")
 _FBO_SERVICE_HINTS_IN_SERVICES = ("Crossdocking", "SupplyInboundAdditional")
 
+# CONFIRMED 2026-09-12 (real account): summing every LogisticsBlock figure
+# and comparing to Ozon's own "Услуги и штрафы" total showed a ~+299k gap
+# — "Продвижение и реклама" is its OWN group in Ozon's accounting (shown
+# on this Дашборд as the separate "Реклама" block), but its cash-flow
+# items were never excluded from other_services_rub, so "Прочие услуги"
+# silently included real ad spend a seller would already see counted
+# elsewhere. Unlike _CASH_FLOW_AD_NAME_SUBSTRINGS (used for the
+# Advertising block's spend_other_formats_rub, which deliberately omits
+# CostPerClick to avoid a second VISIBLE card double-showing it), this
+# list is for EXCLUSION from "Прочие услуги" only — CostPerClick belongs
+# here too, since its real spend is already shown via the Performance-API
+# -sourced "Расход на рекламу (авто)" card, just from a different source.
+_AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES = ("CostPerClick", "PromotionWithCostPerOrder", "PremiumSellerBonusAccrual")
+
 
 def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
     """Pulls (fines, storage) out of a CashFlowStatementPeriod.
@@ -415,6 +429,7 @@ def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) 
                 or "Storage" in name
                 or any(h in name for h in _PARTNER_SERVICE_HINTS_IN_SERVICES)
                 or any(h in name for h in _FBO_SERVICE_HINTS_IN_SERVICES)
+                or any(h in name for h in _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES)
             ):
                 continue
             price = item.get("price")
@@ -617,7 +632,7 @@ def compute_dashboard(
             fines_sum = storage_sum = services_total_sum = 0.0
             logistics_sum = returns_sum = others_total_sum = 0.0
             partner_from_services_sum = partner_from_others_sum = 0.0
-            fbo_from_services_sum = 0.0
+            fbo_from_services_sum = ad_in_services_sum = 0.0
             is_estimated = False
             for p in periods_in_range:
                 fraction = _period_overlap_fraction(p.period_begin, p.period_end, resolved_date_from, resolved_date_to)
@@ -627,12 +642,14 @@ def compute_dashboard(
                 partner_from_services = _sum_matching_items(p.services_items_json, _PARTNER_SERVICE_HINTS_IN_SERVICES)
                 partner_from_others = _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS_IN_OTHERS)
                 fbo_from_services = _sum_matching_items(p.services_items_json, _FBO_SERVICE_HINTS_IN_SERVICES)
+                ad_in_services = _sum_matching_items(p.services_items_json, _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES)
 
                 fines_sum += fines * fraction
                 storage_sum += storage * fraction
                 partner_from_services_sum += partner_from_services * fraction
                 partner_from_others_sum += partner_from_others * fraction
                 fbo_from_services_sum += fbo_from_services * fraction
+                ad_in_services_sum += ad_in_services * fraction
                 services_total_sum += float(p.services_total or 0) * fraction
                 logistics_sum += float(p.delivery_services_total or 0) * fraction
                 returns_sum += float(p.delivery_return_total or 0) * fraction
@@ -644,8 +661,15 @@ def compute_dashboard(
             # independently from items[] — so a period whose items_json
             # doesn't (fully) cover its own total (e.g. an older row, or an
             # Ozon item name this matching hasn't seen yet) never drops
-            # that money silently.
-            other_services_sum = services_total_sum - fines_sum - storage_sum - partner_from_services_sum - fbo_from_services_sum
+            # that money silently. Real ad spend (ad_in_services_sum) is
+            # excluded here too — it's a DIFFERENT Ozon group
+            # ("Продвижение и реклама"), already represented by the
+            # separate Реклама block, not by anything in this one — see
+            # _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES's own comment.
+            other_services_sum = (
+                services_total_sum - fines_sum - storage_sum - partner_from_services_sum
+                - fbo_from_services_sum - ad_in_services_sum
+            )
             other_deductions_sum = others_total_sum - partner_from_others_sum
             # Deliberately the RAW (non-prorated) item — this is an
             # informational "which item dominates" pointer, not a total

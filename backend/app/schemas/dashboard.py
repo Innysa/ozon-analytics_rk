@@ -160,11 +160,22 @@ class LogisticsBlock(BaseModel):
     MarketplaceServiceItemTemporaryStorageRedistribution and
     FinesShipmentNonRecommendedSlot respectively). other_services_rub is
     the REMAINDER (services_total - fines_rub - storage_rub -
-    partner_services_rub's services-side portion - fbo_services_rub), not
-    summed independently from items[] — so a period whose items weren't
-    recorded, or that has an item name this matching doesn't recognize,
-    still keeps its money in other_services_rub instead of it silently
-    disappearing.
+    partner_services_rub's services-side portion - fbo_services_rub - real
+    ad spend), not summed independently from items[] — so a period whose
+    items weren't recorded, or that has an item name this matching doesn't
+    recognize, still keeps its money in other_services_rub instead of it
+    silently disappearing.
+
+    "Real ad spend" above — CostPerClick, PromotionWithCostPerOrder,
+    PremiumSellerBonusAccrual — is excluded from other_services_rub too,
+    CONFIRMED 2026-09-12 by a real account: summing every field in this
+    block and comparing to Ozon's own "Услуги и штрафы" group total showed
+    a ~+299k gap, because "Продвижение и реклама" is ITS OWN Ozon group
+    (shown on this Дашборд as the separate AdvertisingBlock, not here) —
+    without this exclusion, other_services_rub silently double-counted
+    real ad spend a seller already sees via spend_auto_rub/spend_other_
+    formats_rub. Not exposed as its own field here since it's already
+    fully represented by those two Advertising-block figures.
 
     partner_services_rub ("Услуги партнёров" on Ozon's own "Начисления"
     report — CONFIRMED 2026-09-12 by matching item names AND rub amounts

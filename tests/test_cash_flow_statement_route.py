@@ -151,7 +151,9 @@ def test_sync_end_to_end_and_dashboard_logistics_block(client, db_session, two_s
     assert logistics["periods_summed"] == 1
     assert logistics["logistics_rub"] == -121185.3
     assert logistics["returns_logistics_rub"] == -29752  # return_services.total only, NOT return.total (-81414.52)
-    assert logistics["other_services_rub"] == -93228.57
+    # MarketplaceServiceCostPerClick (-81971.47) is excluded — real ad
+    # spend belongs to the separate Реклама block, not "Прочие услуги".
+    assert logistics["other_services_rub"] == -11257.10  # -93228.57 - (-81971.47)
 
 
 def test_store_isolation(client, db_session, two_stores_with_users, monkeypatch):

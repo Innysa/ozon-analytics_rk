@@ -285,7 +285,10 @@ def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, 
     store_id = d["store_a"].id
     services_items = [
         {"name": "MarketplaceServiceItemTemporaryStorageRedistribution", "price": -1404},
-        {"name": "MarketplaceServiceCostPerClick", "price": -81971.47},
+        # Deliberately an item name this matching doesn't recognize at all
+        # (not fines/storage/partner/fbo/ads) — must fall into "Прочие
+        # услуги" as the remainder, not disappear.
+        {"name": "MarketplaceServiceUnknownFutureItem", "price": -81971.47},
         {"name": "FinesShipmentNonRecommendedSlot", "price": -504},
     ]
     others_items = [
@@ -316,7 +319,7 @@ def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, 
     # partner_services_rub — see test_logistics_block_splits_partner_and_fbo_services.
     assert block["other_deductions_rub"] == -3020.95  # -26715.76 - (-23694.81)
     assert block["partner_services_rub"] == -23694.81
-    assert block["other_services_top_item_name"] == "MarketplaceServiceCostPerClick"
+    assert block["other_services_top_item_name"] == "MarketplaceServiceUnknownFutureItem"
     assert block["other_services_top_item_rub"] == -81971.47
 
 
@@ -338,7 +341,7 @@ def test_logistics_block_splits_partner_and_fbo_services(client, db_session, two
     services_items = [
         {"name": "InsuranceServiceSellerItem", "price": -18795.48},
         {"name": "MarketplaceServiceItemCrossdocking", "price": -6288},
-        {"name": "MarketplaceServiceCostPerClick", "price": -100},
+        {"name": "MarketplaceServiceUnknownFutureItem", "price": -100},
     ]
     others_items = [
         {"name": "MarketplaceRedistributionOfAcquiringItem", "price": -45301.5},
@@ -366,6 +369,48 @@ def test_logistics_block_splits_partner_and_fbo_services(client, db_session, two
     assert block["fbo_services_rub"] == -6288
     assert block["other_services_rub"] == -100  # -25183.48 - (-18795.48) - (-6288)
     assert block["other_deductions_rub"] == -3020.95  # -48322.45 - (-45301.5)
+
+
+def test_logistics_block_excludes_ad_spend_from_other_services(client, db_session, two_stores_with_users):
+    """Regression for a real account (2026-09-12): summing EVERY
+    LogisticsBlock figure and comparing to Ozon's own "Услуги и штрафы"
+    total showed a ~+299k gap. Cause: "Продвижение и реклама" is its own
+    Ozon group, shown on this Дашборд as the separate "Реклама" block —
+    but CostPerClick/PromotionWithCostPerOrder/PremiumSellerBonusAccrual
+    were never excluded from other_services_rub, so "Прочие услуги"
+    silently double-counted real ad spend a seller already sees elsewhere
+    (spend_auto_rub for CostPerClick via Performance API, spend_other_
+    formats_rub for the other two via this same cash-flow data)."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    services_items = [
+        {"name": "MarketplaceServiceCostPerClick", "price": -157016.62},
+        {"name": "MarketplaceServicePromotionWithCostPerOrder", "price": -38305.6},
+        {"name": "MarketplaceServiceItemElectronicServicesPremiumSellerBonusAccrual", "price": -17077.5},
+        {"name": "MarketplaceServiceUnknownFutureItem", "price": -500},
+    ]
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-212899.72, services_items_json=json.dumps(services_items),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["other_services_rub"] == -500  # only the genuinely uncategorized item
+    assert block["other_services_top_item_name"] == "MarketplaceServiceUnknownFutureItem"
 
 
 def test_logistics_block_surfaces_largest_uncategorized_item_by_magnitude(client, db_session, two_stores_with_users):
