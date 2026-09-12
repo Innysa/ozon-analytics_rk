@@ -181,17 +181,26 @@ class LogisticsBlock(BaseModel):
     report — CONFIRMED 2026-09-12 by matching item names AND rub amounts
     against a manually exported copy of that report) SPANS TWO different
     Ozon buckets: InsuranceServiceSellerItem ("Страхование товара от
-    массовых повреждений") lives in `services`, while
-    MarketplaceRedistributionOfAcquiringOperation/...Item ("Эквайринг", the
-    dominant real component) lives in the SEPARATE `others` bucket — so
-    this figure is pulled out of other_services_rub AND other_deductions_rub
-    simultaneously, each losing only the portion that actually came from
-    it. Other real "Услуги партнёров" sub-items Ozon's own report shows
-    (partner delivery-to-pickup-point, partner packaging, temporary
-    partner storage, return/cancellation handling by a partner) have NOT
-    been matched to a confirmed raw item `name` yet and stay wherever they
-    already were (other_services_rub or other_deductions_rub) rather than
-    being guessed at.
+    массовых повреждений") and MarketplaceRedistributionOfAcquiringOperation
+    /...Item ("Эквайринг", the dominant real component) — but NEITHER lives
+    in one fixed bucket. CONFIRMED 2026-09-12 (--find-key on two different
+    weeks of the same real account): both items were found inside
+    `details.services.items[]` for one week, but inside
+    `details.others.items[]` for the very next week — Ozon's own placement
+    of these items moves between buckets, not just between accounts. An
+    earlier version of this code searched InsuranceService only in
+    `services` and Acquiring only in `others`, which silently dropped
+    whichever item landed in "the other" bucket for a given period —
+    undercounting partner_services_rub by roughly half on real data. Fixed
+    by checking BOTH item names against BOTH buckets, then pulling the
+    matched amount out of other_services_rub AND other_deductions_rub, each
+    losing only the portion that actually came from its own bucket. Other
+    real "Услуги партнёров" sub-items Ozon's own report shows (partner
+    delivery-to-pickup-point, partner packaging, temporary partner storage,
+    return/cancellation handling by a partner) have NOT been matched to a
+    confirmed raw item `name` yet and stay wherever they already were
+    (other_services_rub or other_deductions_rub) rather than being guessed
+    at.
 
     fbo_services_rub ("Услуги FBO") is pulled from `services` only —
     CONFIRMED real component: MarketplaceServiceItemCrossdocking

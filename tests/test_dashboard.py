@@ -371,6 +371,52 @@ def test_logistics_block_splits_partner_and_fbo_services(client, db_session, two
     assert block["other_deductions_rub"] == -3020.95  # -48322.45 - (-45301.5)
 
 
+def test_logistics_block_finds_partner_service_hints_in_either_bucket(client, db_session, two_stores_with_users):
+    """Regression, CONFIRMED 2026-09-12 via --find-key on the SAME real
+    account across two different weeks: InsuranceServiceSellerItem and
+    MarketplaceRedistributionOfAcquiringOperation/...Item do NOT live in one
+    fixed bucket — one week both were inside `services.items[]`, the very
+    next week both were inside `others.items[]`. An earlier version of this
+    code searched InsuranceService only in `services` and Acquiring only in
+    `others`, silently dropping whichever one landed in "the wrong" bucket
+    for that period — this undercounted partner_services_rub by roughly
+    half on real data (-55 488.03 shown vs a real ~-117 306 for 1-12.09).
+    Here both items are placed in `others` — the opposite of the split
+    test above, where InsuranceService was in `services` — proving both
+    are still found regardless of which bucket Ozon put them in."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    others_items = [
+        {"name": "InsuranceServiceSellerItem", "price": -18795.48},
+        {"name": "MarketplaceRedistributionOfAcquiringItem", "price": -45301.5},
+        {"name": "MarketplaceSellerDecompensationItemByTypeDocOperation", "price": -3020.95},
+    ]
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        others_total=-67117.93, others_items_json=json.dumps(others_items),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    # -18795.48 (insurance) + -45301.5 (acquiring) — both found even though
+    # both are in `others` this time, not split across buckets.
+    assert block["partner_services_rub"] == -64096.98
+    assert block["other_deductions_rub"] == -3020.95  # -67117.93 - (-64096.98)
+
+
 def test_logistics_block_excludes_ad_spend_from_other_services(client, db_session, two_stores_with_users):
     """Regression for a real account (2026-09-12): summing EVERY
     LogisticsBlock figure and comparing to Ozon's own "Услуги и штрафы"

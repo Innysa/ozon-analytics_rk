@@ -322,23 +322,33 @@ def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
 # Substrings CONFIRMED (2026-09-12, real account raw_payload — located via
 # inspect_cash_flow_periods.py --find-key, cross-checked against a manually
 # exported Ozon "Начисления" report's own group names) to belong to
-# "Услуги партнёров" and "Услуги FBO". Split by which top-level bucket each
-# actually lives in — NOT all in `services`: "Эквайринг"
-# (MarketplaceRedistributionOfAcquiringOperation, and the newer
-# ...AcquiringItem spelling) was independently confirmed back on 2026-09-10
-# to live inside `others`, alongside seller decompensation — putting it in
-# the wrong bucket's hint list would silently match nothing, ever.
-# "Страхование товара от массовых повреждений" (InsuranceServiceSellerItem)
-# and "Кросс-докинг" (MarketplaceServiceItemCrossdocking, confirmed price
-# matched exactly to the Начисления report's own "Кросс-докинг" line) ARE
-# in `services`. Other real sub-items the Начисления report showed under
-# these same two groups (partner delivery-to-pickup-point, partner
-# packaging, temporary storage BY a partner, FBO inbound/outbound handling
-# beyond crossdocking) have NOT been matched to a confirmed raw `name` yet
-# — they stay uncategorized rather than being guessed at, same discipline
-# as fines/storage below.
-_PARTNER_SERVICE_HINTS_IN_SERVICES = ("InsuranceService",)
-_PARTNER_SERVICE_HINTS_IN_OTHERS = ("AcquiringItem", "AcquiringOperation")
+# "Услуги партнёров" и "Услуги FBO".
+#
+# NOT split by bucket, unlike an earlier version of this constant. "Эквайринг"
+# (MarketplaceRedistributionOfAcquiringOperation / the newer ...AcquiringItem
+# spelling) and "Страхование товара от массовых повреждений"
+# (InsuranceServiceSellerItem) do NOT live in one fixed bucket across
+# periods — CONFIRMED 2026-09-12 via --find-key on two different weeks of the
+# SAME real account: both items were found inside `details.services.items[]`
+# for 2026-09-01–09-06, but inside `details.others.items[]` for
+# 2026-09-07–09-13. The earlier version of this code searched InsuranceService
+# only in `services` and Acquiring only in `others`, so any period where Ozon
+# happened to place either item in the "wrong" (for that hint) bucket silently
+# matched nothing for it — this undercounted "Услуги партнёров" (-55 488.03
+# shown vs a real ~-117 306 for 1-12.09, per the user's own --find-key output
+# and manual per-period sum). Fixed by checking the FULL hint list against
+# BOTH buckets.
+_PARTNER_SERVICE_HINTS = ("InsuranceService", "AcquiringItem", "AcquiringOperation")
+# "Кросс-докинг" (MarketplaceServiceItemCrossdocking, confirmed price matched
+# exactly to the Начисления report's own "Кросс-докинг" line) is confirmed to
+# live in `services` only so far — no evidence yet of it (or
+# SupplyInboundAdditional) appearing in `others`, so it stays single-bucket
+# rather than being widened on a guess. Other real sub-items the Начисления
+# report showed under these same two groups (partner delivery-to-pickup-point,
+# partner packaging, temporary storage BY a partner, FBO inbound/outbound
+# handling beyond crossdocking) have NOT been matched to a confirmed raw
+# `name` yet — they stay uncategorized rather than being guessed at, same
+# discipline as fines/storage below.
 _FBO_SERVICE_HINTS_IN_SERVICES = ("Crossdocking", "SupplyInboundAdditional")
 
 # CONFIRMED 2026-09-12 (real account): summing every LogisticsBlock figure
@@ -427,7 +437,7 @@ def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) 
             if (
                 "Fine" in name
                 or "Storage" in name
-                or any(h in name for h in _PARTNER_SERVICE_HINTS_IN_SERVICES)
+                or any(h in name for h in _PARTNER_SERVICE_HINTS)
                 or any(h in name for h in _FBO_SERVICE_HINTS_IN_SERVICES)
                 or any(h in name for h in _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES)
             ):
@@ -639,8 +649,8 @@ def compute_dashboard(
                 if fraction < 1.0:
                     is_estimated = True
                 fines, storage = _categorize_service_items(p.services_items_json)
-                partner_from_services = _sum_matching_items(p.services_items_json, _PARTNER_SERVICE_HINTS_IN_SERVICES)
-                partner_from_others = _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS_IN_OTHERS)
+                partner_from_services = _sum_matching_items(p.services_items_json, _PARTNER_SERVICE_HINTS)
+                partner_from_others = _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS)
                 fbo_from_services = _sum_matching_items(p.services_items_json, _FBO_SERVICE_HINTS_IN_SERVICES)
                 ad_in_services = _sum_matching_items(p.services_items_json, _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES)
 
