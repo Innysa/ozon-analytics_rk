@@ -53,6 +53,17 @@ for any object whose "name" contains SUBSTRING and prints only the short
 dotted path to it (e.g. "details.delivery.return_services.items[0]") plus
 its price, one line per match, no full JSON. Skips all other output when
 given, to keep the result to a handful of lines.
+
+Pass --find-price A,B,C instead when a manually exported Ozon report gives
+you a RUB amount for a line item but the report's own Russian description
+(e.g. "Обработка отправления Drop-off партнёрами (ПВЗ)") isn't itself a
+raw JSON `name` you can grep for — this searches EVERY stored period's
+raw_payload recursively for any object with BOTH a "name" and a "price"
+where price matches one of the given values within 0.01, and prints the
+dotted path, the CONFIRMED real name, and the price. Same VNC-console
+motivation and one-match-per-line output as --find-key, but keyed by
+amount instead of a guessed name substring — this project's discipline is
+to never assume an item's raw name from its human-readable report label.
 """
 from __future__ import annotations
 
@@ -90,6 +101,26 @@ def _find_paths(obj, needle: str, path: list[str]) -> list[tuple[str, dict]]:
     return results
 
 
+def _find_by_price(obj, targets: list[float], path: list[str], tol: float = 0.01) -> list[tuple[str, dict]]:
+    """Same idea as _find_paths, but matches on `price` (within `tol`)
+    instead of a `name` substring — for confirming an item's real raw name
+    from a rub amount already known to be correct, rather than guessing the
+    name from a human-readable report label."""
+    results: list[tuple[str, dict]] = []
+    if isinstance(obj, dict):
+        price = obj.get("price")
+        name = obj.get("name")
+        if isinstance(price, (int, float)) and isinstance(name, str) and any(abs(price - t) <= tol for t in targets):
+            results.append((".".join(path) or "(корень)", obj))
+        for key, value in obj.items():
+            results.extend(_find_by_price(value, targets, path + [key], tol))
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            new_path = path[:-1] + [f"{path[-1]}[{i}]"] if path else [f"[{i}]"]
+            results.extend(_find_by_price(value, targets, new_path, tol))
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--store-id", required=True)
@@ -100,6 +131,12 @@ def main() -> None:
         "--find-key", default=None,
         help="подстрока в поле 'name' статьи (например ReturnFlowLogistic) — печатает ТОЛЬКО короткий путь "
              "вложенности до неё по всем сохранённым периодам, без полного JSON (для VNC-консолей без скролла/копирования)",
+    )
+    parser.add_argument(
+        "--find-price", default=None,
+        help="список сумм через запятую (например -3450,-1140,-50), известных из выгрузки Ozon — печатает "
+             "путь, РЕАЛЬНОЕ имя статьи (name) и цену для каждого совпадения (допуск 0.01), без полного JSON. "
+             "Используйте, когда есть точная сумма из отчёта, но нет уверенности в raw name статьи.",
     )
     args = parser.parse_args()
 
@@ -128,6 +165,21 @@ def main() -> None:
                     print(f"    {r.period_begin} — {r.period_end}: {path}  price={item.get('price')!r}")
             if not found_any:
                 print("    Не найдено ни в одном сохранённом периоде (проверьте написание подстроки).")
+            return
+
+        if args.find_price:
+            targets = [float(x) for x in args.find_price.split(",")]
+            print(f"Поиск статей с ценой в {targets!r} (допуск 0.01), по всем сохранённым периодам:")
+            found_any = False
+            for r in rows:
+                if not r.raw_payload:
+                    continue
+                raw = json.loads(r.raw_payload)
+                for path, item in _find_by_price(raw, targets, []):
+                    found_any = True
+                    print(f"    {r.period_begin} — {r.period_end}: {path}  name={item.get('name')!r}  price={item.get('price')!r}")
+            if not found_any:
+                print("    Не найдено ни в одном сохранённом периоде (проверьте суммы и допуск).")
             return
 
         print("=" * 70)
