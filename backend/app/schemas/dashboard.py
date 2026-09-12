@@ -47,18 +47,37 @@ class OrdersRevenueBlock(BaseModel):
 
 
 class AdvertisingBlock(BaseModel):
-    """Ad spend from both sources this app tracks, kept separate (same rule
-    as the Реклама page: summing auto-collected and CSV-uploaded spend risks
-    double-counting if both cover the same campaigns/period). spend_share_of_
-    revenue_pct is a distinct metric from the per-campaign ДРР shown on the
-    Реклама page: it divides TOTAL ad spend (both sources) by TOTAL store
-    revenue (all channels, from orders_revenue), not by ad-attributed sales
-    alone — the number sellers usually mean by "какой процент выручки уходит
-    на рекламу". Requires orders_revenue.has_data; null otherwise."""
+    """Ad spend from three sources this app tracks, kept separate (same rule
+    as the Реклама page: summing them risks double-counting if two cover the
+    same campaigns/period). spend_share_of_revenue_pct is a distinct metric
+    from the per-campaign ДРР shown on the Реклама page: it divides TOTAL ad
+    spend (all sources) by TOTAL store revenue (all channels, from
+    orders_revenue), not by ad-attributed sales alone — the number sellers
+    usually mean by "какой процент выручки уходит на рекламу". Requires
+    orders_revenue.has_data; null otherwise.
+
+    spend_other_formats_rub: ad spend types Ozon bills that
+    AdvertisingDailyStatistic (Performance API's statistics-report) never
+    captures at all, regardless of campaign state — CONFIRMED 2026-09-12 on
+    a real account by matching exact rub amounts between a manually
+    exported Ozon "Начисления" report and cash-flow's own services bucket:
+    CPO-style "Продвижение с оплатой за заказ" promotions
+    (MarketplaceServicePromotionWithCostPerOrder) and seller-funded bonus
+    mailings (MarketplaceServiceItemElectronicServicesPremiumSellerBonusAccrual).
+    This — not a sync bug — was most of a ~21% gap between the Дашборд and
+    Ozon's own cabinet that survived fixing the earlier campaign-state
+    exclusion bug. Sourced from CashFlowStatementPeriod, so it carries the
+    same day-count-prorated "estimate" caveat as LogisticsBlock for a
+    period only partially in range — deliberately not flagged with its own
+    is_estimated here (this app has only ever surfaced that alongside
+    LogisticsBlock so far); treat as approximate the same way. None (not
+    0) when no cash-flow period overlaps the range at all, i.e. "unknown",
+    not "confirmed zero"."""
 
     has_data: bool
     spend_auto_rub: DashboardMetric | None = None
     spend_manual_rub: DashboardMetric | None = None
+    spend_other_formats_rub: DashboardMetric | None = None
     spend_share_of_revenue_pct: float | None = None
 
 

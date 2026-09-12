@@ -486,6 +486,46 @@ def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_sessi
     assert block["spend_share_of_revenue_pct"] == 10.0
 
 
+def test_advertising_block_surfaces_cash_flow_only_ad_formats(client, db_session, two_stores_with_users):
+    """Regression for a real account (2026-09-12): AdvertisingDailyStatistic
+    (Performance API) never captures CPO-style "оплата за заказ" promotions
+    or seller bonus mailings at all — confirmed by matching exact rub
+    amounts between a manually exported Ozon "Начисления" report and
+    cash-flow's own services_items_json. spend_other_formats_rub must pull
+    these out (sign-flipped to positive, matching spend_auto_rub's
+    convention) WITHOUT double-counting MarketplaceServiceCostPerClick,
+    which spend_auto_rub already covers."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-500,
+        services_items_json=json.dumps([
+            {"name": "MarketplaceServiceCostPerClick", "price": -300},
+            {"name": "MarketplaceServicePromotionWithCostPerOrder", "price": -150},
+            {"name": "MarketplaceServiceItemElectronicServicesPremiumSellerBonusAccrual", "price": -50},
+        ]),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["advertising"]
+    assert block["has_data"] is True
+    assert block["spend_other_formats_rub"]["current"] == 200  # 150 + 50, NOT the 300 CostPerClick
+
+
 def test_manual_ad_spend_straddling_previous_window_does_not_fabricate_delta_pct(client, db_session, two_stores_with_users):
     """Regression for a real Дашборд bug (2026-09-11): a manually uploaded
     AdvertisingStatistic row spanning most of August straddled the

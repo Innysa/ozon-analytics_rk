@@ -194,6 +194,13 @@ export function DashboardPage() {
               {dashboard.advertising.spend_manual_rub && (
                 <MetricCard label="Расход (загружено вручную)" metric={dashboard.advertising.spend_manual_rub} format={fmtRub} />
               )}
+              {dashboard.advertising.spend_other_formats_rub && (
+                <MetricCard
+                  label="Реклама: прочие форматы (по данным ДДС)"
+                  metric={dashboard.advertising.spend_other_formats_rub}
+                  format={fmtRub}
+                />
+              )}
               <Stat label="Доля расходов на рекламу в выручке" value={fmtPct(dashboard.advertising.spend_share_of_revenue_pct)} />
             </div>
             <p className="mt-2 text-xs text-slate-400">
@@ -202,6 +209,12 @@ export function DashboardPage() {
               показатель, за которым обычно следят руководители, но именно поэтому его нельзя напрямую сравнивать с
               ДРР по отдельным кампаниям на странице «Реклама». Настоящую маржу/ROI с учётом себестоимости смотрите
               в блоке «Маржа» ниже.
+              {dashboard.advertising.spend_other_formats_rub && (
+                <> «Прочие форматы» — продвижение с оплатой за заказ и бонусы-рассылки: Ozon списывает их отдельно от
+                оплаты за клик/показ, и они не попадают в отчёт Performance API, которым собирается «авто» расход
+                выше — эта сумма взята из отчёта ДДС и может быть приблизительной, если выбранный период не совпадает
+                с недельными периодами Ozon (как и «Логистика и услуги» ниже).</>
+              )}
             </p>
           </DashboardSection>
 

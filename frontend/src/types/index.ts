@@ -685,6 +685,7 @@ export interface AdvertisingDashboardBlock {
   has_data: boolean;
   spend_auto_rub: DashboardMetric | null;
   spend_manual_rub: DashboardMetric | null;
+  spend_other_formats_rub: DashboardMetric | null;
   spend_share_of_revenue_pct: number | null;
 }
 

@@ -268,6 +268,53 @@ def _period_overlap_fraction(period_begin: date, period_end: date, date_from: da
     return max(0.0, min(1.0, overlap_days / period_days))
 
 
+# Ad spend types confirmed (2026-09-12, real account: a manually exported
+# "Начисления" report matched these exact rub amounts to specific cash-flow
+# services_items_json entries) to live INSIDE cash-flow's services bucket
+# but NEVER inside AdvertisingDailyStatistic (Performance API's statistics-
+# report only covers pay-per-click/impression campaigns) — the two together
+# explained a ~21% ad-spend gap between the Дашборд and Ozon's own cabinet
+# that survived the earlier campaign-state fix:
+#   - MarketplaceServicePromotionWithCostPerOrder ("Продвижение с оплатой
+#     за заказ" — a CPO promotion product, not CPC)
+#   - MarketplaceServiceItemElectronicServicesPremiumSellerBonusAccrual
+#     ("Бонусы продавца - рассылка" — a seller-funded bonus/mailing promo)
+# Deliberately does NOT include MarketplaceServiceCostPerClick here — that
+# one IS already captured by AdvertisingDailyStatistic; re-adding it from
+# cash-flow too would double-count real CPC spend the Дашборд already shows.
+_CASH_FLOW_AD_NAME_SUBSTRINGS = ("PromotionWithCostPerOrder", "PremiumSellerBonusAccrual")
+
+
+def _cash_flow_matching_items_sum(
+    db: Session, *, store_id: str, date_from: date, date_to: date, name_substrings: tuple[str, ...]
+) -> float | None:
+    """Sum of services_items_json entries whose `name` contains any of
+    name_substrings, across every CashFlowStatementPeriod overlapping
+    [date_from, date_to] — prorated the same way as LogisticsBlock (see
+    _period_overlap_fraction) for a period only partially inside the range.
+    Returns None (not 0.0) when NO period overlaps at all — "no cash-flow
+    data synced for this window" is a different situation from "data exists
+    and genuinely has none of these items", and the caller (compute_dashboard)
+    treats them differently (see AdvertisingBlock.spend_other_formats_rub)."""
+    periods = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=date_from, date_to=date_to)
+    if not periods:
+        return None
+    total = 0.0
+    for p in periods:
+        if not p.services_items_json:
+            continue
+        fraction = _period_overlap_fraction(p.period_begin, p.period_end, date_from, date_to)
+        try:
+            items = json.loads(p.services_items_json)
+        except (TypeError, ValueError):
+            continue
+        for item in items:
+            name = item.get("name") or ""
+            if any(s in name for s in name_substrings):
+                total += float(item.get("price") or 0) * fraction
+    return round(total, 2)
+
+
 def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(CashFlowStatementPeriod.id).where(CashFlowStatementPeriod.store_id == store_id).limit(1)) is not None
 
@@ -400,11 +447,13 @@ def compute_dashboard(
         revenue_current = 0.0
         orders_revenue = OrdersRevenueBlock(has_data=False)
 
-    # --- Advertising spend (both sources, kept separate) ---
+    # --- Advertising spend (three sources, kept separate) ---
     has_auto_ads = _has_any_auto_ad_stats(db, store_id=store_id)
     has_manual_ads = _has_any_manual_ad_stats(db, store_id=store_id)
+    has_cash_flow_data = _has_any_cash_flow_periods(db, store_id=store_id)
     spend_auto_metric = None
     spend_manual_metric = None
+    spend_other_metric = None
     total_spend_current = 0.0
     if has_auto_ads:
         auto_current = _sum_auto_ad_spend(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
@@ -426,15 +475,33 @@ def compute_dashboard(
         )
         spend_manual_metric = _compare(manual_current, manual_previous)
         total_spend_current += manual_current
+    if has_cash_flow_data:
+        # See _CASH_FLOW_AD_NAME_SUBSTRINGS's own comment: ad spend types
+        # cash-flow bills but AdvertisingDailyStatistic never captures at
+        # all (CPO promotions, seller bonus mailings) — sign flipped to
+        # positive (cash-flow stores these as negative/deductions) to match
+        # spend_auto_rub/spend_manual_rub's own convention.
+        other_current = _cash_flow_matching_items_sum(
+            db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to,
+            name_substrings=_CASH_FLOW_AD_NAME_SUBSTRINGS,
+        )
+        if other_current is not None:
+            other_previous = _cash_flow_matching_items_sum(
+                db, store_id=store_id, date_from=previous_date_from, date_to=previous_date_to,
+                name_substrings=_CASH_FLOW_AD_NAME_SUBSTRINGS,
+            )
+            spend_other_metric = _compare(-other_current, -other_previous if other_previous is not None else None)
+            total_spend_current += -other_current
 
     spend_share_of_revenue_pct = None
-    if (has_auto_ads or has_manual_ads) and orders_revenue.has_data and revenue_current:
+    if (has_auto_ads or has_manual_ads or spend_other_metric is not None) and orders_revenue.has_data and revenue_current:
         spend_share_of_revenue_pct = round(total_spend_current / revenue_current * 100, 2)
 
     advertising = AdvertisingBlock(
-        has_data=has_auto_ads or has_manual_ads,
+        has_data=has_auto_ads or has_manual_ads or spend_other_metric is not None,
         spend_auto_rub=spend_auto_metric,
         spend_manual_rub=spend_manual_metric,
+        spend_other_formats_rub=spend_other_metric,
         spend_share_of_revenue_pct=spend_share_of_revenue_pct,
     )
 
@@ -500,7 +567,7 @@ def compute_dashboard(
     # here are Ozon-defined weekly buckets, not the same day-precise window
     # postings use, so combining them into one "more precise" margin figure
     # risked silently mixing two different accounting windows) ---
-    has_cash_flow_data = _has_any_cash_flow_periods(db, store_id=store_id)
+    # has_cash_flow_data already computed above for the Advertising block.
     if has_cash_flow_data:
         periods_in_range = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
         if periods_in_range:
