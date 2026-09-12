@@ -319,6 +319,29 @@ def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(CashFlowStatementPeriod.id).where(CashFlowStatementPeriod.store_id == store_id).limit(1)) is not None
 
 
+# Substrings CONFIRMED (2026-09-12, real account raw_payload — located via
+# inspect_cash_flow_periods.py --find-key, cross-checked against a manually
+# exported Ozon "Начисления" report's own group names) to belong to
+# "Услуги партнёров" and "Услуги FBO". Split by which top-level bucket each
+# actually lives in — NOT all in `services`: "Эквайринг"
+# (MarketplaceRedistributionOfAcquiringOperation, and the newer
+# ...AcquiringItem spelling) was independently confirmed back on 2026-09-10
+# to live inside `others`, alongside seller decompensation — putting it in
+# the wrong bucket's hint list would silently match nothing, ever.
+# "Страхование товара от массовых повреждений" (InsuranceServiceSellerItem)
+# and "Кросс-докинг" (MarketplaceServiceItemCrossdocking, confirmed price
+# matched exactly to the Начисления report's own "Кросс-докинг" line) ARE
+# in `services`. Other real sub-items the Начисления report showed under
+# these same two groups (partner delivery-to-pickup-point, partner
+# packaging, temporary storage BY a partner, FBO inbound/outbound handling
+# beyond crossdocking) have NOT been matched to a confirmed raw `name` yet
+# — they stay uncategorized rather than being guessed at, same discipline
+# as fines/storage below.
+_PARTNER_SERVICE_HINTS_IN_SERVICES = ("InsuranceService",)
+_PARTNER_SERVICE_HINTS_IN_OTHERS = ("AcquiringItem", "AcquiringOperation")
+_FBO_SERVICE_HINTS_IN_SERVICES = ("Crossdocking", "SupplyInboundAdditional")
+
+
 def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
     """Pulls (fines, storage) out of a CashFlowStatementPeriod.
     services_items_json blob, by CONFIRMED real item-name substrings
@@ -328,12 +351,13 @@ def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
 
     Deliberately does NOT also return an "other" sum computed from the
     remaining items — the caller derives that as (period.services_total -
-    fines - storage) instead, so a period whose items_json is empty/missing
-    (e.g. an older row synced before with_details was in use) still keeps
-    its full services_total in "Прочие услуги" rather than silently losing
-    it because there was nothing to scan. Only these two substrings have
-    been directly confirmed against a real item name so far — anything else
-    stays uncategorized (falls into "Прочие услуги" via the total)."""
+    fines - storage - ...) instead, so a period whose items_json is empty/
+    missing (e.g. an older row synced before with_details was in use)
+    still keeps its full services_total in "Прочие услуги" rather than
+    silently losing it because there was nothing to scan. Only these two
+    substrings have been directly confirmed against a real item name in
+    THIS bucket so far — see _sum_matching_items for the partner/FBO
+    substrings, which span both `services` and `others`."""
     if not items_json:
         return 0.0, 0.0
     try:
@@ -349,6 +373,20 @@ def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
         elif "Storage" in name:
             storage += price
     return fines, storage
+
+
+def _sum_matching_items(items_json: str | None, name_hints: tuple[str, ...]) -> float:
+    """Sum of `price` across an items_json blob's entries whose `name`
+    contains any of name_hints — generic version of the fines/storage
+    matching above, used for hints that must be checked against a
+    SPECIFIC bucket (services OR others) rather than always the same one."""
+    if not items_json:
+        return 0.0
+    try:
+        items = json.loads(items_json)
+    except (TypeError, ValueError):
+        return 0.0
+    return sum(float(item.get("price") or 0) for item in items if any(h in (item.get("name") or "") for h in name_hints))
 
 
 def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) -> tuple[str, float] | None:
@@ -372,7 +410,12 @@ def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) 
             continue
         for item in items:
             name = item.get("name") or ""
-            if "Fine" in name or "Storage" in name:
+            if (
+                "Fine" in name
+                or "Storage" in name
+                or any(h in name for h in _PARTNER_SERVICE_HINTS_IN_SERVICES)
+                or any(h in name for h in _FBO_SERVICE_HINTS_IN_SERVICES)
+            ):
                 continue
             price = item.get("price")
             if price is None:
@@ -572,25 +615,38 @@ def compute_dashboard(
         periods_in_range = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
         if periods_in_range:
             fines_sum = storage_sum = services_total_sum = 0.0
-            logistics_sum = returns_sum = others_sum = 0.0
+            logistics_sum = returns_sum = others_total_sum = 0.0
+            partner_from_services_sum = partner_from_others_sum = 0.0
+            fbo_from_services_sum = 0.0
             is_estimated = False
             for p in periods_in_range:
                 fraction = _period_overlap_fraction(p.period_begin, p.period_end, resolved_date_from, resolved_date_to)
                 if fraction < 1.0:
                     is_estimated = True
                 fines, storage = _categorize_service_items(p.services_items_json)
+                partner_from_services = _sum_matching_items(p.services_items_json, _PARTNER_SERVICE_HINTS_IN_SERVICES)
+                partner_from_others = _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS_IN_OTHERS)
+                fbo_from_services = _sum_matching_items(p.services_items_json, _FBO_SERVICE_HINTS_IN_SERVICES)
+
                 fines_sum += fines * fraction
                 storage_sum += storage * fraction
+                partner_from_services_sum += partner_from_services * fraction
+                partner_from_others_sum += partner_from_others * fraction
+                fbo_from_services_sum += fbo_from_services * fraction
                 services_total_sum += float(p.services_total or 0) * fraction
                 logistics_sum += float(p.delivery_services_total or 0) * fraction
                 returns_sum += float(p.delivery_return_total or 0) * fraction
-                others_sum += float(p.others_total or 0) * fraction
-            # other_services_rub is the REMAINDER of services_total after
-            # pulling out fines/storage — not summed independently from
-            # items[] — so a period whose items_json doesn't (fully) cover
-            # its own total (e.g. an older row, or an Ozon item name this
-            # matching hasn't seen yet) never drops that money silently.
-            other_services_sum = services_total_sum - fines_sum - storage_sum
+                others_total_sum += float(p.others_total or 0) * fraction
+            partner_services_sum = partner_from_services_sum + partner_from_others_sum
+            # other_services_rub / other_deductions_rub are each the
+            # REMAINDER of their own bucket's total after pulling out the
+            # portion that landed in THAT bucket specifically — not summed
+            # independently from items[] — so a period whose items_json
+            # doesn't (fully) cover its own total (e.g. an older row, or an
+            # Ozon item name this matching hasn't seen yet) never drops
+            # that money silently.
+            other_services_sum = services_total_sum - fines_sum - storage_sum - partner_from_services_sum - fbo_from_services_sum
+            other_deductions_sum = others_total_sum - partner_from_others_sum
             # Deliberately the RAW (non-prorated) item — this is an
             # informational "which item dominates" pointer, not a total
             # this range claims to own; prorating it would misrepresent a
@@ -602,7 +658,9 @@ def compute_dashboard(
                 returns_logistics_rub=round(returns_sum, 2),
                 storage_rub=round(storage_sum, 2),
                 fines_rub=round(fines_sum, 2),
-                other_deductions_rub=round(others_sum, 2),
+                partner_services_rub=round(partner_services_sum, 2),
+                fbo_services_rub=round(fbo_from_services_sum, 2),
+                other_deductions_rub=round(other_deductions_sum, 2),
                 other_services_rub=round(other_services_sum, 2),
                 other_services_top_item_name=top_item[0] if top_item else None,
                 other_services_top_item_rub=round(top_item[1], 2) if top_item else None,

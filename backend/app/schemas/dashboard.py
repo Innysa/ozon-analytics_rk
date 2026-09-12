@@ -159,15 +159,40 @@ class LogisticsBlock(BaseModel):
     storage_rub, "Fine" -> fines_rub (both CONFIRMED present, 2026-09-10 —
     MarketplaceServiceItemTemporaryStorageRedistribution and
     FinesShipmentNonRecommendedSlot respectively). other_services_rub is
-    the REMAINDER (services_total - fines_rub - storage_rub), not summed
-    independently from items[] — so a period whose items weren't recorded,
-    or that has an item name this matching doesn't recognize, still keeps
-    its money in other_services_rub instead of it silently disappearing.
+    the REMAINDER (services_total - fines_rub - storage_rub -
+    partner_services_rub's services-side portion - fbo_services_rub), not
+    summed independently from items[] — so a period whose items weren't
+    recorded, or that has an item name this matching doesn't recognize,
+    still keeps its money in other_services_rub instead of it silently
+    disappearing.
+
+    partner_services_rub ("Услуги партнёров" on Ozon's own "Начисления"
+    report — CONFIRMED 2026-09-12 by matching item names AND rub amounts
+    against a manually exported copy of that report) SPANS TWO different
+    Ozon buckets: InsuranceServiceSellerItem ("Страхование товара от
+    массовых повреждений") lives in `services`, while
+    MarketplaceRedistributionOfAcquiringOperation/...Item ("Эквайринг", the
+    dominant real component) lives in the SEPARATE `others` bucket — so
+    this figure is pulled out of other_services_rub AND other_deductions_rub
+    simultaneously, each losing only the portion that actually came from
+    it. Other real "Услуги партнёров" sub-items Ozon's own report shows
+    (partner delivery-to-pickup-point, partner packaging, temporary
+    partner storage, return/cancellation handling by a partner) have NOT
+    been matched to a confirmed raw item `name` yet and stay wherever they
+    already were (other_services_rub or other_deductions_rub) rather than
+    being guessed at.
+
+    fbo_services_rub ("Услуги FBO") is pulled from `services` only —
+    CONFIRMED real component: MarketplaceServiceItemCrossdocking
+    ("Кросс-докинг"), with its rub amount matched exactly against the same
+    exported report. Ozon's report also shows FBO warehouse pickup/
+    preparation/acceptance sub-items not yet matched to a confirmed raw
+    name; they stay in other_services_rub for now.
 
     other_deductions_rub = sum of the separate "others" bucket inside
     details[] (also {"total", "items[]"}, confirmed 2026-09-10 — e.g.
-    acquiring fees, seller "decompensation") — NOT sub-split, only two
-    item names observed so far.
+    seller "decompensation"), MINUS whatever of it landed in
+    partner_services_rub (see above) — NOT further sub-split.
 
     other_services_top_item_name/_rub — the single largest (by absolute
     price) uncategorized item across the summed periods, e.g. a real
@@ -206,6 +231,8 @@ class LogisticsBlock(BaseModel):
     returns_logistics_rub: float | None = None
     storage_rub: float | None = None
     fines_rub: float | None = None
+    partner_services_rub: float | None = None
+    fbo_services_rub: float | None = None
     other_deductions_rub: float | None = None
     other_services_rub: float | None = None
     other_services_top_item_name: str | None = None

@@ -312,9 +312,60 @@ def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, 
     assert block["fines_rub"] == -504
     assert block["storage_rub"] == -1404
     assert block["other_services_rub"] == -81971.47  # remainder: -83879.47 - (-504) - (-1404)
-    assert block["other_deductions_rub"] == -26715.76
+    # "Эквайринг" (AcquiringOperation) is pulled OUT of "others" into
+    # partner_services_rub — see test_logistics_block_splits_partner_and_fbo_services.
+    assert block["other_deductions_rub"] == -3020.95  # -26715.76 - (-23694.81)
+    assert block["partner_services_rub"] == -23694.81
     assert block["other_services_top_item_name"] == "MarketplaceServiceCostPerClick"
     assert block["other_services_top_item_rub"] == -81971.47
+
+
+def test_logistics_block_splits_partner_and_fbo_services(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-12 by matching real rub amounts against a manually
+    exported Ozon "Начисления" report: "Услуги партнёров" spans TWO
+    different cash-flow buckets — InsuranceServiceSellerItem lives in
+    `services`, MarketplaceRedistributionOfAcquiringOperation/...Item lives
+    in the SEPARATE `others` bucket — while "Услуги FBO"
+    (MarketplaceServiceItemCrossdocking) lives only in `services`. Each
+    must be pulled out of whichever bucket it actually came from, not
+    double-subtracted from the wrong one."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    services_items = [
+        {"name": "InsuranceServiceSellerItem", "price": -18795.48},
+        {"name": "MarketplaceServiceItemCrossdocking", "price": -6288},
+        {"name": "MarketplaceServiceCostPerClick", "price": -100},
+    ]
+    others_items = [
+        {"name": "MarketplaceRedistributionOfAcquiringItem", "price": -45301.5},
+        {"name": "MarketplaceSellerDecompensationItemByTypeDocOperation", "price": -3020.95},
+    ]
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-25183.48, services_items_json=json.dumps(services_items),
+        others_total=-48322.45, others_items_json=json.dumps(others_items),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    # -18795.48 (insurance, from services) + -45301.5 (acquiring, from others)
+    assert block["partner_services_rub"] == -64096.98
+    assert block["fbo_services_rub"] == -6288
+    assert block["other_services_rub"] == -100  # -25183.48 - (-18795.48) - (-6288)
+    assert block["other_deductions_rub"] == -3020.95  # -48322.45 - (-45301.5)
 
 
 def test_logistics_block_surfaces_largest_uncategorized_item_by_magnitude(client, db_session, two_stores_with_users):
