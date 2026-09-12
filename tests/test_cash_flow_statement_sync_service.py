@@ -28,7 +28,8 @@ def _flow(begin: str, end: str, *, orders=0, returns=0, commission=0, services=0
 
 
 def _detail(begin: str, end: str, *, delivery_services_total=0, delivery_services_items=None,
-            return_total=0, return_items=None, services_total=0, services_items=None,
+            return_total=0, return_items=None, return_services_total=0, return_services_items=None,
+            services_total=0, services_items=None,
             others_total=0, others_items=None) -> dict:
     return {
         "period": {"id": 0, "begin": begin, "end": end},
@@ -39,6 +40,11 @@ def _detail(begin: str, end: str, *, delivery_services_total=0, delivery_service
             "amount": 1259092.6,
             "delivery_services": {"total": delivery_services_total, "items": delivery_services_items or []},
             "return": {"total": return_total, "items": return_items or []},
+            # Sibling bucket to "return" — CONFIRMED 2026-09-12 (real
+            # account raw_payload) to carry "Обратная логистика"
+            # (MarketplaceServiceItemReturnFlowLogistic), a bucket earlier
+            # test fixtures never modeled because it hadn't been found yet.
+            "return_services": {"total": return_services_total, "items": return_services_items or []},
         },
         "loan": 0,
         "invoice_transfer": 15717.64,
@@ -137,6 +143,36 @@ def test_sync_stores_items_as_json_and_updates_existing_period(db_session, two_s
     assert len(rows) == 1
     assert float(rows[0].delivery_services_total) == -99999
     assert float(rows[0].orders_amount) == 1500
+
+
+def test_sync_merges_return_and_return_services_into_delivery_return(db_session, two_stores_with_users):
+    """Regression for a real account (2026-09-12): delivery.return_services
+    is a sibling of delivery.return that the sync never read at all, so its
+    real money (a confirmed real item, MarketplaceServiceItemReturnFlowLogistic
+    — "Обратная логистика") silently never reached delivery_return_total —
+    the Дашборд's "Обработка возвратов" showed 0 while real spend existed.
+    Both buckets must now be summed into the same delivery_return_total,
+    and their items merged into delivery_return_items_json."""
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    return_items = [{"name": "MarketplaceServiceItemRedistributionReturnsPVZ", "price": -1650}]
+    return_services_items = [{"name": "MarketplaceServiceItemReturnFlowLogistic", "price": -28102}]
+    flows = [_flow("2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z")]
+    details = [_detail(
+        "2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z",
+        return_total=-1650, return_items=return_items,
+        return_services_total=-29752, return_services_items=return_services_items,
+    )]
+
+    outcome = sync_cash_flow_statement_periods(db_session, store_id=store_id, client=_FakeClient(flows, details), date_from=date(2026, 9, 7), date_to=date(2026, 9, 13))
+    assert outcome.created == 1
+
+    row = db_session.query(CashFlowStatementPeriod).filter(CashFlowStatementPeriod.store_id == store_id).one()
+    assert float(row.delivery_return_total) == -31402  # -1650 + -29752
+    assert "MarketplaceServiceItemRedistributionReturnsPVZ" in row.delivery_return_items_json
+    assert "MarketplaceServiceItemReturnFlowLogistic" in row.delivery_return_items_json
 
 
 def test_sync_stores_others_bucket_raw(db_session, two_stores_with_users):

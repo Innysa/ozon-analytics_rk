@@ -64,8 +64,19 @@ full methodology):
   - `delivery.return` was seen with an item named
     MarketplaceServiceItemRedistributionReturnsPVZ (return processing via
     a pickup point) — parsed the same {"total", "items"} shape as
-    delivery_services defensively; not independently re-confirmed as
-    exhaustively as delivery_services was.
+    delivery_services.
+  - UPDATE (2026-09-12, real account raw_payload via
+    inspect_cash_flow_periods.py --period-begin): `delivery.return` is NOT
+    the only return-related bucket — there is a SIBLING
+    `delivery.return_services` ({"total", "items"}, confirmed item
+    MarketplaceServiceItemReturnFlowLogistic — "Обратная логистика", the
+    cost of shipping a returned item back) that earlier rounds never saw
+    and the sync never read. delivery_return_total/_items_json now SUM/
+    MERGE delivery.return AND delivery.return_services (see
+    cash_flow_statement_sync_service's own comment) rather than only the
+    former — before this, real "Обратная логистика" spend silently never
+    reached delivery_return_total at all (showed 0 on the Дашборд's
+    "Обработка возвратов" while genuine money was being spent).
   - UPDATE (2026-09-10, user's own grep of their full saved diagnostic
     file, not a partial screenshot): `services.items[]` DOES contain a
     fine — real item name `FinesShipmentNonRecommendedSlot`. It is stored

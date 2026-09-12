@@ -60,6 +60,22 @@ def _items_json(container: dict | None) -> str | None:
     return json.dumps(items, ensure_ascii=False)
 
 
+def _merged_items_json(*containers: dict | None) -> str | None:
+    """Same as _items_json but concatenates items[] across several
+    containers into one JSON array — used for delivery.return +
+    delivery.return_services (see their own comment below for why two
+    separate Ozon buckets get merged into the one "Обработка возвратов"
+    figure)."""
+    merged: list = []
+    for container in containers:
+        if not container:
+            continue
+        items = container.get("items")
+        if items:
+            merged.extend(items)
+    return json.dumps(merged, ensure_ascii=False) if merged else None
+
+
 def _fetch_all(client, *, date_from: str, date_to: str, max_pages: int) -> tuple[list[dict], list[dict]]:
     all_flows: list[dict] = []
     all_details: list[dict] = []
@@ -121,6 +137,21 @@ def sync_cash_flow_statement_periods(
         delivery = detail.get("delivery") or {}
         delivery_services = delivery.get("delivery_services") or {}
         delivery_return = delivery.get("return") or {}
+        # CONFIRMED 2026-09-12 (real account raw_payload, via
+        # inspect_cash_flow_periods.py --period-begin): delivery.return
+        # (return processing, e.g. MarketplaceServiceItemRedistributionReturnsPVZ
+        # via a pickup point) is NOT the only return-related bucket — Ozon
+        # ALSO has a sibling delivery.return_services ({"total", "items"},
+        # confirmed item MarketplaceServiceItemReturnFlowLogistic — "Обратная
+        # логистика", i.e. shipping the returned item back) that this sync
+        # never read at all, so its real money silently never reached
+        # "Обработка возвратов" on the Дашборд (showed 0 while real spend
+        # existed). Both are genuinely "cost of handling a return" from a
+        # seller's point of view, so they're summed/merged into the SAME
+        # delivery_return_total/_items_json columns rather than adding a new
+        # column+migration for a bucket the Дашборд would show right next to
+        # the existing one anyway.
+        delivery_return_services = delivery.get("return_services") or {}
         services = detail.get("services") or {}
         others = detail.get("others") or {}
         rfbs = detail.get("rfbs") or {}
@@ -150,8 +181,12 @@ def sync_cash_flow_statement_periods(
         record.delivery_amount = delivery.get("amount")
         record.delivery_services_total = delivery_services.get("total")
         record.delivery_services_items_json = _items_json(delivery_services)
-        record.delivery_return_total = delivery_return.get("total")
-        record.delivery_return_items_json = _items_json(delivery_return)
+        return_total = delivery_return.get("total")
+        return_services_total = delivery_return_services.get("total")
+        record.delivery_return_total = (
+            None if return_total is None and return_services_total is None else (return_total or 0) + (return_services_total or 0)
+        )
+        record.delivery_return_items_json = _merged_items_json(delivery_return, delivery_return_services)
         record.services_total = services.get("total")
         record.services_items_json = _items_json(services)
         record.others_total = others.get("total")
