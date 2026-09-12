@@ -50,10 +50,14 @@ class _FakeSellerClient:
                         # 2026-09-12 on a real account (located via
                         # inspect_cash_flow_periods.py --find-key), NOT
                         # nested inside "delivery" as an earlier,
-                        # unconfirmed guess had it.
+                        # unconfirmed guess had it. "amount" is the base
+                        # monetary value of returned orders (a
+                        # revenue-return figure, NOT a service cost — same
+                        # day's second correction) — only return_services
+                        # is a real cost bucket, so only it feeds
+                        # delivery_return_total/_items_json.
                         "return": {
                             "total": -81414.52, "amount": -51662.52,
-                            "items": [{"name": "MarketplaceServiceItemRedistributionReturnsPVZ", "price": -1650}],
                             "return_services": {
                                 "total": -29752,
                                 "items": [{"name": "MarketplaceServiceItemReturnFlowLogistic", "price": -28102}],
@@ -146,7 +150,7 @@ def test_sync_end_to_end_and_dashboard_logistics_block(client, db_session, two_s
     assert logistics["has_data"] is True
     assert logistics["periods_summed"] == 1
     assert logistics["logistics_rub"] == -121185.3
-    assert logistics["returns_logistics_rub"] == -81414.52
+    assert logistics["returns_logistics_rub"] == -29752  # return_services.total only, NOT return.total (-81414.52)
     assert logistics["other_services_rub"] == -93228.57
 
 

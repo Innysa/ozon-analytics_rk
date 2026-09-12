@@ -157,21 +157,25 @@ def test_sync_reads_return_as_top_level_sibling_of_delivery(db_session, two_stor
     `delivery.return` — an earlier, unconfirmed guess had it there and was
     wrong, so delivery_return_total was NEVER populated at all (always
     None), and "Обработка возвратов" showed 0 while real spend existed the
-    whole time. delivery_return_total must come from return.total directly
-    (already inclusive of return_services.total, confirmed by real numbers
-    adding up exactly — see cash_flow_statement_sync_service's own
-    comment), and delivery_return_items_json must merge items from both
-    return.items and return.return_services.items."""
+    whole time.
+
+    SECOND correction, same day: delivery_return_total must come from
+    return.return_services.total ONLY, NOT return.total — return.total
+    also includes return.amount, which is the base monetary VALUE of
+    returned orders (a revenue-return figure), not a service cost; using
+    it produced a real, confirmed ~+91k gap against Ozon's own "Услуги
+    доставки" total. Same "amount excluded, only the *_services.total
+    counted" rule delivery_services_total has always followed for
+    "Логистика"."""
     from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 
     d = two_stores_with_users
     store_id = d["store_a"].id
-    return_items = [{"name": "MarketplaceServiceItemRedistributionReturnsPVZ", "price": -1650}]
     return_services_items = [{"name": "MarketplaceServiceItemReturnFlowLogistic", "price": -28102}]
     flows = [_flow("2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z")]
     details = [_detail(
         "2026-09-07T00:00:00Z", "2026-09-13T00:00:00Z",
-        return_total=-31402, return_items=return_items,  # the bucket's own grand total, as Ozon reports it
+        return_total=-31402,  # return.amount + return_services.total — must NOT end up in delivery_return_total
         return_services_total=-29752, return_services_items=return_services_items,
     )]
 
@@ -179,8 +183,8 @@ def test_sync_reads_return_as_top_level_sibling_of_delivery(db_session, two_stor
     assert outcome.created == 1
 
     row = db_session.query(CashFlowStatementPeriod).filter(CashFlowStatementPeriod.store_id == store_id).one()
-    assert float(row.delivery_return_total) == -31402  # taken directly from return.total, not re-summed
-    assert "MarketplaceServiceItemRedistributionReturnsPVZ" in row.delivery_return_items_json
+    assert float(row.delivery_return_total) == -29752  # return_services.total ONLY, not the -31402 return.total
+    assert "MarketplaceServiceItemReturnFlowLogistic" in row.delivery_return_items_json
     assert "MarketplaceServiceItemReturnFlowLogistic" in row.delivery_return_items_json
 
 

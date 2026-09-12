@@ -74,14 +74,24 @@ full methodology):
     = {"total", "amount", "return_services": {"total", "items": [{"name",
     "price"}]}}`. Confirmed exactly on a real period: return.total (-81
     414.52) == return.amount (-51 662.52) + return_services.total
-    (-29 752) — i.e. return.total is already the bucket's grand total,
-    inclusive of return_services, not a sibling figure to add on top of it.
-    Confirmed real items: MarketplaceServiceItemRedistributionReturnsPVZ
-    (return processing via a pickup point — exact parent unconfirmed, kept
-    alongside return_services's own items when merging into
-    delivery_return_items_json) and, inside return.return_services.items[],
-    MarketplaceServiceItemReturnFlowLogistic ("Обратная логистика" — cost
-    of shipping the returned item back).
+    (-29 752). SECOND CORRECTION, same day: return.total is NOT a pure
+    service-cost figure to store as delivery_return_total — a real
+    account's Дашборд showed a fixed ~+91k gap against Ozon's own "Услуги
+    доставки" total once return.total was used. return.amount mirrors
+    delivery.amount (delivery.amount 1 259 092.6 + delivery_services.total
+    -121 185.3 = delivery.total 1 137 907.3, the same "amount = base
+    monetary value, total = amount net of service costs" shape) — i.e.
+    return.amount is the base VALUE of returned orders (a revenue-return
+    figure), not a cost. "Логистика" has always correctly used
+    delivery_services.total alone, never delivery.total; delivery_return_
+    total/_items_json must equally use ONLY return.return_services.total/
+    .items, never return.total. Confirmed real item inside
+    return.return_services.items[]: MarketplaceServiceItemReturnFlowLogistic
+    ("Обратная логистика" — cost of shipping the returned item back).
+    MarketplaceServiceItemRedistributionReturnsPVZ (return processing via a
+    pickup point), assumed earlier to live directly under `return`, is
+    UNCONFIRMED again after this correction — not merged in until actually
+    located via --find-key against a real account.
   - UPDATE (2026-09-10, user's own grep of their full saved diagnostic
     file, not a partial screenshot): `services.items[]` DOES contain a
     fine — real item name `FinesShipmentNonRecommendedSlot`. It is stored

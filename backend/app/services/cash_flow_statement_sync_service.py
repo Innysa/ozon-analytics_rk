@@ -60,22 +60,6 @@ def _items_json(container: dict | None) -> str | None:
     return json.dumps(items, ensure_ascii=False)
 
 
-def _merged_items_json(*containers: dict | None) -> str | None:
-    """Same as _items_json but concatenates items[] across several
-    containers into one JSON array — used for delivery.return +
-    delivery.return_services (see their own comment below for why two
-    separate Ozon buckets get merged into the one "Обработка возвратов"
-    figure)."""
-    merged: list = []
-    for container in containers:
-        if not container:
-            continue
-        items = container.get("items")
-        if items:
-            merged.extend(items)
-    return json.dumps(merged, ensure_ascii=False) if merged else None
-
-
 def _fetch_all(client, *, date_from: str, date_to: str, max_pages: int) -> tuple[list[dict], list[dict]]:
     all_flows: list[dict] = []
     all_details: list[dict] = []
@@ -183,13 +167,27 @@ def sync_cash_flow_statement_periods(
         record.delivery_amount = delivery.get("amount")
         record.delivery_services_total = delivery_services.get("total")
         record.delivery_services_items_json = _items_json(delivery_services)
-        # return.total already EQUALS return.amount + return_services.total
-        # (confirmed exactly on a real account: -51662.52 + -29752 =
-        # -81414.52) — it's the bucket's own grand total, already inclusive
-        # of return_services, not a sibling figure to add separately (doing
-        # so would double-count return_services.total).
-        record.delivery_return_total = return_bucket.get("total")
-        record.delivery_return_items_json = _merged_items_json(return_bucket, return_services)
+        # CORRECTED 2026-09-12 (real account: a fixed +91k gap appeared
+        # between the Дашборд's "Логистика"+"Обработка возвратов" and
+        # Ozon's own "Услуги доставки" group total once return.total was
+        # used). return.total EQUALS return.amount + return_services.total
+        # (confirmed exactly: -51662.52 + -29752 = -81414.52) — but
+        # return.amount is NOT a service cost, it's the base monetary
+        # value of the returned orders (same "amount = base value, total =
+        # amount minus service costs" pattern already confirmed for
+        # delivery: delivery.amount 1259092.6 + delivery_services.total
+        # -121185.3 = delivery.total 1137907.3). "Логистика" has always
+        # correctly used delivery_services.total alone, never delivery.total
+        # — "Обработка возвратов" must do the same and use ONLY
+        # return_services.total, not return.total, or it silently pulls in
+        # a revenue-return figure that doesn't belong in "Услуги доставки"
+        # at all. Whether MarketplaceServiceItemRedistributionReturnsPVZ
+        # (the item this module long assumed lived directly under
+        # `return`) is a genuine cost item at all, and if so where, is
+        # UNCONFIRMED again after this correction — not merged in until
+        # actually located via --find-key against a real account.
+        record.delivery_return_total = return_services.get("total")
+        record.delivery_return_items_json = _items_json(return_services)
         record.services_total = services.get("total")
         record.services_items_json = _items_json(services)
         record.others_total = others.get("total")
