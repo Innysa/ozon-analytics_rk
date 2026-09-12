@@ -21,6 +21,7 @@ from app.services.advertising_daily_sync_service import sync_advertising_daily_s
 from app.services.audit import record_audit
 from app.services.cash_flow_statement_sync_service import sync_cash_flow_statement_periods
 from app.services.order_daily_sync_service import (
+    commission_missing_units_note,
     find_blocking_running_sync,
     skipped_no_process_date_note,
     sync_order_daily_statistics,
@@ -772,6 +773,9 @@ def _run_order_daily_statistics_sync(
             skipped_note = skipped_no_process_date_note(outcome)
             if skipped_note:
                 notes.append(skipped_note)
+            commission_note = commission_missing_units_note(outcome)
+            if commission_note:
+                notes.append(commission_note)
             error_message = "; ".join(notes) if notes else None
             run.status = SyncStatus.SUCCESS if not outcome.errors else (
                 SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED

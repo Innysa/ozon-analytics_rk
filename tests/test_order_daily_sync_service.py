@@ -9,10 +9,13 @@ from datetime import date, timedelta
 
 from app.services.ozon.schemas import OzonPostingItem, OzonPostingProductItem
 from app.services.order_daily_sync_service import (
+    SyncOutcome,
+    _count_missing_commission_units,
     _date_chunks,
     _fetch_all_postings,
     aggregate_postings_by_day,
     aggregate_postings_by_sku_and_day,
+    commission_missing_units_note,
 )
 
 
@@ -115,6 +118,52 @@ def test_posting_without_in_process_at_is_skipped_not_crashed():
     daily = aggregate_postings_by_day([posting], cost_by_sku={})
 
     assert daily == {}
+
+
+def test_count_missing_commission_units_counts_missing_financial_data():
+    """Regression, CONFIRMED 2026-09-12: a real account's MarginBlock.
+    commission_rub stayed ~41% below CashFlowStatementPeriod's own accrual
+    commission_amount even after backfilling every fully-missing sync
+    window — meaning some ALREADY-SYNCED postings are silently contributing
+    zero commission (see test_posting_without_financial_data_falls_back_
+    to_price_as_old_price above, which shows this happens by design when
+    financial_data is None). This counts exactly those units so the gap is
+    measurable instead of merely suspected."""
+    no_financial_data = OzonPostingItem(
+        posting_number="a", status="delivered", in_process_at="2026-09-02T00:00:00Z",
+        products=[OzonPostingProductItem(sku=1, offer_id="a", name="Товар", quantity=2, price="300.00")],
+        financial_data=None,
+    )
+    sku_not_in_financial_data = OzonPostingItem(
+        posting_number="b", status="delivered", in_process_at="2026-09-02T00:00:00Z",
+        products=[OzonPostingProductItem(sku=2, offer_id="b", name="Товар2", quantity=1, price="100.00")],
+        financial_data={"products": [{"product_id": 999, "old_price": 100.0, "commission_amount": -10}]},
+    )
+    with_commission = OzonPostingItem(
+        posting_number="c", status="delivered", in_process_at="2026-09-02T00:00:00Z",
+        products=[OzonPostingProductItem(sku=3, offer_id="c", name="Товар3", quantity=1, price="100.00")],
+        financial_data={"products": [{"product_id": 3, "old_price": 100.0, "commission_amount": -10}]},
+    )
+    zero_price_line = OzonPostingItem(
+        posting_number="d", status="delivered", in_process_at="2026-09-02T00:00:00Z",
+        products=[OzonPostingProductItem(sku=4, offer_id="d", name="Товар4", quantity=1, price="0.00")],
+        financial_data=None,
+    )
+
+    missing = _count_missing_commission_units(
+        [no_financial_data, sku_not_in_financial_data, with_commission, zero_price_line]
+    )
+
+    assert missing == 3  # 2 units (no_financial_data) + 1 unit (sku_not_in_financial_data)
+
+
+def test_commission_missing_units_note_absent_when_zero():
+    assert commission_missing_units_note(SyncOutcome()) is None
+
+
+def test_commission_missing_units_note_present_when_nonzero():
+    note = commission_missing_units_note(SyncOutcome(commission_missing_units=7))
+    assert "7" in note
 
 
 def test_by_sku_and_day_keeps_different_skus_separate():

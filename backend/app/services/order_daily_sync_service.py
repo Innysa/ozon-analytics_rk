@@ -42,6 +42,23 @@ discipline exists — see that script's own docstring):
      far had quantity=1. Treated as a per-line total (NOT multiplied by
      quantity again) until a multi-quantity real example says otherwise.
 
+CONFIRMED 2026-09-12 (existing test test_posting_without_financial_data_
+falls_back_to_price_as_old_price + a real account's own persistent ~41%
+gap between MarginBlock.commission_rub and CashFlowStatementPeriod's own
+weekly-accrual commission_amount, which SURVIVED backfilling three
+completely missing sync windows): a posting whose `financial_data` is
+None, or whose financial_data.products[] has no entry for a given line's
+sku, silently contributes commission=0 for that line — its
+ordered_sum_discounted_rub/delivered_sum_rub still count normally, only
+the commission is lost. This is NOT a hypothetical: Ozon does not appear
+to finalize financial_data for every posting by the time it's fetched
+(most plausibly for postings still in progress near the requested range's
+own edge), and this module previously had no way to tell "confirmed zero
+commission" apart from "financial_data just wasn't there yet" — the two
+were silently identical. See SyncOutcome.commission_missing_units below,
+added specifically to make this gap visible on every run instead of
+requiring a fresh one-off diagnostic fetch to even suspect it exists.
+
 NOT covered by this sync (see README for the full status):
   - Impressions/cart-adds/conversion funnel (Количество переходов в
     карточку / Положили в корзину / Конверсия) — postings carry no such
@@ -131,6 +148,14 @@ class SyncOutcome:
     # a one-off diagnostic script (see backend/scripts/debug_sku_order_dates.py, added
     # 2026-09-11 investigating exactly this).
     skipped_no_process_date: int = 0
+    # Units where price > 0 but no financial_data commission_amount was
+    # found for that line (financial_data itself None, or no matching
+    # product_id in financial_data.products[]) — see
+    # _count_missing_commission_units's own docstring and this module's own
+    # docstring for why this exists. Counted separately from
+    # skipped_no_process_date (a different silent gap: dropped from every
+    # bucket entirely, vs counted normally everywhere EXCEPT commission_rub).
+    commission_missing_units: int = 0
 
 
 def _to_float(value: object) -> float:
@@ -166,6 +191,33 @@ def _financial_line_for_sku(financial_data: dict | None, sku: int | None) -> dic
         if line.get("product_id") == sku:
             return line
     return {}
+
+
+def _count_missing_commission_units(postings: list[OzonPostingItem]) -> int:
+    """Counts product-line UNITS whose price is > 0 but no matching
+    financial_data commission_amount was found — either financial_data
+    itself is None (CONFIRMED real case: see
+    test_posting_without_financial_data_falls_back_to_price_as_old_price),
+    or financial_data.products[] has no entry for that line's sku. Every
+    such unit silently contributes 0 to commission_rub in
+    aggregate_postings_by_day/_by_sku_and_day, while still counting
+    normally toward ordered_sum_discounted_rub/delivered_sum_rub — this
+    function exists purely to make that specific gap COUNTABLE (see
+    SyncOutcome.commission_missing_units), not to fix it: there is no
+    substitute commission figure to fall back to when Ozon hasn't computed
+    one yet."""
+    missing = 0
+    for posting in postings:
+        for product in posting.products:
+            qty = product.quantity or 0
+            if qty <= 0:
+                continue
+            if _to_float(product.price) <= 0:
+                continue
+            fin_line = _financial_line_for_sku(posting.financial_data, product.sku)
+            if fin_line.get("commission_amount") is None:
+                missing += qty
+    return missing
 
 
 def _empty_bucket() -> dict:
@@ -310,6 +362,22 @@ def skipped_no_process_date_note(outcome: SyncOutcome) -> str | None:
     )
 
 
+def commission_missing_units_note(outcome: SyncOutcome) -> str | None:
+    """A one-line, human-readable note for SyncRun.error_message when
+    outcome.commission_missing_units > 0 — surfaced on EVERY run (success
+    included), same convention as skipped_no_process_date_note above, so a
+    persistent MarginBlock.commission_rub shortfall against Ozon's own
+    accrual report (CashFlowStatementPeriod.commission_amount) can be
+    attributed to this specific, countable cause instead of guessed at."""
+    if not outcome.commission_missing_units:
+        return None
+    return (
+        f"Позиций без данных о комиссии от Ozon на момент синхронизации (ещё не "
+        f"посчитана Ozon'ом — товар в этих строках учтён в заказах/выручке, но НЕ "
+        f"в комиссии): {outcome.commission_missing_units} шт."
+    )
+
+
 def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonPostingItem]:
     all_postings: list[OzonPostingItem] = []
     offset = 0
@@ -425,6 +493,7 @@ def sync_order_daily_statistics(
 
         outcome.fetched += len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)
+        outcome.commission_missing_units += _count_missing_commission_units(postings)
         daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku)
 
         for day, bucket in daily.items():
