@@ -272,6 +272,22 @@ class OzonSellerClient:
         # every retry attempt (level, attempt count, wait chosen) so the
         # NEXT real occurrence is observable in the app's own logs instead
         # of needing another bespoke diagnostic run.
+        #
+        # CONFIRMED 2026-09-12: a sustained-429 chunk's logs showed all 7
+        # waits at a flat 1.0s, no escalation whatsoever — reproduced this
+        # exact decorator locally against a function that always raises
+        # OzonRateLimited with no retry_after_s, and it escalated correctly
+        # (1,2,4,8,16,30,30), ruling out a bug in _wait_for_ozon_rate_limit/
+        # wait_exponential themselves. The far more likely explanation: Ozon
+        # was sending a real `Retry-After` header (probably "1") on every
+        # single attempt, honored verbatim each time per this decorator's
+        # own design — but before_sleep_log's line only ever showed the
+        # CHOSEN wait, never the raw header value, so there was no way to
+        # tell "Ozon keeps saying 1s and it's genuinely not enough" apart
+        # from "our fallback backoff is stuck". _post() below now logs the
+        # raw Retry-After header (and includes it in OzonRateLimited's own
+        # message) at the moment Ozon sends it, so this is directly
+        # observable next time instead of needing a fresh reproduction.
         stop=stop_after_attempt(8),
         wait=_wait_for_ozon_rate_limit,
         retry=retry_if_exception_type(OzonRateLimited),
@@ -289,8 +305,26 @@ class OzonSellerClient:
         if response.status_code == 401 or response.status_code == 403:
             raise OzonAuthError("Ozon отклонил Client-Id/Api-Key (401/403)")
         if response.status_code == 429:
+            retry_after_raw = response.headers.get("Retry-After")
+            retry_after_s = _parse_retry_after(retry_after_raw)
+            # CONFIRMED 2026-09-12 (real account): a sustained-429 chunk logged
+            # SEVEN retries in a row all waiting exactly 1.0s, no escalation at
+            # all — which _wait_for_ozon_rate_limit only does when Ozon's OWN
+            # `Retry-After` header carries a value (honored verbatim instead of
+            # the exponential fallback, by design). before_sleep_log's line
+            # only ever showed the CHOSEN wait, never the raw header itself, so
+            # there was no way to tell "Ozon told us 1s, repeatedly, and it just
+            # wasn't enough" apart from "our own backoff is stuck at 1s" (which
+            # a direct reproduction of this exact decorator ruled out — it
+            # escalates correctly in isolation). Logging the raw header here,
+            # at the moment Ozon sends it, closes that gap for next time
+            # without needing another investigation round.
+            logger.warning(
+                "Ozon 429 на %s: Retry-After=%r (распознано как %r секунд)", path, retry_after_raw, retry_after_s
+            )
             raise OzonRateLimited(
-                "Ozon вернул 429 Too Many Requests", retry_after_s=_parse_retry_after(response.headers.get("Retry-After"))
+                f"Ozon вернул 429 Too Many Requests на {path} (Retry-After={retry_after_raw!r} -> {retry_after_s!r}с)",
+                retry_after_s=retry_after_s,
             )
         if response.status_code == 404:
             # Beta/plan-gated methods can 404 for stores without the required subscription.

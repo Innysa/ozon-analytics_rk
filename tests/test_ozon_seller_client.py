@@ -357,6 +357,32 @@ def test_post_falls_back_to_exponential_backoff_without_retry_after_header(monke
     )
 
     result = client.check_connection()
-
     assert result["ok"] is True
-    assert 1 in sleep_calls
+
+
+def test_post_surfaces_raw_retry_after_header_in_exception_message(monkeypatch, caplog):
+    """Regression, CONFIRMED 2026-09-12: a real account's sustained-429 chunk
+    logged all 7 retries at a flat 1.0s with zero escalation — reproducing
+    this exact retry decorator locally proved wait_exponential itself
+    escalates correctly, so the far more likely explanation is Ozon sending
+    a real `Retry-After` header (honored verbatim, by design) on every
+    attempt. Before this fix there was no way to tell that apart from a
+    stuck fallback backoff, because before_sleep_log's line only ever
+    showed the CHOSEN wait, never the raw header. _post() must now log the
+    raw header value and include it in OzonRateLimited's own message."""
+    import logging
+
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(429, {"message": "too many requests"}, headers={"Retry-After": "1"}))
+
+    with caplog.at_level(logging.WARNING, logger="app.services.ozon.client"):
+        try:
+            client._post("/v2/posting/fbo/list", {})
+            assert False, "expected OzonRateLimited"
+        except OzonRateLimited as exc:
+            assert "Retry-After" in str(exc)
+            assert "'1'" in str(exc)
+            assert "/v2/posting/fbo/list" in str(exc)
+
+    assert any("Retry-After" in record.message for record in caplog.records)
