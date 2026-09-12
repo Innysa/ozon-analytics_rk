@@ -276,6 +276,12 @@ export function DashboardPage() {
             </div>
             {dashboard.logistics.periods_summed > 0 ? (
               <>
+                {dashboard.logistics.is_estimated && (
+                  <p className="mb-2 rounded-md bg-amber-50 p-2 text-xs text-amber-700">
+                    ≈ Оценка: выбранный период не совпадает с недельными периодами Ozon — часть сумм ниже посчитана
+                    пропорционально дням, а не взята из точного отчёта Ozon.
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                   <Stat label="Логистика" value={fmtRub(dashboard.logistics.logistics_rub)} />
                   <Stat label="Обработка возвратов" value={fmtRub(dashboard.logistics.returns_logistics_rub)} />
@@ -299,13 +305,13 @@ export function DashboardPage() {
                   эквайринг, компенсации), не входящая в услуги; «Прочие услуги» — то, что осталось (реклама за
                   клик, страхование и др.) — новое, ранее не встречавшееся название статьи попадёт именно сюда, а
                   не будет угадано в одну из категорий выше. Ozon группирует эти цифры собственными периодами
-                  (обычно неделя), которые не всегда совпадают с выбранным периодом дашборда — учтены только
-                  периоды, полностью попавшие в выбранный диапазон.
+                  (обычно неделя), которые не всегда совпадают с выбранным периодом дашборда — период, попавший в
+                  диапазон лишь частично, всё равно учтён, но пропорционально дням (см. пометку «Оценка» выше).
                 </p>
               </>
             ) : (
               <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-center text-sm text-slate-500">
-                {dashboard.logistics.period_note ?? "Нет периодов Ozon целиком внутри выбранного диапазона."} Попробуйте
+                {dashboard.logistics.period_note ?? "Нет периодов Ozon, пересекающихся с выбранным диапазоном."} Попробуйте
                 более широкий период.
               </div>
             )}

@@ -387,7 +387,15 @@ def test_logistics_block_top_item_none_when_no_uncategorized_items(client, db_se
     assert block["other_services_top_item_rub"] is None
 
 
-def test_logistics_block_has_data_but_zero_periods_when_range_misaligned(client, db_session, two_stores_with_users):
+def test_logistics_block_prorates_a_period_only_partially_in_range(client, db_session, two_stores_with_users):
+    """Regression for a real account (2026-09-12): a range not aligned to
+    Ozon's own weekly periods used to drop a straddling period ENTIRELY
+    (periods_summed=0, logistics_rub=None) even though real money was
+    genuinely spent inside the requested range — a 12-day range once
+    showed less than half the true "Логистика и услуги" total with no
+    warning. A partially-overlapping period must now be included, scaled
+    by the fraction of its own days that fall in range, and flagged
+    is_estimated so the number reads as approximate, not exact."""
     from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 
     d = two_stores_with_users
@@ -401,10 +409,39 @@ def test_logistics_block_has_data_but_zero_periods_when_range_misaligned(client,
     db_session.commit()
 
     login(client, "owner_a@example.com", "password123")
-    # A short range that doesn't fully contain the one stored period.
+    # A short range that only partially overlaps the one stored 7-day
+    # period (2 of its 7 days: 08-20 and 08-21).
     resp = client.get(
         f"/api/stores/{store_id}/dashboard",
         params={"date_from": "2026-08-20", "date_to": "2026-08-21"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["has_data"] is True
+    assert block["periods_summed"] == 1
+    assert block["is_estimated"] is True
+    # -100 * (2 overlapping days / 7 period days)
+    assert block["logistics_rub"] == -28.57
+
+
+def test_logistics_block_zero_periods_when_range_has_no_overlap_at_all(client, db_session, two_stores_with_users):
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-100, source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    # A range with NO overlap with the one stored period at all.
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-05"},
     )
     assert resp.status_code == 200
     block = resp.json()["logistics"]

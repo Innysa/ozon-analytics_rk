@@ -725,6 +725,7 @@ export interface LogisticsBlock {
   other_services_top_item_name: string | null;
   other_services_top_item_rub: number | null;
   periods_summed: number;
+  is_estimated: boolean;
   period_note: string | null;
 }
 

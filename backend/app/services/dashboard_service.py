@@ -221,20 +221,51 @@ def _has_any_product_stock_data(db: Session, *, store_id: str) -> bool:
     )
 
 
-def _cash_flow_periods_in_range(db: Session, *, store_id: str, date_from: date, date_to: date) -> list[CashFlowStatementPeriod]:
-    # Ozon's own weekly periods rarely align to an arbitrary dashboard
-    # range — same "fully contained only" rule as AdvertisingStatistic's
-    # period_start/period_end above, for the same reason (a period
-    # straddling the boundary can't be split).
+def _cash_flow_periods_overlapping(db: Session, *, store_id: str, date_from: date, date_to: date) -> list[CashFlowStatementPeriod]:
+    """Every stored period that overlaps [date_from, date_to] AT ALL — not
+    just ones fully contained in it. Ozon's own weekly periods rarely align
+    to an arbitrary dashboard range; the OLD "fully contained only" rule
+    (same one still used for AdvertisingStatistic's period_start/period_end
+    above, where it's the right call — see that model's own docstring)
+    meant a range not aligned to Ozon's own week boundaries could silently
+    show a fraction of the real Логистика/Хранение/etc figure with no
+    indication anything was missing. CONFIRMED on a real account
+    (2026-09-12): a 12-day range (2026-09-01..09-12) matched only ONE
+    6-day Ozon period fully, showing "Логистика и услуги" as 203 183.5 ₽
+    against a real (Ozon's own cabinet) total of 421 643 ₽ for the same
+    12 days — a ~52% UNDERCOUNT with no warning. compute_dashboard() now
+    prorates each returned period's figures by _period_overlap_fraction()
+    instead of requiring full containment, and marks the result
+    is_estimated whenever any period only partially overlaps — see there."""
     return list(
         db.scalars(
             select(CashFlowStatementPeriod).where(
                 CashFlowStatementPeriod.store_id == store_id,
-                CashFlowStatementPeriod.period_begin >= date_from,
-                CashFlowStatementPeriod.period_end <= date_to,
+                CashFlowStatementPeriod.period_begin <= date_to,
+                CashFlowStatementPeriod.period_end >= date_from,
             ).order_by(CashFlowStatementPeriod.period_begin)
         )
     )
+
+
+def _period_overlap_fraction(period_begin: date, period_end: date, date_from: date, date_to: date) -> float:
+    """What fraction of an Ozon cash-flow period's own span falls inside
+    [date_from, date_to] — 1.0 for a period fully contained in the range,
+    less for one that straddles an edge. Ozon gives no way to get a
+    genuinely per-day split of a period's totals (see
+    CashFlowStatementPeriod's own docstring), so this is a LINEAR estimate
+    by day count, not a real per-day figure — real spend within a period
+    is very unlikely to be spread evenly across its days. Good enough to
+    turn a silent, unbounded undercount into a labeled, roughly-right
+    number (see LogisticsBlock.is_estimated), not a substitute for a real
+    per-day source if one is ever confirmed."""
+    period_days = (period_end - period_begin).days + 1
+    if period_days <= 0:
+        return 0.0
+    overlap_start = max(period_begin, date_from)
+    overlap_end = min(period_end, date_to)
+    overlap_days = (overlap_end - overlap_start).days + 1
+    return max(0.0, min(1.0, overlap_days / period_days))
 
 
 def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
@@ -471,43 +502,59 @@ def compute_dashboard(
     # risked silently mixing two different accounting windows) ---
     has_cash_flow_data = _has_any_cash_flow_periods(db, store_id=store_id)
     if has_cash_flow_data:
-        periods_in_range = _cash_flow_periods_in_range(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+        periods_in_range = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
         if periods_in_range:
-            fines_sum = storage_sum = 0.0
+            fines_sum = storage_sum = services_total_sum = 0.0
+            logistics_sum = returns_sum = others_sum = 0.0
+            is_estimated = False
             for p in periods_in_range:
+                fraction = _period_overlap_fraction(p.period_begin, p.period_end, resolved_date_from, resolved_date_to)
+                if fraction < 1.0:
+                    is_estimated = True
                 fines, storage = _categorize_service_items(p.services_items_json)
-                fines_sum += fines
-                storage_sum += storage
-            services_total_sum = sum(float(p.services_total or 0) for p in periods_in_range)
+                fines_sum += fines * fraction
+                storage_sum += storage * fraction
+                services_total_sum += float(p.services_total or 0) * fraction
+                logistics_sum += float(p.delivery_services_total or 0) * fraction
+                returns_sum += float(p.delivery_return_total or 0) * fraction
+                others_sum += float(p.others_total or 0) * fraction
             # other_services_rub is the REMAINDER of services_total after
             # pulling out fines/storage — not summed independently from
             # items[] — so a period whose items_json doesn't (fully) cover
             # its own total (e.g. an older row, or an Ozon item name this
             # matching hasn't seen yet) never drops that money silently.
             other_services_sum = services_total_sum - fines_sum - storage_sum
+            # Deliberately the RAW (non-prorated) item — this is an
+            # informational "which item dominates" pointer, not a total
+            # this range claims to own; prorating it would misrepresent a
+            # real observed Ozon amount as an estimate it isn't.
             top_item = _largest_uncategorized_service_item(periods_in_range)
             logistics = LogisticsBlock(
                 has_data=True,
-                logistics_rub=round(sum(float(p.delivery_services_total or 0) for p in periods_in_range), 2),
-                returns_logistics_rub=round(sum(float(p.delivery_return_total or 0) for p in periods_in_range), 2),
+                logistics_rub=round(logistics_sum, 2),
+                returns_logistics_rub=round(returns_sum, 2),
                 storage_rub=round(storage_sum, 2),
                 fines_rub=round(fines_sum, 2),
-                other_deductions_rub=round(sum(float(p.others_total or 0) for p in periods_in_range), 2),
+                other_deductions_rub=round(others_sum, 2),
                 other_services_rub=round(other_services_sum, 2),
                 other_services_top_item_name=top_item[0] if top_item else None,
                 other_services_top_item_rub=round(top_item[1], 2) if top_item else None,
                 periods_summed=len(periods_in_range),
+                is_estimated=is_estimated,
                 period_note=(
                     f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end} "
-                    f"({len(periods_in_range)} период{'' if len(periods_in_range) == 1 else 'а' if len(periods_in_range) < 5 else 'ов'} Ozon)"
+                    f"({len(periods_in_range)} период{'' if len(periods_in_range) == 1 else 'а' if len(periods_in_range) < 5 else 'ов'} Ozon"
+                    + (", часть периодов не совпадает с диапазоном — суммы оценочные (пропорционально дням)" if is_estimated else "")
+                    + ")"
                 ),
             )
         else:
-            # Store has synced periods, but none fully fit inside this
-            # specific range (e.g. a short or misaligned custom range) —
-            # has_data True with zero periods_summed, not a false "no data
-            # at all" — the frontend distinguishes these via periods_summed.
-            logistics = LogisticsBlock(has_data=True, periods_summed=0, period_note="Нет периодов Ozon целиком внутри выбранного диапазона")
+            # Store has synced periods, but none even OVERLAP this specific
+            # range (e.g. cash-flow hasn't synced that far, or a range with
+            # no Ozon activity at all) — has_data True with zero
+            # periods_summed, not a false "no data at all" — the frontend
+            # distinguishes these via periods_summed.
+            logistics = LogisticsBlock(has_data=True, periods_summed=0, period_note="Нет периодов Ozon, пересекающихся с выбранным диапазоном")
     else:
         logistics = LogisticsBlock(has_data=False)
 

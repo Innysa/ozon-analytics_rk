@@ -108,12 +108,14 @@ class LogisticsBlock(BaseModel):
     CashFlowStatementPeriod (Ozon Seller API POST /v1/finance/cash-flow-
     statement/list, see that model's own docstring for the confirmed
     contract), the replacement for the now-obsolete /v3/finance/
-    transaction/list. Ozon groups its own weekly periods — a period counts
-    toward the dashboard's selected range only if FULLY contained in it
-    (same rule already used for AdvertisingStatistic's period_start/
-    period_end), so a short or misaligned custom range can show has_data
-    False or partial coverage even when periods exist nearby; period_note
-    names the periods actually summed so this isn't silent.
+    transaction/list. Ozon groups its own weekly periods that rarely align
+    to the dashboard's selected range — a period counting only if FULLY
+    contained in it (still the rule for AdvertisingStatistic's
+    period_start/period_end, where it's correct) silently undercounted
+    here, so a period that only PARTIALLY overlaps is now included with
+    its figures scaled by the fraction of its own days inside the range
+    (see is_estimated below); period_note names the periods actually
+    summed so this isn't silent either way.
 
     logistics_rub = sum of delivery.delivery_services.total (Ozon's own
     subtotal — real components confirmed: last-mile courier, dropoff,
@@ -157,7 +159,19 @@ class LogisticsBlock(BaseModel):
     dashboard, and this endpoint's own commission_amount has not been
     confirmed to match it number-for-number, so showing both would risk
     two conflicting "commission" figures without an explanation of why
-    they might differ."""
+    they might differ.
+
+    is_estimated: a period only counts toward this block if it OVERLAPS
+    the requested range at all (changed 2026-09-12 from requiring FULL
+    containment, which silently undercounted any range not aligned to
+    Ozon's own week boundaries — confirmed on a real account: a 12-day
+    range matched only one 6-day period fully and showed less than half
+    the real total with no indication anything was missing). A period that
+    only partially overlaps has its figures scaled by the fraction of its
+    own days that fall in range — a linear day-count ESTIMATE, since Ozon
+    gives no way to get a genuine per-day split of a period's totals. True
+    whenever at least one summed period was partial, so the frontend can
+    mark the numbers as approximate rather than presenting them as exact."""
 
     has_data: bool
     logistics_rub: float | None = None
@@ -169,6 +183,7 @@ class LogisticsBlock(BaseModel):
     other_services_top_item_name: str | None = None
     other_services_top_item_rub: float | None = None
     periods_summed: int = 0
+    is_estimated: bool = False
     period_note: str | None = None  # e.g. "2026-08-17 — 2026-09-06 (3 периода Ozon)"
 
 
