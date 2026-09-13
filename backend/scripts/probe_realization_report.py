@@ -98,7 +98,13 @@ def main() -> None:
             try:
                 data = client.probe_finance_endpoint("/v2/finance/realization", body)
             except OzonAPIError as exc:
-                print(f"OzonAPIError: {exc}")
+                # {type(exc).__name__} names which OzonAPIError subclass this
+                # was (OzonFeatureUnavailable, OzonAuthError, plain
+                # OzonAPIError, ...) — {exc} is the message _post() built,
+                # which for a 404 now ALWAYS includes Ozon's raw response
+                # body, not just this client's own (possibly wrong) guess at
+                # why (see _post()'s own 404-handling comment, 2026-09-12).
+                print(f"{type(exc).__name__}: {exc}")
                 return
             except Exception as exc:  # noqa: BLE001 — diagnostic script, show everything
                 print(f"Непредвиденная ошибка ({type(exc).__name__}): {exc}")

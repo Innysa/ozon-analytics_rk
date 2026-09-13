@@ -111,6 +111,31 @@ def test_get_product_queries_reports_feature_unavailable_on_404():
         pass
 
 
+def test_post_includes_raw_response_body_on_404_not_just_a_guess():
+    """Regression, CONFIRMED 2026-09-12: a real account WITH Premium Plus
+    probed /v2/finance/realization and got a 404 — this client's own 404
+    handler used to raise OzonFeatureUnavailable with a FIXED, guessed
+    message ("может требоваться тариф Premium Plus") that completely
+    discarded Ozon's actual response body, making a wrong guess look like a
+    confirmed fact to whoever read it. The raw body must always be included
+    so a diagnostic probe shows Ozon's real answer, not this client's own
+    hypothesis about it."""
+    from app.services.ozon.exceptions import OzonFeatureUnavailable
+
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(
+        return_value=_mock_post(404, {"code": 3, "message": "Метод не поддерживается для данного магазина"})
+    )
+
+    try:
+        client._post("/v2/finance/realization", {"year": 2026, "month": 9})
+        assert False, "expected OzonFeatureUnavailable"
+    except OzonFeatureUnavailable as exc:
+        assert "Метод не поддерживается для данного магазина" in str(exc)
+        assert "/v2/finance/realization" in str(exc)
+        assert "ДОГАДКА" in str(exc)  # explicitly flags the Premium Plus theory as unconfirmed, not stated fact
+
+
 def test_get_analytics_data_sends_expected_path_and_body():
     """get_analytics_data()'s request AND response contract are both
     CONFIRMED against a real account with Premium Plus (see

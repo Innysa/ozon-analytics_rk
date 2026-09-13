@@ -327,9 +327,21 @@ class OzonSellerClient:
                 retry_after_s=retry_after_s,
             )
         if response.status_code == 404:
-            # Beta/plan-gated methods can 404 for stores without the required subscription.
+            # Beta/plan-gated methods CAN 404 for stores without the required
+            # subscription — CONFIRMED for review/list, product/list, and
+            # get_product_queries on real accounts. But this is a hypothesis
+            # applied to EVERY 404 this client sees, not a fact Ozon's
+            # response actually states — CONTRADICTED 2026-09-12 on a real
+            # account probing /v2/finance/realization: that account DOES have
+            # Premium Plus and still got 404, meaning this guess was flat
+            # wrong for that endpoint. The raw response body is Ozon's own
+            # answer for why — always include it instead of letting a guessed
+            # explanation silently replace it (a diagnostic script showing
+            # this guess instead of the real body is exactly what made this
+            # wrong guess look like a confirmed fact in the first place).
             raise OzonFeatureUnavailable(
-                "Метод недоступен для этого магазина (может требоваться тариф Premium Plus)"
+                f"Ozon вернул 404 на {path} (может требоваться тариф Premium Plus, но это ДОГАДКА — "
+                f"смотрите тело ответа Ozon ниже): {response.text[:500]}"
             )
         if response.status_code >= 500:
             raise OzonAPIError(f"Ozon вернул ошибку сервера {response.status_code}")
