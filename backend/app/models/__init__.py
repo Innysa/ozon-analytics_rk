@@ -24,6 +24,7 @@ from app.models.product_analytics_daily_statistic import ProductAnalyticsDailySt
 from app.models.cash_flow_statement_period import CashFlowStatementPeriod
 from app.models.product_monthly_plan import ProductMonthlyPlan
 from app.models.store_rating_summary import StoreRatingSummary
+from app.models.realization_report_month import RealizationReportMonth
 
 __all__ = [
     "User",
@@ -52,4 +53,5 @@ __all__ = [
     "CashFlowStatementPeriod",
     "ProductMonthlyPlan",
     "StoreRatingSummary",
+    "RealizationReportMonth",
 ]

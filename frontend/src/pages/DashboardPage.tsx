@@ -51,6 +51,8 @@ export function DashboardPage() {
   const [dateTo, setDateTo] = useState(defaultDateTo);
   const [syncingLogistics, setSyncingLogistics] = useState(false);
   const [logisticsNotice, setLogisticsNotice] = useState<string | null>(null);
+  const [syncingRealization, setSyncingRealization] = useState(false);
+  const [realizationNotice, setRealizationNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -102,6 +104,29 @@ export function DashboardPage() {
       setLogisticsNotice(err instanceof ApiError ? err.message : "Ошибка автосбора логистики/услуг");
     } finally {
       setSyncingLogistics(false);
+    }
+  };
+
+  // Синхронная (без BackgroundTasks) — /v2/finance/realization это один
+  // быстрый запрос без пагинации, ответ уже финальный, опрос не нужен.
+  const syncRealizationReport = async () => {
+    setSyncingRealization(true);
+    setRealizationNotice("Проверка отчёта Ozon о реализации за прошлые месяцы...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-realization-report`);
+      if (run.status === "failed") {
+        setRealizationNotice(`Не удалось получить отчёт: ${run.error_message ?? "неизвестная ошибка"}`);
+      } else {
+        setRealizationNotice(
+          `Готово: архивировано месяцев ${run.items_fetched} (создано ${run.items_created}, обновлено ${run.items_skipped_duplicate}).` +
+            (run.error_message ? ` ${run.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setRealizationNotice(err instanceof ApiError ? err.message : "Ошибка синхронизации отчёта о реализации");
+    } finally {
+      setSyncingRealization(false);
     }
   };
 
@@ -231,6 +256,22 @@ export function DashboardPage() {
               </>
             }
           >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-400">
+                «Комиссия Ozon»/«Выручка (выкуп)» окончательно сверяются с официальным отчётом Ozon о реализации
+                товаров — доступен только за уже завершённые месяцы.
+              </p>
+              <button
+                onClick={syncRealizationReport}
+                disabled={syncingRealization}
+                className="shrink-0 rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+              >
+                {syncingRealization ? "Проверка..." : "Проверить отчёт о реализации"}
+              </button>
+            </div>
+            {realizationNotice && (
+              <div className="mb-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{realizationNotice}</div>
+            )}
             <MarginSection margin={dashboard.margin} />
           </DashboardSection>
 

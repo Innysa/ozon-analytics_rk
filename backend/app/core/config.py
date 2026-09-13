@@ -252,6 +252,22 @@ class Settings(BaseSettings):
     CASH_FLOW_STATEMENT_SCHEDULER_HOUR_UTC: int = 4
     CASH_FLOW_STATEMENT_SCHEDULER_MINUTE_UTC: int = 15
 
+    # Ozon's official monthly settlement report (POST /v2/finance/realization
+    # — see RealizationReportMonth's own docstring). CONFIRMED 2026-09-13:
+    # only available for a CLOSED calendar month (a real 404 "Report was not
+    # found" for the current, in-progress month) — so this runs daily rather
+    # than on a fixed "the month probably closed by now" date, simply
+    # skipping any month it already has archived (idempotent) and any month
+    # Ozon still says isn't ready. REALIZATION_REPORT_BACKFILL_MONTHS caps
+    # how many past closed months it keeps retrying per store per day — 3 is
+    # enough to cover a brief outage/deploy gap without unboundedly retrying
+    # a month Ozon may simply never produce a report for (e.g. a store with
+    # zero sales that month).
+    REALIZATION_REPORT_SCHEDULER_ENABLED: bool = True
+    REALIZATION_REPORT_SCHEDULER_HOUR_UTC: int = 5
+    REALIZATION_REPORT_SCHEDULER_MINUTE_UTC: int = 0
+    REALIZATION_REPORT_BACKFILL_MONTHS: int = 3
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual

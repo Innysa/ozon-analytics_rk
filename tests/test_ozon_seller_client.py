@@ -286,6 +286,40 @@ def test_get_rating_summary_sends_expected_path_and_body():
     assert result["localization_index"]["localization_percentage"] == 65
 
 
+def test_get_realization_report_posts_year_month_as_top_level_fields():
+    """CONFIRMED 2026-09-13 on a real account: {"year", "month"} as
+    TOP-LEVEL fields (not nested under "date") is the correct request
+    shape for POST /v2/finance/realization — Ozon returned real data for
+    an already-closed month with this exact body."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"result": {"rows": []}}))
+
+    result = client.get_realization_report(year=2026, month=8)
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v2/finance/realization"
+    assert sent_kwargs["json"] == {"year": 2026, "month": 8}
+    assert result == {"result": {"rows": []}}
+
+
+def test_get_realization_report_raises_feature_unavailable_on_404():
+    """CONFIRMED 2026-09-13: Ozon answers 404 "Report was not found" for
+    the current, still-open month — this must surface as
+    OzonFeatureUnavailable (same as every other confirmed plan/period-
+    gated 404 on this client) so callers can treat "not ready yet" as an
+    ordinary, expected outcome rather than a hard failure."""
+    from app.services.ozon.exceptions import OzonFeatureUnavailable
+
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(404, {"code": 3, "message": "Report was not found"}))
+
+    try:
+        client.get_realization_report(year=2026, month=9)
+        assert False, "expected OzonFeatureUnavailable"
+    except OzonFeatureUnavailable as exc:
+        assert "Report was not found" in str(exc)
+
+
 def test_probe_finance_endpoint_posts_caller_supplied_path_and_body():
     """probe_finance_endpoint() is a generic diagnostic passthrough (see its
     own docstring) — it must send exactly the path/body the caller gives it,

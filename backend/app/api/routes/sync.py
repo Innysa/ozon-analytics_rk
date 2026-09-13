@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, get_current_user, require_store_role
+from app.core.config import get_settings
 from app.core.encryption import decrypt_secret
 from app.db.session import SessionLocal, get_db
 from app.models.advertising_campaign import AdvertisingCampaign
@@ -32,6 +33,7 @@ from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
 from app.services.product_analytics_daily_sync_service import sync_product_analytics_daily_statistics
 from app.services.product_merge import merge_duplicate_products, pick_survivor
+from app.services.realization_report_sync_service import sync_missing_realization_reports, sync_realization_report_month
 from app.services.search_query_details_sync_service import sync_search_query_details
 from app.services.ozon_performance.client import OzonPerformanceClient
 from app.services.ozon_performance.client import PerformanceCredentials as OzonPerfCredentials
@@ -1143,6 +1145,105 @@ def sync_ozon_rating_summary(
     run.items_fetched = fetched
     run.items_created = created
     run.items_skipped_duplicate = updated
+    run.error_message = error_message
+    db.flush()
+    record_audit(
+        db,
+        action="sync_finished",
+        user_id=user.id,
+        store_id=ctx.store_id,
+        target_type="sync_run",
+        target_id=run.id,
+        result="success" if run.status == SyncStatus.SUCCESS else "failure",
+        message=error_message,
+    )
+    db.commit()
+    return _serialize(run)
+
+
+@router.post("/ozon-realization-report")
+def sync_ozon_realization_report(
+    year: int | None = None,
+    month: int | None = None,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Pulls Ozon's official monthly settlement report (POST /v2/finance/
+    realization, "Отчёт о реализации товаров") — see
+    app.models.realization_report_month.RealizationReportMonth's own
+    docstring for the confirmed request shape and why this can only ever
+    succeed for an already-CLOSED calendar month (Ozon itself answers 404
+    "Report was not found" for the current one — treated here as an
+    ordinary, expected outcome, not a failure).
+
+    Pass year+month to sync one specific month (e.g. re-fetch a known-good
+    one). Omit both to try every one of the last REALIZATION_REPORT_
+    BACKFILL_MONTHS closed months this store doesn't already have archived
+    — the same thing the daily scheduler does, safe to click any time
+    (idempotent, skips whatever's already archived). A single fast call
+    per month with no pagination, so this runs synchronously (like
+    sync_ozon_rating_summary above), not via BackgroundTasks."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+    if (year is None) != (month is None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Укажите и year, и month, либо ни одного из них")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_REALIZATION_REPORT_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    client_id = decrypt_secret(creds.client_id_encrypted)
+    api_key = decrypt_secret(creds.api_key_encrypted)
+
+    error_message = None
+    try:
+        with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
+            if year is not None and month is not None:
+                outcome = sync_realization_report_month(db, store_id=ctx.store_id, client=client, year=year, month=month)
+                results = [(year, month, outcome)]
+            else:
+                settings = get_settings()
+                results = sync_missing_realization_reports(
+                    db, store_id=ctx.store_id, client=client, backfill_months=settings.REALIZATION_REPORT_BACKFILL_MONTHS
+                )
+
+        fetched = sum(1 for _, _, o in results if o.fetched)
+        created = sum(1 for _, _, o in results if o.fetched and o.created)
+        updated = fetched - created
+        not_yet = [f"{y}-{m:02d}" for y, m, o in results if o.not_yet_available]
+        real_errors = [f"{y}-{m:02d}: {o.error}" for y, m, o in results if o.error and not o.not_yet_available]
+
+        run.items_fetched = fetched
+        run.items_created = created
+        run.items_skipped_duplicate = updated
+
+        notes = list(real_errors[:20])
+        if not_yet:
+            notes.append(f"Ещё не готов отчёт Ozon за: {', '.join(not_yet)} (обычная ситуация — месяц ещё не закрылся)")
+        if not results:
+            notes.append("Нечего запрашивать — все месяцы в пределах бэкфилла уже архивированы")
+        error_message = "; ".join(notes) if notes else None
+        run.status = SyncStatus.SUCCESS if not real_errors else (
+            SyncStatus.PARTIAL if fetched else SyncStatus.FAILED
+        )
+    except OzonAuthError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+    except OzonAPIError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+
+    run.finished_at = datetime.now(timezone.utc)
     run.error_message = error_message
     db.flush()
     record_audit(

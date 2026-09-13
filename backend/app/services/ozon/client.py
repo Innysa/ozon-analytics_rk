@@ -596,6 +596,26 @@ class OzonSellerClient:
         example, or the official docs)."""
         return self._post(path, body)
 
+    def get_realization_report(self, *, year: int, month: int) -> dict:
+        """`POST /v2/finance/realization` — Ozon's official monthly
+        settlement report ("Отчёт о реализации товаров"). CONFIRMED
+        2026-09-13 on a real account: {"year", "month"} as TOP-LEVEL
+        fields (not nested under "date") is the correct request shape —
+        Ozon returned real data for an already-closed month with this
+        exact body. Also CONFIRMED: Ozon answers 404 "Report was not
+        found" for the CURRENT, still-open month — this is expected, not
+        an error to retry (see RealizationReportMonth's own docstring),
+        so callers should let OzonFeatureUnavailable propagate and treat
+        it as "not available yet" rather than a failure.
+
+        Returns the raw parsed JSON, unvalidated — the full response
+        SHAPE (top-level fields, pagination, complete item field list)
+        is not yet fully confirmed (see RealizationReportMonth's own
+        docstring for exactly what has and hasn't been seen), so this
+        deliberately does not validate against a guessed Pydantic
+        schema."""
+        return self._post("/v2/finance/realization", {"year": year, "month": month})
+
     def get_cash_flow_statement(
         self, *, date_from: str, date_to: str, page: int = 1, page_size: int = 1000, with_details: bool = True
     ) -> dict:
