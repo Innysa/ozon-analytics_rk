@@ -81,6 +81,42 @@ def test_run_one_store_records_a_sync_run_reflecting_the_outcome(db_session, two
     assert run.error_message is None
 
 
+def test_run_one_store_surfaces_commission_and_schema_notes(db_session, two_stores_with_users, monkeypatch):
+    """Regression, CONFIRMED 2026-09-12: commission_missing_units_note and
+    fetched_by_schema_note were wired into the MANUAL sync route
+    (app.api.routes.sync) but not into this scheduled path — a store
+    relying solely on the daily automatic sync would never see either
+    note, even when relevant. Both must appear here too."""
+    import app.services.order_daily_scheduler as scheduler_module
+
+    d = two_stores_with_users
+    creds = OzonCredentials(
+        store_id=d["store_a"].id, client_id_encrypted=encrypt_secret("cid"), api_key_encrypted=encrypt_secret("key"),
+    )
+    db_session.add(creds)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        scheduler_module, "sync_order_daily_statistics",
+        lambda db, *, store_id, client: SyncOutcome(
+            fetched=556, created=0, updated=1, errors=[],
+            commission_missing_units=3, fetched_by_schema={"FBO": 556, "FBS": 0},
+        ),
+    )
+
+    scheduler_module._run_one_store(db_session, creds)
+
+    run = (
+        db_session.query(SyncRun)
+        .filter(SyncRun.store_id == d["store_a"].id, SyncRun.source_type == SyncSourceType.OZON_ORDERS_API)
+        .one()
+    )
+    assert run.status.value == "success"
+    assert "3" in run.error_message
+    assert "FBO=556" in run.error_message
+    assert "FBS=0" in run.error_message
+
+
 def test_run_for_all_stores_only_processes_stores_with_seller_credentials(db_session, two_stores_with_users, monkeypatch):
     import app.services.order_daily_scheduler as scheduler_module
 

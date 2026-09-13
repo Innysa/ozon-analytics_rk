@@ -156,6 +156,15 @@ class SyncOutcome:
     # skipped_no_process_date (a different silent gap: dropped from every
     # bucket entirely, vs counted normally everywhere EXCEPT commission_rub).
     commission_missing_units: int = 0
+    # How many postings were actually fetched, PER fulfillment scheme —
+    # CONFIRMED 2026-09-12 this was needed on a real account ("Дельта
+    # дом"): SyncRun.items_fetched is a single combined FBO+FBS number, so
+    # a narrow single-day manual re-sync reporting "получено 556, создано
+    # 0, обновлено 1" was read as "FBS has real data" when it was equally
+    # consistent with "all 556 were FBO (matching an existing row, hence
+    # the 1 update) and FBS genuinely fetched 0" — indistinguishable
+    # without this breakdown. See fetched_by_schema_note below.
+    fetched_by_schema: dict[str, int] = field(default_factory=dict)
 
 
 def _to_float(value: object) -> float:
@@ -378,6 +387,21 @@ def commission_missing_units_note(outcome: SyncOutcome) -> str | None:
     )
 
 
+def fetched_by_schema_note(outcome: SyncOutcome) -> str | None:
+    """A one-line, human-readable note for SyncRun.error_message naming how
+    many postings were fetched PER fulfillment scheme (FBO/FBS) — surfaced
+    on EVERY run (success included, same convention as the notes above).
+    SyncRun.items_fetched only ever shows the FBO+FBS COMBINED total, which
+    is not enough to tell "this schema genuinely had zero postings for the
+    requested range" apart from "something silently ate this schema's
+    data" — see SyncOutcome.fetched_by_schema's own docstring for the real
+    account confusion this caused before this note existed."""
+    if not outcome.fetched_by_schema:
+        return None
+    parts = ", ".join(f"{schema}={count}" for schema, count in outcome.fetched_by_schema.items())
+    return f"Получено по схемам: {parts}"
+
+
 def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonPostingItem]:
     all_postings: list[OzonPostingItem] = []
     offset = 0
@@ -492,6 +516,7 @@ def sync_order_daily_statistics(
                     time.sleep(chunk_pause_s)
 
         outcome.fetched += len(postings)
+        outcome.fetched_by_schema[schema_label] = outcome.fetched_by_schema.get(schema_label, 0) + len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)
         outcome.commission_missing_units += _count_missing_commission_units(postings)
         daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku)

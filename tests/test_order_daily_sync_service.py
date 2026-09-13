@@ -16,6 +16,7 @@ from app.services.order_daily_sync_service import (
     aggregate_postings_by_day,
     aggregate_postings_by_sku_and_day,
     commission_missing_units_note,
+    fetched_by_schema_note,
 )
 
 
@@ -164,6 +165,23 @@ def test_commission_missing_units_note_absent_when_zero():
 def test_commission_missing_units_note_present_when_nonzero():
     note = commission_missing_units_note(SyncOutcome(commission_missing_units=7))
     assert "7" in note
+
+
+def test_fetched_by_schema_note_absent_when_empty():
+    assert fetched_by_schema_note(SyncOutcome()) is None
+
+
+def test_fetched_by_schema_note_present_with_breakdown():
+    """Regression, CONFIRMED 2026-09-12 (real account "Дельта дом"):
+    SyncRun.items_fetched combines FBO+FBS into one number, so "получено
+    556, создано 0, обновлено 1" was misread as "FBS has real data" when
+    it was equally consistent with "all 556 were FBO (already had a row,
+    hence the 1 update) and FBS genuinely fetched 0" — this note exists to
+    make that distinction directly readable instead of re-derived from
+    created/updated counts."""
+    note = fetched_by_schema_note(SyncOutcome(fetched_by_schema={"FBO": 556, "FBS": 0}))
+    assert "FBO=556" in note
+    assert "FBS=0" in note
 
 
 def test_by_sku_and_day_keeps_different_skus_separate():

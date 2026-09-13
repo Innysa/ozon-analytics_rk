@@ -137,6 +137,14 @@ def test_sync_end_to_end_creates_order_daily_statistics_and_syncrun(client, db_s
     finished_run = next(r for r in runs.json() if r["id"] == body["id"])
     assert finished_run["status"] in ("success", "partial")
     assert finished_run["items_created"] == 1  # one FBO row created (FBS returned nothing)
+    # Regression, CONFIRMED 2026-09-12: SyncRun.items_created/items_fetched
+    # combine FBO+FBS into one number, which isn't enough to tell "FBS
+    # genuinely fetched 0" apart from "FBS silently lost real data" — a
+    # real account's own re-check ("получено 556, создано 0, обновлено 1")
+    # was misread as evidence of a bug for exactly this reason. The
+    # per-schema breakdown note must be present even on a clean success.
+    assert "FBO=1" in finished_run["error_message"]
+    assert "FBS=0" in finished_run["error_message"]
 
     listing = client.get(f"/api/stores/{d['store_a'].id}/orders/daily-statistics")
     assert listing.status_code == 200

@@ -21,6 +21,8 @@ from app.models.ozon_credentials import OzonCredentials
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.services.audit import record_audit
 from app.services.order_daily_sync_service import (
+    commission_missing_units_note,
+    fetched_by_schema_note,
     find_blocking_running_sync,
     skipped_no_process_date_note,
     sync_order_daily_statistics,
@@ -69,6 +71,16 @@ def _run_one_store(db: Session, creds: OzonCredentials) -> None:
         skipped_note = skipped_no_process_date_note(outcome)
         if skipped_note:
             notes.append(skipped_note)
+        # commission_note/schema_note were missing from THIS (scheduled)
+        # path until 2026-09-12 — they'd been wired into the manual-trigger
+        # route (app.api.routes.sync) only, so a store relying solely on the
+        # daily automatic sync never saw either note even when relevant.
+        commission_note = commission_missing_units_note(outcome)
+        if commission_note:
+            notes.append(commission_note)
+        schema_note = fetched_by_schema_note(outcome)
+        if schema_note:
+            notes.append(schema_note)
         error_message = "; ".join(notes) if notes else None
         run.status = SyncStatus.SUCCESS if not outcome.errors else (
             SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
