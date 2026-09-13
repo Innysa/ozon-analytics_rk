@@ -37,6 +37,18 @@ function defaultDateFrom(): string {
   return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
+// CONFIRMED 2026-09-13: Ozon's own official monthly settlement report
+// (/v2/finance/realization) answers "Report was not found" for the current,
+// not-yet-closed month — real data only comes back once the month is over.
+// "Комиссия Ozon"/"Выкуплено на сумму" here are always our own postings-based
+// estimate for such a period, never Ozon's own final settlement figure
+// (which doesn't exist yet) — mirrors DashboardPage's margin.is_preliminary.
+function touchesCurrentMonth(dateTo: string): boolean {
+  const d = new Date();
+  const currentMonthStart = isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  return dateTo >= currentMonthStart;
+}
+
 interface DayRow {
   date: string;
   orderedUnits: number;
@@ -247,40 +259,49 @@ export function RnpPage() {
           Нет данных за этот период. Нажмите «Обновить заказы (авто)» выше.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
-          <table className="w-full min-w-[1400px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-xs text-slate-500">
-                <th className="py-1 pl-3">Дата</th>
-                <th>Заказано, шт</th>
-                <th>Заказано на сумму</th>
-                <th>Заказано с учётом скидки</th>
-                <th>СПП (расчёт)</th>
-                <th>Средний чек до скидки</th>
-                <th>Средний чек после скидки</th>
-                <th>Выкуплено, шт (%)</th>
-                <th>Выкуплено на сумму</th>
-                <th>Себестоимость выкупа (%)</th>
-                <th>Отменено, шт (%)</th>
-                <th>Незавершено, шт</th>
-                <th>Комиссия Ozon</th>
-                <th>Расход на рекламу</th>
-                <th>ДРР (расчёт)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {total && (
-                <tr className="border-b border-slate-200 bg-slate-50 font-semibold">
-                  <RowCells row={total} />
+        <div className="space-y-3">
+          {touchesCurrentMonth(dateTo) && (
+            <div className="rounded-md bg-amber-50 p-2 text-xs text-amber-700">
+              ≈ Предварительно: «Комиссия Ozon» и «Выкуплено на сумму» за текущий, ещё не завершённый месяц — это
+              наша оценка по заказам, а не официальный отчёт Ozon о реализации (он появляется только после закрытия
+              месяца). Цифры за прошлые, уже завершённые месяцы будут пересчитаны на точные из этого отчёта.
+            </div>
+          )}
+          <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+            <table className="w-full min-w-[1400px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs text-slate-500">
+                  <th className="py-1 pl-3">Дата</th>
+                  <th>Заказано, шт</th>
+                  <th>Заказано на сумму</th>
+                  <th>Заказано с учётом скидки</th>
+                  <th>СПП (расчёт)</th>
+                  <th>Средний чек до скидки</th>
+                  <th>Средний чек после скидки</th>
+                  <th>Выкуплено, шт (%)</th>
+                  <th>Выкуплено на сумму</th>
+                  <th>Себестоимость выкупа (%)</th>
+                  <th>Отменено, шт (%)</th>
+                  <th>Незавершено, шт</th>
+                  <th>Комиссия Ozon</th>
+                  <th>Расход на рекламу</th>
+                  <th>ДРР (расчёт)</th>
                 </tr>
-              )}
-              {rows.map((r) => (
-                <tr key={r.date} className="border-b border-slate-100">
-                  <RowCells row={r} />
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {total && (
+                  <tr className="border-b border-slate-200 bg-slate-50 font-semibold">
+                    <RowCells row={total} />
+                  </tr>
+                )}
+                {rows.map((r) => (
+                  <tr key={r.date} className="border-b border-slate-100">
+                    <RowCells row={r} />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

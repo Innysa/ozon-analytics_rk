@@ -95,7 +95,24 @@ class MarginBlock(BaseModel):
     genuinely API-only source among the dashboard's blocks. margin_rub/
     margin_pct are null whenever cost_known is False — a margin computed
     with a missing cost price would just be wrong, not merely approximate,
-    so this never falls back to treating an unset cost as 0."""
+    so this never falls back to treating an unset cost as 0.
+
+    is_preliminary — CONFIRMED 2026-09-13 on a real account: Ozon's own
+    official monthly settlement report (`POST /v2/finance/realization`,
+    "Отчёт о реализации товаров") answers "Report was not found" for the
+    CURRENT, not-yet-closed calendar month, and only returns real data for
+    a month once it's over (a real August 2026 call succeeded; the same
+    call for September, while September was still in progress, did not).
+    So for any period touching the still-open month, delivered_sum_rub/
+    commission_rub above are — and can only ever be — this dashboard's own
+    running estimate from postings, not Ozon's own final settlement
+    figure, which does not exist yet. True whenever the requested period
+    reaches into the current calendar month; the frontend shows this only
+    next to "Выручка (выкуп)"/"Комиссия Ozon" specifically, since those are
+    the two figures a future realization-report sync would eventually
+    replace with Ozon's own final numbers for closed months (see
+    RealizationReportMonth once that lands) — delivered_units/cost_known/
+    margin stay postings-derived regardless of month, so aren't flagged."""
 
     has_data: bool
     delivered_units: int | None = None
@@ -105,6 +122,7 @@ class MarginBlock(BaseModel):
     cost_known: bool | None = None  # whether cost price was set for every delivered unit in the period
     margin_rub: float | None = None  # delivered_sum_rub + commission_rub - cost_of_delivered_rub - реклама (оба источника)
     margin_pct: float | None = None
+    is_preliminary: bool | None = None  # True if the period touches the current, not-yet-closed calendar month
 
 
 class InventoryBlock(BaseModel):

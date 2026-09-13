@@ -384,10 +384,20 @@ function DashboardSection({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, preliminary }: { label: string; value: string; preliminary?: boolean }) {
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-      <div className="text-xs text-slate-500">{label}</div>
+      <div className="flex items-center gap-1.5 text-xs text-slate-500">
+        {label}
+        {preliminary && (
+          <span
+            className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+            title="Официальный отчёт Ozon о реализации за текущий месяц появляется только после его завершения — пока показана наша собственная оценка по заказам."
+          >
+            предварительно
+          </span>
+        )}
+      </div>
       <div className="mt-1 text-lg font-semibold text-slate-800">{value}</div>
     </div>
   );
@@ -398,8 +408,8 @@ function MarginSection({ margin }: { margin: MarginBlockType }) {
     <div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Выкуплено, шт." value={fmtInt(margin.delivered_units)} />
-        <Stat label="Выручка (выкуп)" value={fmtRub(margin.delivered_sum_rub)} />
-        <Stat label="Комиссия Ozon" value={fmtRub(margin.commission_rub)} />
+        <Stat label="Выручка (выкуп)" value={fmtRub(margin.delivered_sum_rub)} preliminary={!!margin.is_preliminary} />
+        <Stat label="Комиссия Ozon" value={fmtRub(margin.commission_rub)} preliminary={!!margin.is_preliminary} />
         <Stat
           label="Себестоимость выкупа"
           value={margin.cost_known ? fmtRub(margin.cost_of_delivered_rub) : "Указана не для всех товаров"}
@@ -420,6 +430,13 @@ function MarginSection({ margin }: { margin: MarginBlockType }) {
       <p className="mt-2 text-xs text-slate-400">
         Маржа = выручка (выкуп) − комиссия Ozon − себестоимость выкупленных товаров − расход на рекламу (оба
         источника выше). Источник — заказы FBO/FBS из Ozon Seller API, автоматически (страница «РНП»).
+        {margin.is_preliminary && (
+          <>
+            {" "}Пометка «предварительно» на «Выручке (выкуп)»/«Комиссии Ozon»: официальный отчёт Ozon о реализации
+            товаров за текущий месяц появляется только после его завершения — эти две цифры пересчитаются на точные,
+            когда месяц закроется.
+          </>
+        )}
       </p>
     </div>
   );

@@ -597,6 +597,13 @@ def compute_dashboard(
 
     # --- Margin (commission/cost/margin — the one block sourced purely via
     # Ozon Seller API postings, see OrderDailyStatistic's own docstring) ---
+    # CONFIRMED 2026-09-13: Ozon's own official monthly settlement
+    # (/v2/finance/realization) answers "Report was not found" for the
+    # current, not-yet-closed month — so delivered_sum_rub/commission_rub
+    # for a period touching THIS month can only ever be our own postings-
+    # based running estimate, never Ozon's final figure. See MarginBlock.
+    # is_preliminary's own docstring.
+    margin_is_preliminary = resolved_date_to >= today.replace(day=1)
     if has_order_daily_stats:
         stats = order_stats_current  # already fetched above for orders_revenue — same table, same period
         cost_known = stats["delivered_units"] > 0 and stats["cost_of_delivered_known_units"] >= stats["delivered_units"]
@@ -616,6 +623,7 @@ def compute_dashboard(
             cost_known=cost_known,
             margin_rub=margin_rub,
             margin_pct=margin_pct,
+            is_preliminary=margin_is_preliminary,
         )
     else:
         margin = MarginBlock(has_data=False)

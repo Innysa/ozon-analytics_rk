@@ -706,6 +706,7 @@ export interface MarginBlock {
   cost_known: boolean | null;
   margin_rub: number | null;
   margin_pct: number | null;
+  is_preliminary: boolean | null;
 }
 
 export interface InventoryBlock {

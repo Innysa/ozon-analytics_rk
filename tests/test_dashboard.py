@@ -2,7 +2,7 @@
 GET /api/stores/{id}/dashboard) — the at-a-glance summary combining three
 independent, already-existing data sources (product-card CSV import, both
 advertising sources, reviews), each with its own has_data."""
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -824,6 +824,70 @@ def test_margin_block_is_null_when_cost_price_missing_for_some_units(client, db_
     assert block["cost_known"] is False
     assert block["margin_rub"] is None
     assert block["cost_of_delivered_rub"] is None  # partial cost figure withheld, not shown as if it were complete
+
+
+def test_margin_block_is_preliminary_when_period_touches_current_month(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-13: Ozon's own official monthly settlement report
+    (/v2/finance/realization) answers "Report was not found" for the
+    current, not-yet-closed month — delivered_sum_rub/commission_rub for a
+    period touching THIS month can only ever be our own postings-based
+    estimate, never Ozon's final figure. Uses date.today() rather than a
+    fixed date so this stays correct regardless of which real day the
+    suite runs on."""
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    today = date.today()
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=today, delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": today.isoformat(), "date_to": today.isoformat()},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["margin"]["is_preliminary"] is True
+
+
+def test_margin_block_is_not_preliminary_for_a_fully_closed_past_month(client, db_session, two_stores_with_users):
+    """A period entirely within a calendar month that has already ended
+    is NOT flagged preliminary — /v2/finance/realization would (once wired
+    up) already have real data available for it, unlike the current month.
+    Computes "last full previous month" from date.today() rather than a
+    fixed date so this stays correct on any real day the suite runs."""
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    first_of_this_month = date.today().replace(day=1)
+    last_of_prev_month = first_of_this_month - timedelta(days=1)
+    first_of_prev_month = last_of_prev_month.replace(day=1)
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=last_of_prev_month, delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": first_of_prev_month.isoformat(), "date_to": last_of_prev_month.isoformat()},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["margin"]["is_preliminary"] is False
 
 
 def test_store_isolation(client, db_session, two_stores_with_users):
