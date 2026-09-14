@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -33,6 +33,7 @@ from app.services.ozon.client import OzonSellerClient
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
 from app.services.product_analytics_daily_sync_service import sync_product_analytics_daily_statistics
 from app.services.product_merge import merge_duplicate_products, pick_survivor
+from app.services.accrual_daily_sync_service import sync_accrual_daily_statistic, sync_recent_accrual_days
 from app.services.realization_report_sync_service import sync_missing_realization_reports, sync_realization_report_month
 from app.services.search_query_details_sync_service import sync_search_query_details
 from app.services.ozon_performance.client import OzonPerformanceClient
@@ -1233,6 +1234,101 @@ def sync_ozon_realization_report(
         if not results:
             notes.append("Нечего запрашивать — все месяцы в пределах бэкфилла уже архивированы")
         error_message = "; ".join(notes) if notes else None
+        run.status = SyncStatus.SUCCESS if not real_errors else (
+            SyncStatus.PARTIAL if fetched else SyncStatus.FAILED
+        )
+    except OzonAuthError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+    except OzonAPIError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+
+    run.finished_at = datetime.now(timezone.utc)
+    run.error_message = error_message
+    db.flush()
+    record_audit(
+        db,
+        action="sync_finished",
+        user_id=user.id,
+        store_id=ctx.store_id,
+        target_type="sync_run",
+        target_id=run.id,
+        result="success" if run.status == SyncStatus.SUCCESS else "failure",
+        message=error_message,
+    )
+    db.commit()
+    return _serialize(run)
+
+
+@router.post("/ozon-accrual-daily")
+def sync_ozon_accrual_daily(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Pulls Ozon's TRUE DAILY accrual total (POST /v1/finance/accrual/
+    by-day) — see app.models.accrual_daily_statistic.AccrualDailyStatistic's
+    own docstring for the confirmed contract: summing total_amount.amount
+    across a day's records matched Ozon's own cabinet total for that day
+    to the kopeck. Only the whole-day total and a coarse accrued_category
+    breakdown are stored — NOT yet a "Комиссия Ozon"-specific figure (see
+    that model's own docstring for why).
+
+    Omit both dates to re-sync the last ACCRUAL_DAILY_TRAILING_DAYS days
+    (the same window the nightly scheduler covers — Ozon can revise a
+    recent day's accruals after the fact, so this always re-fetches even
+    already-archived days in that window, unlike the realization-report
+    manual trigger). Pass date_from/date_to to sync a specific range
+    instead (e.g. a historical backfill) — inclusive, day by day. A single
+    fast call per day with no pagination beyond what Ozon itself paginates
+    internally, so this runs synchronously (like sync_ozon_rating_summary
+    above), not via BackgroundTasks."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+    if (date_from is None) != (date_to is None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Укажите и date_from, и date_to, либо ни одного из них")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_ACCRUAL_DAILY_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    client_id = decrypt_secret(creds.client_id_encrypted)
+    api_key = decrypt_secret(creds.api_key_encrypted)
+
+    error_message = None
+    try:
+        with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
+            if date_from is not None and date_to is not None:
+                results = []
+                day = date_from
+                while day <= date_to:
+                    results.append((day, sync_accrual_daily_statistic(db, store_id=ctx.store_id, client=client, day=day)))
+                    day += timedelta(days=1)
+            else:
+                settings = get_settings()
+                results = sync_recent_accrual_days(db, store_id=ctx.store_id, client=client, days=settings.ACCRUAL_DAILY_TRAILING_DAYS)
+
+        fetched = sum(1 for _, o in results if o.fetched)
+        created = sum(1 for _, o in results if o.fetched and o.created)
+        updated = fetched - created
+        real_errors = [f"{d.isoformat()}: {o.error}" for d, o in results if o.error]
+
+        run.items_fetched = fetched
+        run.items_created = created
+        run.items_skipped_duplicate = updated
+        error_message = "; ".join(real_errors[:20]) if real_errors else None
         run.status = SyncStatus.SUCCESS if not real_errors else (
             SyncStatus.PARTIAL if fetched else SyncStatus.FAILED
         )

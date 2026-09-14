@@ -964,6 +964,81 @@ docker compose exec app python backend/scripts/debug_cash_flow_statement.py --st
 docker compose exec app python backend/scripts/debug_orders_finance_api.py --store-id <id> > finance_debug.txt
 ```
 
+### `POST /v1/finance/accrual/by-day` (истинный дневной итог начислений) — контракт подтверждён на реальном аккаунте
+
+Понадобился, чтобы наконец получить точную, ПОДТВЕРЖДЁННУЮ по дням цифру:
+и `OrderDailyStatistic.commission_rub`/`delivered_sum_rub` (считаются из
+постингов), и `/v2/finance/realization` (только по закрытым месяцам) не
+дают точного дневного итога. Подтверждено 2026-09-13 на реальном
+аккаунте («Комфорт дом») напрямую пользователем — построчный отчёт
+Ozon «Начисления» за 12.09.2026 из личного кабинета сверен и с суммой
+`total_amount.amount`, посчитанной скриптом `backend/scripts/
+summarize_accrual_by_day.py`, и с итоговой строкой кабинета «Всего к
+выплате за период»:
+
+- Наш скрипт: `296 656.65 ₽`
+- Кабинет Ozon, «Всего к выплате за период»: `296 657 ₽`
+- Расхождение 0.35 ₽ — округление, не ошибка. **Метод подтверждён как
+  источник точных ежедневных сумм.**
+
+Контракт запроса: `{"date": "ГГГГ-ММ-ДД", "page": <int>, "page_size":
+<int>}` — `date` передаётся ПРОСТОЙ СТРОКОЙ (в отличие от
+`/v1/finance/cash-flow-statement/list`, где `date` — вложенный объект
+`{from, to}`; разные методы Ozon — разные форматы, важно не путать).
+Каждая запись ответа: `{accrual_id, date, total_amount, accrued_category,
+posting}`. `accrued_category` подтверждён принимающим как минимум
+`POSTING`/`NON_ITEM`/`ITEM`.
+
+**Важное ограничение, подтверждённое сверкой построчного XLSX-экспорта
+Ozon («Отчёт по начислениям») с реальными данными**: `accrued_category`
+СЛИШКОМ ГРУБАЯ группировка, чтобы выделить именно «Вознаграждение Ozon»
+(«Комиссия Ozon» на Дашборде) отдельно от выручки/логистики/рекламы —
+в кабинете эти суммы разбиты по отдельному измерению «Группа услуг»
+(«Вознаграждение Ozon», «Услуги доставки», «Продажи» и т.д.), и один
+`accrual_id` может относиться сразу к НЕСКОЛЬКИМ «Группам услуг»
+(в реальном экспорте один `accrual_id` встретился и в строке «Продажи»,
+и в строке «Вознаграждение Ozon»). Есть ли более тонкая разбивка внутри
+пока не изученного поля `posting` каждой записи — НЕ подтверждено;
+`backend/scripts/lookup_accrual_records.py` существует специально, чтобы
+это выяснить (принимает `--accrual-id`, печатает полное содержимое
+только совпавших записей за указанный день — для сверки с конкретными
+строками XLSX-экспорта). Поэтому пока в базе хранится только точный
+дневной итог и грубая разбивка по `accrued_category` — НЕ отдельная
+«Комиссия Ozon»/«Выручка», и Дашборд/страница РНП пока НЕ переключены на
+этот источник.
+
+Реализовано:
+
+- `OzonSellerClient.get_accrual_by_day(day, page, page_size)` —
+  `app/services/ozon/client.py`.
+- `AccrualDailyStatistic` (`store_id`, `date`, `total_amount_rub`,
+  `by_category_json`, `record_count`) — одна строка на (магазин, дата),
+  апсертится, не история.
+- `app/services/accrual_daily_sync_service.py` — `sync_accrual_daily_
+  statistic()` (один день) и `sync_recent_accrual_days()` (последние
+  `ACCRUAL_DAILY_TRAILING_DAYS` дней ДО сегодня, по умолчанию 5) — в
+  отличие от бэкфилла `/v2/finance/realization`, ВСЕГДА пересобирает даже
+  уже архивированные дни в этом окне, а не только недостающие: Ozon может
+  задним числом пересчитать начисления за недавний день (например, из-за
+  позднего возврата), поэтому только текущий прогон считается финальным
+  для дней внутри этого окна.
+- Плановый автосбор раз в сутки (`app/services/accrual_daily_scheduler.py`,
+  `ACCRUAL_DAILY_SCHEDULER_HOUR_UTC`/`_MINUTE_UTC`) + ручной запуск:
+  `POST /api/stores/{store_id}/sync/ozon-accrual-daily` (опционально
+  `?date_from=&date_to=` для конкретного диапазона дат; без параметров —
+  пересбор окна `ACCRUAL_DAILY_TRAILING_DAYS`).
+
+Диагностика:
+
+```
+docker compose exec app python backend/scripts/summarize_accrual_by_day.py \
+    --store-id <id> --date 2026-09-12
+
+docker compose exec app python backend/scripts/lookup_accrual_records.py \
+    --store-id <id> --date 2026-09-12 \
+    --accrual-id 0153138912-0063-1 --accrual-id 34144030 --accrual-id 2000065305252
+```
+
 ### Воронка карточки товара (`POST /v1/analytics/data`) — контракт подтверждён на реальном аккаунте
 
 `get_analytics_data()` в `backend/app/services/ozon/client.py` — метод «Данные

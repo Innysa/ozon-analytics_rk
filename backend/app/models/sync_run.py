@@ -25,6 +25,7 @@ class SyncSourceType(str, enum.Enum):
     OZON_CASH_FLOW_STATEMENT_API = "ozon_cash_flow_statement_api"  # Ozon Seller API (/v1/finance/cash-flow-statement/list — logistics/services, replaces the now-obsolete /v3/finance/transaction/list)
     OZON_RATING_SUMMARY_API = "ozon_rating_summary_api"  # Ozon Seller API (/v1/rating/summary — store-wide localization_index for «РНП Товары»'s Итого row)
     OZON_REALIZATION_REPORT_API = "ozon_realization_report_api"  # Ozon Seller API (/v2/finance/realization — official monthly settlement, closed months only)
+    OZON_ACCRUAL_DAILY_API = "ozon_accrual_daily_api"  # Ozon Seller API (/v1/finance/accrual/by-day — confirmed TRUE-DAILY total, matches cabinet exactly)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 

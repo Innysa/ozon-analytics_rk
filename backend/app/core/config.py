@@ -268,6 +268,17 @@ class Settings(BaseSettings):
     REALIZATION_REPORT_SCHEDULER_MINUTE_UTC: int = 0
     REALIZATION_REPORT_BACKFILL_MONTHS: int = 3
 
+    # Ozon's true DAILY accrual total (POST /v1/finance/accrual/by-day —
+    # see AccrualDailyStatistic's own docstring). CONFIRMED 2026-09-13: the
+    # summed total matched Ozon's own cabinet total for the day exactly.
+    # Re-syncs (not just fetches once) the last ACCRUAL_DAILY_TRAILING_DAYS
+    # days every night — Ozon can revise a recent day's accruals after the
+    # fact (e.g. a late return), so only re-fetching keeps them correct.
+    ACCRUAL_DAILY_SCHEDULER_ENABLED: bool = True
+    ACCRUAL_DAILY_SCHEDULER_HOUR_UTC: int = 3
+    ACCRUAL_DAILY_SCHEDULER_MINUTE_UTC: int = 30
+    ACCRUAL_DAILY_TRAILING_DAYS: int = 5
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual

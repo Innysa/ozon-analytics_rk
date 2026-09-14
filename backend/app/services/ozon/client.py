@@ -616,6 +616,33 @@ class OzonSellerClient:
         schema."""
         return self._post("/v2/finance/realization", {"year": year, "month": month})
 
+    def get_accrual_by_day(self, *, day: str, page: int = 1, page_size: int = 1000) -> dict:
+        """`POST /v1/finance/accrual/by-day` — per-line daily accruals, the
+        source for TRUE DAILY figures (unlike /v2/finance/realization,
+        which is monthly-only). CONFIRMED 2026-09-13 on a real account:
+        {"date": "<ГГГГ-ММ-ДД>", "page", "page_size"} — `date` as a plain
+        STRING, not an object (an earlier round's error, "invalid value
+        for string field date", meant exactly that) — and the response's
+        summed `total_amount.amount` across every record for a day
+        matched Ozon's own cabinet "Всего к выплате за период" figure to
+        the kopeck.
+
+        Each record has {accrual_id, date, total_amount, accrued_category,
+        posting} — `accrued_category` is CONFIRMED to take at least
+        POSTING/NON_ITEM/ITEM, but this is too coarse to isolate "Комиссия
+        Ozon" from revenue/logistics/advertising (a real account's own
+        "Начисления" XLSX export shows those as separate "Группа услуг"
+        values, e.g. "Вознаграждение Ozon", under ONE shared accrual_id
+        that also carries an unrelated "Продажи" line) — whether that
+        finer breakdown exists inside the still-unexamined `posting` field
+        is NOT yet confirmed (see backend/scripts/lookup_accrual_records.py,
+        built specifically to answer this).
+
+        Returns the raw parsed JSON, unvalidated — full response SHAPE
+        (top-level fields, pagination) isn't fully confirmed either, only
+        that this exact body returns real per-day data."""
+        return self._post("/v1/finance/accrual/by-day", {"date": day, "page": page, "page_size": page_size})
+
     def get_cash_flow_statement(
         self, *, date_from: str, date_to: str, page: int = 1, page_size: int = 1000, with_details: bool = True
     ) -> dict:

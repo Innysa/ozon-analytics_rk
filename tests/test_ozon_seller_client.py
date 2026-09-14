@@ -286,6 +286,32 @@ def test_get_rating_summary_sends_expected_path_and_body():
     assert result["localization_index"]["localization_percentage"] == 65
 
 
+def test_get_accrual_by_day_posts_date_as_plain_string():
+    """CONFIRMED 2026-09-13 on a real account: {"date": "<ГГГГ-ММ-ДД>"} as
+    a plain string (not an object) is the correct request shape for
+    POST /v1/finance/accrual/by-day — the summed response matched Ozon's
+    own cabinet total for the day to the kopeck."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"result": {"records": []}}))
+
+    result = client.get_accrual_by_day(day="2026-09-12")
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v1/finance/accrual/by-day"
+    assert sent_kwargs["json"] == {"date": "2026-09-12", "page": 1, "page_size": 1000}
+    assert result == {"result": {"records": []}}
+
+
+def test_get_accrual_by_day_paginates_with_page_and_page_size():
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(200, {"result": {"records": []}}))
+
+    client.get_accrual_by_day(day="2026-09-12", page=2, page_size=500)
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_kwargs["json"] == {"date": "2026-09-12", "page": 2, "page_size": 500}
+
+
 def test_get_realization_report_posts_year_month_as_top_level_fields():
     """CONFIRMED 2026-09-13 on a real account: {"year", "month"} as
     TOP-LEVEL fields (not nested under "date") is the correct request
