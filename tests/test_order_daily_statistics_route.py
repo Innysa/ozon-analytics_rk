@@ -274,6 +274,83 @@ def test_sync_splits_window_into_chunks_and_survives_one_chunk_failing(client, d
     assert any(item["date"] == "2026-09-07" and item["delivery_schema"] == "FBO" for item in items)
 
 
+def test_listing_overrides_commission_with_confirmed_accrual_figure(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-14: AccrualDailyStatistic.commission_ozon_rub is
+    Ozon's own exact figure — the "РНП" page's commission column must show
+    it instead of OrderDailyStatistic's own postings-derived estimate for
+    any day it's been synced, same swap the Dashboard's margin block
+    makes (see dashboard_service._commission_rub_for_period)."""
+    from datetime import date
+
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 12), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1000, ordered_sum_discounted_rub=1000,
+        delivered_units=1, delivered_sum_rub=1000, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 12), total_amount_rub=0,
+        by_category_json="{}", record_count=1, commission_ozon_rub=-389940.02,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["commission_rub"] == -389940.02
+
+
+def test_listing_does_not_double_count_accrual_commission_across_fbo_and_fbs_rows(client, db_session, two_stores_with_users):
+    """A day with both an FBO and an FBS row must get the whole-day
+    accrual figure applied to only ONE of them and zeroed on the other —
+    the "РНП" page sums commission_rub across every row for a date
+    client-side, so applying it to both would double it."""
+    from datetime import date
+
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 12), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1000, ordered_sum_discounted_rub=1000,
+        delivered_units=1, delivered_sum_rub=1000, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-60,
+        source="ozon_seller_api",
+    ))
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 12), delivery_schema="FBS",
+        ordered_units=1, ordered_sum_rub=800, ordered_sum_discounted_rub=800,
+        delivered_units=1, delivered_sum_rub=800, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-40,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 12), total_amount_rub=0,
+        by_category_json="{}", record_count=2, commission_ozon_rub=-300.0,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 2
+    total_commission = sum(item["commission_rub"] for item in items)
+    assert total_commission == -300.0  # NOT -600.0
+
+
 def test_store_isolation_on_daily_statistics_listing(client, db_session, two_stores_with_users, monkeypatch):
     import app.api.routes.sync as sync_routes
 

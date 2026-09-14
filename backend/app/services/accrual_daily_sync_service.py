@@ -1,8 +1,7 @@
 """Syncs Ozon's true daily accrual total (POST /v1/finance/accrual/by-day)
 — see app.models.accrual_daily_statistic.AccrualDailyStatistic for the
-confirmed contract and why only the whole-day total and the coarse
-accrued_category split are computed here, not a "Комиссия Ozon"-specific
-figure yet.
+confirmed contract, including the confirmed "Комиссия Ozon" field
+(_extract_commission_ozon_rub below).
 """
 from __future__ import annotations
 
@@ -80,6 +79,23 @@ def _fetch_all_records(client, day_str: str) -> list[dict]:
     return all_records
 
 
+def _extract_commission_ozon_rub(record: dict) -> float:
+    """CONFIRMED 2026-09-14 via backend/scripts/find_accrual_commission_
+    field.py against a real account's real day (12.09.2026): summing this
+    exact field across every product in every record's `posting` for the
+    day reproduced the cabinet's "Вознаграждение Ozon" figure exactly
+    (-389 940.02 ₽). A record with no `posting`/`products` (e.g. a
+    NON_ITEM charge not tied to a specific shipment) contributes 0, not
+    an error — that's expected, not every record is a product sale."""
+    posting = record.get("posting") or {}
+    products = posting.get("products") or []
+    total = 0.0
+    for product in products:
+        commission = (product.get("commission") or {}).get("sale_commission") or {}
+        total += _to_num(commission.get("amount"))
+    return total
+
+
 def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: date) -> AccrualSyncOutcome:
     """Fetches and upserts ONE day's total. Safe to call repeatedly for the
     same day (idempotent overwrite) — Ozon can revise recent accruals
@@ -91,13 +107,16 @@ def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: dat
         return AccrualSyncOutcome(error=str(exc))
 
     total = 0.0
+    commission_ozon = 0.0
     by_category: dict[str, float] = {}
     for r in records:
         amount = _to_num((r.get("total_amount") or {}).get("amount"))
         category = r.get("accrued_category") or "(без категории)"
         by_category[category] = round(by_category.get(category, 0.0) + amount, 2)
         total += amount
+        commission_ozon += _extract_commission_ozon_rub(r)
     total = round(total, 2)
+    commission_ozon = round(commission_ozon, 2)
 
     existing = (
         db.query(AccrualDailyStatistic)
@@ -111,6 +130,7 @@ def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: dat
     existing.total_amount_rub = total
     existing.by_category_json = json.dumps(by_category, ensure_ascii=False)
     existing.record_count = len(records)
+    existing.commission_ozon_rub = commission_ozon
     db.commit()
 
     return AccrualSyncOutcome(fetched=True, created=created, record_count=len(records), total_amount_rub=total)

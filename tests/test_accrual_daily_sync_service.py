@@ -7,6 +7,7 @@ from datetime import date
 
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.services.accrual_daily_sync_service import (
+    _extract_commission_ozon_rub,
     _find_record_list,
     sync_accrual_daily_statistic,
     sync_recent_accrual_days,
@@ -41,11 +42,34 @@ def test_find_record_list_returns_none_when_nothing_list_shaped_present():
     assert _find_record_list({"result": {}}) is None
 
 
+def test_extract_commission_ozon_rub_sums_across_all_products_in_posting():
+    record = {
+        "posting": {
+            "products": [
+                {"commission": {"sale_commission": {"amount": "-10.50"}}},
+                {"commission": {"sale_commission": {"amount": "-5.25"}}},
+            ],
+        },
+    }
+    assert _extract_commission_ozon_rub(record) == -15.75
+
+
+def test_extract_commission_ozon_rub_returns_zero_when_no_posting():
+    """NON_ITEM charges (e.g. advertising) aren't tied to a specific
+    shipment — no posting/products is expected, not an error."""
+    assert _extract_commission_ozon_rub({"accrual_id": "x"}) == 0.0
+    assert _extract_commission_ozon_rub({"posting": {}}) == 0.0
+    assert _extract_commission_ozon_rub({"posting": {"products": []}}) == 0.0
+
+
 def test_sync_accrual_daily_statistic_creates_new_row(db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
     client = _FakeClient(pages=[{"result": {"records": [
-        {"accrual_id": "a1", "total_amount": {"amount": "100.50"}, "accrued_category": "POSTING"},
+        {
+            "accrual_id": "a1", "total_amount": {"amount": "100.50"}, "accrued_category": "POSTING",
+            "posting": {"products": [{"commission": {"sale_commission": {"amount": "-30.00"}}}]},
+        },
         {"accrual_id": "a2", "total_amount": {"amount": "-20.00"}, "accrued_category": "NON_ITEM"},
     ]}}])
 
@@ -65,6 +89,7 @@ def test_sync_accrual_daily_statistic_creates_new_row(db_session, two_stores_wit
     assert by_category == {"POSTING": 100.50, "NON_ITEM": -20.00}
     assert row.record_count == 2
     assert row.source == "ozon_seller_api"
+    assert float(row.commission_ozon_rub) == -30.00
 
 
 def test_sync_accrual_daily_statistic_updates_existing_row(db_session, two_stores_with_users):

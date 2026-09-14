@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.cash_flow_statement_period import CashFlowStatementPeriod
@@ -192,6 +193,58 @@ def _sum_order_daily_stats(db: Session, *, store_id: str, date_from: date, date_
 
 def _has_any_order_daily_stats(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(OrderDailyStatistic.id).where(OrderDailyStatistic.store_id == store_id).limit(1)) is not None
+
+
+def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[float, bool]:
+    """"Комиссия Ozon" for the margin block — prefers AccrualDailyStatistic.
+    commission_ozon_rub (CONFIRMED exact against Ozon's own cabinet, see
+    that model's own docstring) for any day that has been synced, and
+    only falls back to OrderDailyStatistic's own postings-derived
+    commission_rub (an estimate, see that model's own docstring) for a
+    day accrual hasn't covered yet (e.g. before the accrual-daily sync
+    existed, or before its trailing window/backfill reached that day).
+
+    Returns (total_commission_rub, fully_confirmed) — fully_confirmed is
+    True only when EVERY day that has order data in this period also has
+    accrual data, i.e. the whole figure is Ozon's own confirmed number,
+    not partly an estimate. The frontend uses this to decide whether
+    "Комиссия Ozon" still needs the "предварительно" badge independently
+    of delivered_sum_rub/is_preliminary (revenue isn't switched to accrual
+    data yet — see AccrualDailyStatistic's own docstring).
+
+    GROUPED BY DATE, not a flat row scan: OrderDailyStatistic has ONE ROW
+    PER (store, date, delivery_schema) — i.e. up to two rows (FBO+FBS) for
+    the same calendar day (see that model's own UniqueConstraint) — while
+    AccrualDailyStatistic.commission_ozon_rub is already a SINGLE whole-day
+    figure. Applying it per raw row instead of per date would double it on
+    any day with both FBO and FBS postings."""
+    order_rows = db.execute(
+        select(OrderDailyStatistic.date, func.sum(OrderDailyStatistic.commission_rub))
+        .where(
+            OrderDailyStatistic.store_id == store_id,
+            OrderDailyStatistic.date >= date_from,
+            OrderDailyStatistic.date <= date_to,
+        )
+        .group_by(OrderDailyStatistic.date)
+    ).all()
+    accrual_rows = db.execute(
+        select(AccrualDailyStatistic.date, AccrualDailyStatistic.commission_ozon_rub).where(
+            AccrualDailyStatistic.store_id == store_id,
+            AccrualDailyStatistic.date >= date_from,
+            AccrualDailyStatistic.date <= date_to,
+        )
+    ).all()
+    accrual_by_date = {d: float(c) for d, c in accrual_rows}
+
+    total = 0.0
+    fully_confirmed = True
+    for d, order_commission_sum in order_rows:
+        if d in accrual_by_date:
+            total += accrual_by_date[d]
+        else:
+            total += float(order_commission_sum)
+            fully_confirmed = False
+    return total, fully_confirmed
 
 
 def _sum_product_stock(db: Session, *, store_id: str) -> tuple[int, int]:
@@ -595,30 +648,39 @@ def compute_dashboard(
     else:
         reviews = ReviewsBlock(has_data=False)
 
-    # --- Margin (commission/cost/margin — the one block sourced purely via
-    # Ozon Seller API postings, see OrderDailyStatistic's own docstring) ---
+    # --- Margin (commission/cost/margin — see OrderDailyStatistic's own
+    # docstring for delivered_sum_rub/cost, still postings-derived) ---
     # CONFIRMED 2026-09-13: Ozon's own official monthly settlement
     # (/v2/finance/realization) answers "Report was not found" for the
-    # current, not-yet-closed month — so delivered_sum_rub/commission_rub
-    # for a period touching THIS month can only ever be our own postings-
-    # based running estimate, never Ozon's final figure. See MarginBlock.
-    # is_preliminary's own docstring.
+    # current, not-yet-closed month — so delivered_sum_rub for a period
+    # touching THIS month can only ever be our own postings-based running
+    # estimate, never Ozon's final figure. See MarginBlock.is_preliminary's
+    # own docstring. commission_rub is the ONE exception since 2026-09-14:
+    # _commission_rub_for_period above prefers AccrualDailyStatistic's
+    # CONFIRMED figure (exact to the kopeck against the cabinet, see that
+    # model's own docstring) for any day it's been synced for, even inside
+    # the still-open month — so is_preliminary no longer applies to
+    # commission_rub specifically once commission_from_accrual is True.
     margin_is_preliminary = resolved_date_to >= today.replace(day=1)
     if has_order_daily_stats:
         stats = order_stats_current  # already fetched above for orders_revenue — same table, same period
+        commission_rub, commission_from_accrual = _commission_rub_for_period(
+            db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
+        )
         cost_known = stats["delivered_units"] > 0 and stats["cost_of_delivered_known_units"] >= stats["delivered_units"]
         margin_rub = None
         margin_pct = None
         if cost_known:
             margin_rub = round(
-                stats["delivered_sum_rub"] + stats["commission_rub"] - stats["cost_of_delivered_rub"] - total_spend_current, 2
+                stats["delivered_sum_rub"] + commission_rub - stats["cost_of_delivered_rub"] - total_spend_current, 2
             )
             margin_pct = round(margin_rub / stats["delivered_sum_rub"] * 100, 2) if stats["delivered_sum_rub"] else None
         margin = MarginBlock(
             has_data=True,
             delivered_units=stats["delivered_units"],
             delivered_sum_rub=round(stats["delivered_sum_rub"], 2),
-            commission_rub=round(stats["commission_rub"], 2),
+            commission_rub=round(commission_rub, 2),
+            commission_from_accrual=commission_from_accrual,
             cost_of_delivered_rub=round(stats["cost_of_delivered_rub"], 2) if cost_known else None,
             cost_known=cost_known,
             margin_rub=margin_rub,

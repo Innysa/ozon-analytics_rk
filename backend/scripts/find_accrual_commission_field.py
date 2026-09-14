@@ -13,9 +13,23 @@ da9de24dafcf on 2026-09-12 — see README's own accrual/by-day section):
     Продажи                   770288.00 ₽   (кабинет:  770288 ₽)
     Возвраты                   -3250.00 ₽   (кабинет:   -3250 ₽)
 
+CONFIRMED 2026-09-14: this script's original (string field, numeric
+field) pairing already found "Комиссия Ozon" exactly —
+`posting.products[].commission.sale_commission.amount` summed across
+every product in every record's posting for the day reproduces
+-389 940.02 ₽ exactly (see AccrualDailyStatistic.commission_ozon_rub and
+accrual_daily_sync_service._extract_commission_ozon_rub, now wired up).
+"Продажи"/"Возвраты" are NOT confirmed yet — unlike commission, revenue
+plausibly needs price×quantity (a product's raw `price` field alone,
+summed per product, would rarely equal the day's whole "Продажи" total
+without multiplying by how many units were sold), so this script ALSO
+tries that: any dict with an integer-looking `quantity`-ish field has its
+OTHER numeric fields multiplied by that quantity before being treated as
+an amount candidate, in addition to the raw (unmultiplied) fields.
+
 Rather than guess which API field/value corresponds to "Вознаграждение
-Ozon" (the mistake this project has repeatedly caught itself making),
-this script does NOT hardcode a field name. It:
+Ozon"/"Продажи"/"Возвраты" (the mistake this project has repeatedly
+caught itself making), this script does NOT hardcode a field name. It:
 
   1. Recursively walks every record fetched for the day (top level AND
      nested, e.g. inside `posting`, since accrued_category being too
@@ -24,7 +38,9 @@ this script does NOT hardcode a field name. It:
   2. For every dict found anywhere, pairs every descriptive string field
      with every numeric-ish field in the SAME dict (a numeric-ish field
      is a plain number, a numeric string, or a dict with an "amount" key
-     — same shape as `total_amount`).
+     — same shape as `total_amount`) AND with every numeric field
+     multiplied by a same-dict quantity-ish field, in case revenue needs
+     price×quantity rather than a raw field.
   3. Groups and sums each such (string field, numeric field) pair's
      values across the whole day.
   4. Checks two ways whether a grouping explains the ground truth above:
@@ -155,6 +171,11 @@ def _is_descriptive_string(value) -> bool:
     return not stripped.isdigit()  # excludes bare numeric-looking strings (ids, amounts-as-strings)
 
 
+def _is_quantity_key(key: str) -> bool:
+    lowered = key.lower()
+    return "quantity" in lowered or "qty" in lowered
+
+
 def _normalize_path(path: tuple[str, ...]) -> tuple[str, ...]:
     return tuple("*" if seg.isdigit() else seg for seg in path)
 
@@ -172,23 +193,64 @@ def _walk_dicts(obj, path=()):
             yield from _walk_dicts(item, path + (str(index),))
 
 
-def _collect_grouped_sums(records: list[dict]) -> dict[tuple, dict[str, float]]:
-    """For every (path, name_key, amount_key) triple found anywhere across
-    all records, returns the sum of amount_key's value grouped by
-    name_key's value. A record can contribute to many different groupings
-    at once — this casts a wide net on purpose, since the right field
-    isn't known yet."""
-    sums: dict[tuple, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+def _collect_grouped_sums(records: list[dict]) -> tuple[dict[tuple, dict[str, float]], dict[tuple, float]]:
+    """Returns (grouped_sums, ungrouped_sums).
+
+    grouped_sums: for every (path, name_key, amount_key) triple found
+    anywhere across all records, the sum of amount_key's value grouped by
+    name_key's value — for a "Тип начисления"-level field that needs a
+    companion category to explain a coarser "Группа услуг" total.
+
+    ungrouped_sums: for every (path, amount_key) pair, the PLAIN total
+    across every occurrence, with no grouping at all — this is how the
+    CONFIRMED commission field actually resolved (summing `posting.
+    products[].commission.sale_commission.amount` across everything
+    already equalled the reference on its own, no companion category
+    needed), so revenue is checked the same direct way first.
+
+    A record can contribute to many different (path, key) pairs at once —
+    this casts a wide net on purpose, since the right field isn't known
+    yet."""
+    grouped: dict[tuple, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    ungrouped: dict[tuple, float] = defaultdict(float)
     for record in records:
         for path, d in _walk_dicts(record):
             name_fields = [(k, v) for k, v in d.items() if k not in _EXCLUDED_KEYS and _is_descriptive_string(v)]
             amount_fields = [(k, _extract_amount(v)) for k, v in d.items() if k not in _EXCLUDED_KEYS]
             amount_fields = [(k, a) for k, a in amount_fields if a is not None]
+
+            # Also try price×quantity: revenue plausibly needs a per-unit
+            # field multiplied by how many units, not a raw field alone.
+            quantity_fields = [(k, v) for k, v in amount_fields if _is_quantity_key(k)]
+            multiplied_fields = [
+                (f"{amount_key}*{qty_key}", amount_value * qty_value)
+                for amount_key, amount_value in amount_fields
+                for qty_key, qty_value in quantity_fields
+                if amount_key != qty_key
+            ]
+            all_amount_fields = amount_fields + multiplied_fields
+
+            for amount_key, amount_value in all_amount_fields:
+                ungrouped[(path, amount_key)] += amount_value
             for name_key, name_value in name_fields:
-                for amount_key, amount_value in amount_fields:
+                for amount_key, amount_value in all_amount_fields:
                     group_key = (path, name_key, amount_key)
-                    sums[group_key][name_value] += amount_value
-    return sums
+                    grouped[group_key][name_value] += amount_value
+    return grouped, ungrouped
+
+
+def _check_ungrouped_matches(ungrouped_sums: dict[tuple, float]) -> list[tuple]:
+    """Returns [(path, amount_key, category, total)] for every plain,
+    ungrouped (path, amount_key) total that already equals (within
+    TOLERANCE_RUB) one of the confirmed reference totals — no companion
+    category field needed. Checked BEFORE the grouped/subset checks below
+    since this is the simpler, more direct explanation."""
+    hits = []
+    for (path, amount_key), total in ungrouped_sums.items():
+        for category, reference in REFERENCE_TOTALS_RUB.items():
+            if abs(total - reference) <= TOLERANCE_RUB:
+                hits.append((path, amount_key, category, total))
+    return hits
 
 
 def _check_direct_matches(grouped_sums: dict[tuple, dict[str, float]]) -> list[tuple]:
@@ -269,20 +331,29 @@ def main() -> None:
     print(f"Всего записей за {args.date}: {len(records)}")
     print("=" * 70)
 
-    grouped_sums = _collect_grouped_sums(records)
-    print(f"Найдено кандидатов (путь, строковое поле, числовое поле): {len(grouped_sums)}")
+    grouped_sums, ungrouped_sums = _collect_grouped_sums(records)
+    print(f"Найдено кандидатов: {len(ungrouped_sums)} полей, {len(grouped_sums)} группировок по категориям")
 
+    ungrouped_hits = _check_ungrouped_matches(ungrouped_sums)
     direct_hits = _check_direct_matches(grouped_sums)
     subset_hits = _check_subset_matches(grouped_sums)
 
+    if ungrouped_hits:
+        print("\n✅ ПРЯМЫЕ совпадения (простая сумма поля по всем записям = весь итог категории, без группировки):")
+        for path, amount_key, category, total in ungrouped_hits:
+            print(f"    {category} ({REFERENCE_TOTALS_RUB[category]} ₽) == {total} ₽")
+            print(f"        путь={'.'.join(path) or '(корень)'}  поле-сумма={amount_key}")
+    else:
+        print("\n❌ Прямых совпадений без группировки не найдено.")
+
     if direct_hits:
-        print("\n✅ ПРЯМЫЕ совпадения (одно значение поля = весь итог категории):")
+        print("\n✅ Совпадения ЧЕРЕЗ группировку (одно значение категориального поля = весь итог категории):")
         for group_key, name_value, category, total in direct_hits:
             path, name_key, amount_key = group_key
             print(f"    {category} ({REFERENCE_TOTALS_RUB[category]} ₽) == {total} ₽")
             print(f"        путь={'.'.join(path) or '(корень)'}  поле-название={name_key}='{name_value}'  поле-сумма={amount_key}")
     else:
-        print("\n❌ Прямых совпадений (одно значение = вся категория) не найдено.")
+        print("\n❌ Совпадений через группировку (одно значение = вся категория) не найдено.")
 
     if subset_hits:
         print("\n✅ Совпадения ГРУППОЙ значений (несколько типов начисления суммарно = категория):")
@@ -294,7 +365,7 @@ def main() -> None:
     else:
         print("\n❌ Совпадений группой значений не найдено.")
 
-    if not direct_hits and not subset_hits:
+    if not ungrouped_hits and not direct_hits and not subset_hits:
         print("\nНи одно найденное поле не объясняет ни одну из подтверждённых сумм — печатаю топ-10")
         print("группировок по количеству затронутых записей, для ручного разбора:")
         by_size = sorted(grouped_sums.items(), key=lambda kv: -len(kv[1]))[:10]

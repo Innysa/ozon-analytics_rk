@@ -103,26 +103,36 @@ class MarginBlock(BaseModel):
     CURRENT, not-yet-closed calendar month, and only returns real data for
     a month once it's over (a real August 2026 call succeeded; the same
     call for September, while September was still in progress, did not).
-    So for any period touching the still-open month, delivered_sum_rub/
-    commission_rub above are — and can only ever be — this dashboard's own
-    running estimate from postings, not Ozon's own final settlement
-    figure, which does not exist yet. True whenever the requested period
-    reaches into the current calendar month; the frontend shows this only
-    next to "Выручка (выкуп)"/"Комиссия Ozon" specifically, since those are
-    the two figures a future realization-report sync would eventually
-    replace with Ozon's own final numbers for closed months (see
-    RealizationReportMonth once that lands) — delivered_units/cost_known/
-    margin stay postings-derived regardless of month, so aren't flagged."""
+    So for any period touching the still-open month, delivered_sum_rub
+    above is — and can only ever be — this dashboard's own running
+    estimate from postings, not Ozon's own final settlement figure, which
+    does not exist yet. True whenever the requested period reaches into
+    the current calendar month; the frontend shows this only next to
+    "Выручка (выкуп)" — delivered_units/cost_known/margin stay postings-
+    derived regardless of month, so aren't flagged.
+
+    commission_rub/commission_from_accrual — CONFIRMED 2026-09-14: unlike
+    delivered_sum_rub, "Комиссия Ozon" no longer needs to wait for a
+    closed month at all — it's sourced from AccrualDailyStatistic.
+    commission_ozon_rub (POST /v1/finance/accrual/by-day, exact to the
+    kopeck against the cabinet even for yesterday, see that model's own
+    docstring) for any day that's been synced, falling back to
+    OrderDailyStatistic's own postings-derived estimate only for a day
+    accrual hasn't covered yet. commission_from_accrual is True only when
+    EVERY day in the period got the confirmed figure — the frontend shows
+    "предварительно" on "Комиссия Ozon" only when this is False, separate
+    from is_preliminary (which still governs "Выручка (выкуп)")."""
 
     has_data: bool
     delivered_units: int | None = None
     delivered_sum_rub: float | None = None
     commission_rub: float | None = None  # as Ozon reports it — negative (a deduction)
+    commission_from_accrual: bool | None = None  # True: Ozon's own confirmed figure for every day in the period
     cost_of_delivered_rub: float | None = None
     cost_known: bool | None = None  # whether cost price was set for every delivered unit in the period
     margin_rub: float | None = None  # delivered_sum_rub + commission_rub - cost_of_delivered_rub - реклама (оба источника)
     margin_pct: float | None = None
-    is_preliminary: bool | None = None  # True if the period touches the current, not-yet-closed calendar month
+    is_preliminary: bool | None = None  # True if the period touches the current, not-yet-closed calendar month (Выручка only)
 
 
 class InventoryBlock(BaseModel):

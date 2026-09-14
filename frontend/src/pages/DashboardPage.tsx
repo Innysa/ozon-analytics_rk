@@ -53,6 +53,8 @@ export function DashboardPage() {
   const [logisticsNotice, setLogisticsNotice] = useState<string | null>(null);
   const [syncingRealization, setSyncingRealization] = useState(false);
   const [realizationNotice, setRealizationNotice] = useState<string | null>(null);
+  const [syncingAccrual, setSyncingAccrual] = useState(false);
+  const [accrualNotice, setAccrualNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -127,6 +129,32 @@ export function DashboardPage() {
       setRealizationNotice(err instanceof ApiError ? err.message : "Ошибка синхронизации отчёта о реализации");
     } finally {
       setSyncingRealization(false);
+    }
+  };
+
+  // Забирает точную "Комиссию Ozon" из отчёта о начислениях (POST
+  // /v1/finance/accrual/by-day, подтверждено 2026-09-14 до копейки) за
+  // выбранный на странице период — так же можно перезабрать и уже прошедшие
+  // дни (например, начало месяца), просто выбрав нужные даты вверху.
+  const syncAccrualDaily = async () => {
+    setSyncingAccrual(true);
+    setAccrualNotice("Получение точных данных по начислениям Ozon за выбранный период...");
+    try {
+      const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo }).toString();
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-accrual-daily?${query}`);
+      if (run.status === "failed") {
+        setAccrualNotice(`Не удалось получить начисления: ${run.error_message ?? "неизвестная ошибка"}`);
+      } else {
+        setAccrualNotice(
+          `Готово: обработано дней ${run.items_fetched} (создано ${run.items_created}, обновлено ${run.items_skipped_duplicate}).` +
+            (run.error_message ? ` ${run.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setAccrualNotice(err instanceof ApiError ? err.message : "Ошибка синхронизации начислений");
+    } finally {
+      setSyncingAccrual(false);
     }
   };
 
@@ -258,17 +286,30 @@ export function DashboardPage() {
           >
             <div className="mb-3 flex items-center justify-between gap-3">
               <p className="text-xs text-slate-400">
-                «Комиссия Ozon»/«Выручка (выкуп)» окончательно сверяются с официальным отчётом Ozon о реализации
-                товаров — доступен только за уже завершённые месяцы.
+                «Комиссия Ozon» — точная сумма из отчёта Ozon о начислениях за каждый день выбранного периода.
+                «Выручка (выкуп)» окончательно сверяется с официальным отчётом Ozon о реализации товаров — доступен
+                только за уже завершённые месяцы.
               </p>
-              <button
-                onClick={syncRealizationReport}
-                disabled={syncingRealization}
-                className="shrink-0 rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
-              >
-                {syncingRealization ? "Проверка..." : "Проверить отчёт о реализации"}
-              </button>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  onClick={syncAccrualDaily}
+                  disabled={syncingAccrual}
+                  className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                >
+                  {syncingAccrual ? "Обновление..." : "Обновить точные данные по начислениям"}
+                </button>
+                <button
+                  onClick={syncRealizationReport}
+                  disabled={syncingRealization}
+                  className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                >
+                  {syncingRealization ? "Проверка..." : "Проверить отчёт о реализации"}
+                </button>
+              </div>
             </div>
+            {accrualNotice && (
+              <div className="mb-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{accrualNotice}</div>
+            )}
             {realizationNotice && (
               <div className="mb-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{realizationNotice}</div>
             )}
@@ -450,7 +491,7 @@ function MarginSection({ margin }: { margin: MarginBlockType }) {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Выкуплено, шт." value={fmtInt(margin.delivered_units)} />
         <Stat label="Выручка (выкуп)" value={fmtRub(margin.delivered_sum_rub)} preliminary={!!margin.is_preliminary} />
-        <Stat label="Комиссия Ozon" value={fmtRub(margin.commission_rub)} preliminary={!!margin.is_preliminary} />
+        <Stat label="Комиссия Ozon" value={fmtRub(margin.commission_rub)} preliminary={!margin.commission_from_accrual} />
         <Stat
           label="Себестоимость выкупа"
           value={margin.cost_known ? fmtRub(margin.cost_of_delivered_rub) : "Указана не для всех товаров"}
@@ -473,9 +514,20 @@ function MarginSection({ margin }: { margin: MarginBlockType }) {
         источника выше). Источник — заказы FBO/FBS из Ozon Seller API, автоматически (страница «РНП»).
         {margin.is_preliminary && (
           <>
-            {" "}Пометка «предварительно» на «Выручке (выкуп)»/«Комиссии Ozon»: официальный отчёт Ozon о реализации
-            товаров за текущий месяц появляется только после его завершения — эти две цифры пересчитаются на точные,
-            когда месяц закроется.
+            {" "}Пометка «предварительно» на «Выручке (выкуп)»: официальный отчёт Ozon о реализации товаров за
+            текущий месяц появляется только после его завершения — эта цифра пересчитается на точную, когда месяц
+            закроется.
+          </>
+        )}
+        {margin.commission_from_accrual ? (
+          <>
+            {" "}«Комиссия Ozon» — точная сумма из отчёта Ozon о начислениях за каждый день периода (POST
+            /v1/finance/accrual/by-day), а не оценка по заказам — совпадает с личным кабинетом Ozon до копейки.
+          </>
+        ) : (
+          <>
+            {" "}Пометка «предварительно» на «Комиссии Ozon»: точные данные из отчёта Ozon о начислениях собраны не
+            за весь период — нажмите «Обновить точные данные по начислениям» выше.
           </>
         )}
       </p>

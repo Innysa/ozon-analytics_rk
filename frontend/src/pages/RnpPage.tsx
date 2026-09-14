@@ -40,9 +40,14 @@ function defaultDateFrom(): string {
 // CONFIRMED 2026-09-13: Ozon's own official monthly settlement report
 // (/v2/finance/realization) answers "Report was not found" for the current,
 // not-yet-closed month — real data only comes back once the month is over.
-// "Комиссия Ozon"/"Выкуплено на сумму" here are always our own postings-based
-// estimate for such a period, never Ozon's own final settlement figure
-// (which doesn't exist yet) — mirrors DashboardPage's margin.is_preliminary.
+// "Выкуплено на сумму" here is always our own postings-based estimate for
+// such a period, never Ozon's own final settlement figure (which doesn't
+// exist yet) — mirrors DashboardPage's margin.is_preliminary. "Комиссия
+// Ozon" is the ONE exception since 2026-09-14: the backend already
+// overrides it per-day with AccrualDailyStatistic.commission_ozon_rub
+// (Ozon's own confirmed daily figure, POST /v1/finance/accrual/by-day) for
+// any day that's been synced, even inside the still-open month — see
+// dashboard_service._commission_rub_for_period's own docstring.
 function touchesCurrentMonth(dateTo: string): boolean {
   const d = new Date();
   const currentMonthStart = isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
@@ -262,9 +267,11 @@ export function RnpPage() {
         <div className="space-y-3">
           {touchesCurrentMonth(dateTo) && (
             <div className="rounded-md bg-amber-50 p-2 text-xs text-amber-700">
-              ≈ Предварительно: «Комиссия Ozon» и «Выкуплено на сумму» за текущий, ещё не завершённый месяц — это
-              наша оценка по заказам, а не официальный отчёт Ozon о реализации (он появляется только после закрытия
-              месяца). Цифры за прошлые, уже завершённые месяцы будут пересчитаны на точные из этого отчёта.
+              ≈ Предварительно: «Выкуплено на сумму» за текущий, ещё не завершённый месяц — это наша оценка по
+              заказам, а не официальный отчёт Ozon о реализации (он появляется только после закрытия месяца). «Комиссия
+              Ozon» уже точная (из отчёта Ozon о начислениях) за каждый день, для которого она была собрана — кнопка
+              «Обновить точные данные по начислениям» на Дашборде; для ещё не собранных дней показана та же оценка по
+              заказам, что и раньше.
             </div>
           )}
           <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">

@@ -21,13 +21,29 @@ CONFIRMED TOO COARSE to isolate "Комиссия Ozon" from revenue/logistics/
 advertising: a real account's own "Начисления" XLSX export shows those as
 separate "Группа услуг" values (e.g. "Вознаграждение Ozon" summing to
 -389 940.02 ₽, matching the cabinet's own per-line breakdown exactly) all
-sharing ONE `accrued_category`, and even one shared `accrual_id` can span
-multiple "Группа услуг" (one accrual_id had both a "Продажи" row and a
-"Вознаграждение Ozon" row in the XLSX). Whether that finer breakdown
-exists inside the API's own `posting` field (unexamined so far) is what
-backend/scripts/lookup_accrual_records.py exists to answer — until then,
-commission_rub/delivered_sum_rub are NOT computed from this table, only
-the whole-day total and the coarse category split are stored.
+sharing ONE `accrued_category`.
+
+commission_ozon_rub — CONFIRMED 2026-09-14 via `backend/scripts/
+find_accrual_commission_field.py` against a real account's real day
+(12.09.2026): summing `posting.products[].commission.sale_commission.
+amount` (a duplicate field, `commission.commission.amount` on the same
+product, carries the identical value) across EVERY product in EVERY
+record's `posting` for the day reproduces "Вознаграждение Ozon" from the
+cabinet exactly (-389 940.02 ₽). Stored with the SAME sign Ozon itself
+uses (negative — a deduction), matching OrderDailyStatistic.commission_
+rub's own sign convention, so both can be added into MarginBlock's
+margin_rub formula the same way. A record with no `posting` (e.g. a
+NON_ITEM charge not tied to a specific shipment) contributes 0, not an
+error — see accrual_daily_sync_service._extract_commission_ozon_rub's
+own docstring.
+
+"Выручка"/"Продажи"/"Возвраты" are NOT yet computed from this table —
+which specific field(s) reproduce those cabinet figures is still
+unconfirmed (same script exists to find them; see its own docstring).
+Until then, Dashboard/РНП still use OrderDailyStatistic's postings-based
+delivered_sum_rub for revenue, only commission_rub is overridden by this
+table's commission_ozon_rub where a synced day exists — see
+dashboard_service._commission_rub_for_period's own docstring.
 
 One row per (store, date) — upserted daily (and re-synced for a short
 trailing window, not just once) since Ozon can revise recent accruals
@@ -53,5 +69,6 @@ class AccrualDailyStatistic(TimestampMixin, Base):
     total_amount_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     by_category_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    commission_ozon_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
 
     source: Mapped[str] = mapped_column(String(30), nullable=False)  # "ozon_seller_api"
