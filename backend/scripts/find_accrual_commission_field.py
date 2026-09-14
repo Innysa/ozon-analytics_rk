@@ -52,18 +52,28 @@ caught itself making), this script does NOT hardcode a field name. It:
 
 Prints ONLY condensed grouped sums and ✅/❌ verdicts — never a raw
 per-record JSON dump (no scrollback on the target console, same
-constraint as every other diagnostic script in this project).
+constraint as every other diagnostic script in this project). Prints a
+one-line ✅/❌ SUMMARY per category FIRST, before any of the detailed
+per-hit listings below it — a real day's data can make those detailed
+sections long, and this project's console has hit scrollback limits
+before (see probe_accrual_and_realization.py's own docstring), so the
+summary line is what to check first if the console output looks cut off,
+and redirecting to a file (as below) avoids the question entirely.
 
 Usage (on the real server, against the real database) — reuses a
 previously saved raw response instead of a fresh API call when
 --json-file is given (e.g. the file probe_accrual_and_realization.py
-already saved to /tmp/accrual_by_day_2026-09-12.json):
+already saved to /tmp/accrual_by_day_2026-09-12.json). ALWAYS redirect to
+a file rather than reading the console directly — this console has no
+scrollback, so a long run can look truncated even when it finished fine:
 
     docker compose exec app python backend/scripts/find_accrual_commission_field.py \\
-        --store-id a586ccc5-6030-4ec9-b133-da9de24dafcf --date 2026-09-12
+        --store-id a586ccc5-6030-4ec9-b133-da9de24dafcf --date 2026-09-12 \\
+        > /tmp/find_commission_field.txt; cat /tmp/find_commission_field.txt
 
     docker compose exec app python backend/scripts/find_accrual_commission_field.py \\
-        --json-file /tmp/accrual_by_day_2026-09-12.json --date 2026-09-12
+        --json-file /tmp/accrual_by_day_2026-09-12.json --date 2026-09-12 \\
+        > /tmp/find_commission_field.txt; cat /tmp/find_commission_field.txt
 """
 from __future__ import annotations
 
@@ -337,6 +347,18 @@ def main() -> None:
     ungrouped_hits = _check_ungrouped_matches(ungrouped_sums)
     direct_hits = _check_direct_matches(grouped_sums)
     subset_hits = _check_subset_matches(grouped_sums)
+
+    # Печатается СРАЗУ, до всех подробных списков ниже (которые для
+    # реального дня могут быть длинными) — если консоль обрежет вывод,
+    # эта сводка всё равно покажет, какие категории вообще нашлись, а не
+    # только те, что попали на экран первыми.
+    matched_categories = {category for _, _, category, _ in ungrouped_hits} | {category for _, _, category, _ in direct_hits} | {
+        category for _, _, category, _ in subset_hits
+    }
+    print("\nСВОДКА по категориям (до подробностей ниже):")
+    for category in REFERENCE_TOTALS_RUB:
+        mark = "✅ найдено" if category in matched_categories else "❌ НЕ найдено"
+        print(f"    {category}: {mark}")
 
     if ungrouped_hits:
         print("\n✅ ПРЯМЫЕ совпадения (простая сумма поля по всем записям = весь итог категории, без группировки):")
