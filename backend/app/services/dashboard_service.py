@@ -209,8 +209,11 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
     accrual data, i.e. the whole figure is Ozon's own confirmed number,
     not partly an estimate. The frontend uses this to decide whether
     "Комиссия Ozon" still needs the "предварительно" badge independently
-    of delivered_sum_rub/is_preliminary (revenue isn't switched to accrual
-    data yet — see AccrualDailyStatistic's own docstring).
+    of delivered_sum_rub/is_preliminary — revenue stays on postings
+    PERMANENTLY, not pending: accrual/by-day was confirmed to expose no
+    field or price×quantity product that reproduces revenue, unlike
+    commission (see AccrualDailyStatistic's own docstring, CLOSED
+    2026-09-14).
 
     GROUPED BY DATE, not a flat row scan: OrderDailyStatistic has ONE ROW
     PER (store, date, delivery_schema) — i.e. up to two rows (FBO+FBS) for

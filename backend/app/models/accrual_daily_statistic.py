@@ -37,13 +37,21 @@ NON_ITEM charge not tied to a specific shipment) contributes 0, not an
 error — see accrual_daily_sync_service._extract_commission_ozon_rub's
 own docstring.
 
-"Выручка"/"Продажи"/"Возвраты" are NOT yet computed from this table —
-which specific field(s) reproduce those cabinet figures is still
-unconfirmed (same script exists to find them; see its own docstring).
-Until then, Dashboard/РНП still use OrderDailyStatistic's postings-based
-delivered_sum_rub for revenue, only commission_rub is overridden by this
-table's commission_ozon_rub where a synced day exists — see
-dashboard_service._commission_rub_for_period's own docstring.
+"Выручка"/"Продажи"/"Возвраты" are DELIBERATELY NOT computed from this
+table — CLOSED, not pending, as of 2026-09-14. find_accrual_commission_
+field.py's search (simple per-field sum, grouping by a categorical field,
+subset-of-values sums, AND price×quantity products) found NO field or
+combination anywhere in a real record that reproduces "Услуги доставки",
+"Продвижение и реклама", or "Продажи" from the same confirmed-ground-
+truth day that DID yield commission_ozon_rub exactly — accrual/by-day
+apparently doesn't expose revenue as a simple derivable field the way it
+does commission. Do NOT re-run that search again without new evidence
+this conclusion is wrong (e.g. a differently-shaped record on some other
+day) — Dashboard/РНП intentionally keep using OrderDailyStatistic's
+postings-based delivered_sum_rub for revenue indefinitely, only
+commission_rub is overridden by this table's commission_ozon_rub where a
+synced day exists — see dashboard_service._commission_rub_for_period's
+own docstring.
 
 One row per (store, date) — upserted daily (and re-synced for a short
 trailing window, not just once) since Ozon can revise recent accruals

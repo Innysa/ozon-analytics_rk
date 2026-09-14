@@ -3,9 +3,35 @@ actually distinguishes "Вознаграждение Ozon" (Комиссия Ozo
 charge types — confirmed too coarse to find via `accrued_category`
 (POSTING/NON_ITEM/ITEM only).
 
-Ground truth (independently confirmed by the user from Ozon's own cabinet
-AND the "Начисления" XLSX export, for store_id a586ccc5-6030-4ec9-b133-
-da9de24dafcf on 2026-09-12 — see README's own accrual/by-day section):
+**CLOSED 2026-09-14 — DO NOT RE-RUN THIS LOOKING FOR REVENUE WITHOUT NEW
+EVIDENCE.** Final real-account result for 12.09.2026 (store_id
+a586ccc5-6030-4ec9-b133-da9de24dafcf), across ALL of this script's checks
+(plain per-field sum, sum grouped by a categorical field, sum of a
+SUBSET of a categorical field's values, and every numeric field ×
+price×quantity):
+
+    Вознаграждение Ozon   ✅ FOUND — posting.products[].commission.
+                             sale_commission.amount (now wired up, see
+                             AccrualDailyStatistic.commission_ozon_rub)
+    Услуги доставки       ❌ NOT FOUND anywhere in the record
+    Продвижение и реклама ❌ NOT FOUND anywhere in the record
+    Продажи               ❌ NOT FOUND anywhere in the record
+    Возвраты              ❌ NOT FOUND anywhere in the record
+
+Conclusion: /v1/finance/accrual/by-day exposes commission as a directly
+summable field, but does NOT expose revenue the same way — no field,
+category grouping, subset of values, or price×quantity product anywhere
+in a real record reproduces "Продажи"/"Услуги доставки"/"Продвижение и
+реклама" for the one real day this was checked against. Dashboard/РНП
+therefore keep "Выручка (выкуп)"/"Заказы" on OrderDailyStatistic's
+postings-based figures PERMANENTLY — this is a decision, not a TODO. See
+AccrualDailyStatistic's own docstring and dashboard_service.
+_commission_rub_for_period's own docstring for where this is wired up.
+
+Ground truth this was checked against (independently confirmed by the
+user from Ozon's own cabinet AND the "Начисления" XLSX export, for
+store_id a586ccc5-6030-4ec9-b133-da9de24dafcf on 2026-09-12 — see
+README's own accrual/by-day section):
 
     Вознаграждение Ozon      -389940.02 ₽   (кабинет: -389940 ₽)
     Услуги доставки           -36382.00 ₽   (кабинет:  -36382 ₽)
@@ -13,19 +39,16 @@ da9de24dafcf on 2026-09-12 — see README's own accrual/by-day section):
     Продажи                   770288.00 ₽   (кабинет:  770288 ₽)
     Возвраты                   -3250.00 ₽   (кабинет:   -3250 ₽)
 
-CONFIRMED 2026-09-14: this script's original (string field, numeric
-field) pairing already found "Комиссия Ozon" exactly —
-`posting.products[].commission.sale_commission.amount` summed across
-every product in every record's posting for the day reproduces
--389 940.02 ₽ exactly (see AccrualDailyStatistic.commission_ozon_rub and
-accrual_daily_sync_service._extract_commission_ozon_rub, now wired up).
-"Продажи"/"Возвраты" are NOT confirmed yet — unlike commission, revenue
-plausibly needs price×quantity (a product's raw `price` field alone,
-summed per product, would rarely equal the day's whole "Продажи" total
-without multiplying by how many units were sold), so this script ALSO
-tries that: any dict with an integer-looking `quantity`-ish field has its
-OTHER numeric fields multiplied by that quantity before being treated as
-an amount candidate, in addition to the raw (unmultiplied) fields.
+This script's original (string field, numeric field) pairing found
+"Комиссия Ozon" exactly — `posting.products[].commission.sale_commission.
+amount` summed across every product in every record's posting for the
+day reproduces -389 940.02 ₽ exactly. It also tries price×quantity for
+revenue (a product's raw `price` field alone, summed per product, would
+rarely equal the day's whole "Продажи" total without multiplying by how
+many units were sold): any dict with an integer-looking `quantity`-ish
+field has its OTHER numeric fields multiplied by that quantity before
+being treated as an amount candidate, in addition to the raw
+(unmultiplied) fields — this DID NOT find a match either.
 
 Rather than guess which API field/value corresponds to "Вознаграждение
 Ozon"/"Продажи"/"Возвраты" (the mistake this project has repeatedly
