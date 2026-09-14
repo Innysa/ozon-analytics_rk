@@ -1,9 +1,9 @@
 """Diagnostic: fetches ALL /v1/finance/accrual/by-day records for one date
 (same confirmed request shape as summarize_accrual_by_day.py), then prints
-the FULL raw content of ONLY the records whose accrual_id matches one of
-the given --accrual-id values — built to correlate specific, already-known
-lines from a real Ozon "Начисления" XLSX export against the API's own
-record shape.
+the FULL raw content of ONLY the records that contain one of the given
+--id values ANYWHERE inside them (not just as a top-level accrual_id) —
+built to correlate specific, already-known lines from a real Ozon
+"Начисления" XLSX export against the API's own record shape.
 
 Why this exists: the XLSX export has a per-LINE breakdown ("Группа услуг" /
 "Тип начисления" — e.g. "Вознаграждение Ozon" / "Вознаграждение за
@@ -15,18 +15,30 @@ accrual_id can appear on MULTIPLE XLSX rows with DIFFERENT "Группа усл�
 row) — so it's not yet confirmed whether the API's total_amount for that
 accrual_id is already a NETTED total across everything under it, or
 whether the line-level breakdown lives somewhere inside the still-
-unexamined "posting" field. This script exists to answer exactly that,
-for a small, targeted set of accrual_ids instead of dumping the whole
-day (see summarize_accrual_by_day.py for why that's avoided).
+unexamined "posting" field.
 
-Usage (on the real server, against the real database) — pass one
---accrual-id per ID you want to inspect, ideally one whose XLSX rows
-are ALL the same "Группа услуг" and one whose XLSX rows SPAN more than
-one, to see both cases:
+CORRECTED after the first real run found 0/3 matches: a real accrual
+record example seen earlier has `accrual_id` as a plain NUMBER (e.g.
+62801152131) while `unit_number` is the DASHED string (e.g.
+"62990279-0129-1") — and every ID from the user's XLSX export is dashed
+(e.g. "0153138912-0063-1"). So the XLSX's IDs are very likely
+`unit_number` values, not `accrual_id` — but this is NOT yet confirmed
+either (one of the three given IDs, "2000065305252"/"34144030", has no
+dashes and could be the real accrual_id side of the same line). Rather
+than guess which field is right, this script now searches EVERY record
+recursively (top level AND nested, e.g. inside `posting`) for a value
+under a key named `accrual_id` OR `unit_number` matching any wanted ID,
+and reports exactly which field/path matched — so the next run's real
+output settles this instead of another guess.
+
+Usage (on the real server, against the real database) — pass one --id
+per value you want to inspect, ideally one whose XLSX rows are ALL the
+same "Группа услуг" and one whose XLSX rows SPAN more than one, to see
+both cases:
 
     docker compose exec app python backend/scripts/lookup_accrual_records.py \\
         --store-id <id> --date 2026-09-12 \\
-        --accrual-id 0153138912-0063-1 --accrual-id 34144030 --accrual-id 2000065305252
+        --id 0153138912-0063-1 --id 34144030 --id 2000065305252
 """
 from __future__ import annotations
 
@@ -76,6 +88,30 @@ def _find_item_list(obj, path=()):
     return None, None
 
 
+# Field names known (from a real record example seen previously) to carry
+# an identifier that could plausibly match the dashed IDs from the XLSX
+# export — NOT assumed to be at any particular nesting depth, since the
+# XLSX-vs-API field correspondence is exactly what's unconfirmed here.
+_ID_FIELD_NAMES = ("accrual_id", "unit_number")
+
+
+def _find_id_matches(obj, wanted: set[str], path=()) -> list[tuple[str, str, object]]:
+    """Recursively finds every (path, field_name, value) where obj has a
+    key in _ID_FIELD_NAMES whose value (as a string) is one of `wanted` —
+    checked at every nesting level, not just the top of the record, since
+    the matching field could live inside `posting` or elsewhere."""
+    matches: list[tuple[str, str, object]] = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in _ID_FIELD_NAMES and str(value) in wanted:
+                matches.append((".".join(path + (key,)) or key, key, value))
+            matches.extend(_find_id_matches(value, wanted, path + (key,)))
+    elif isinstance(obj, list):
+        for index, item in enumerate(obj):
+            matches.extend(_find_id_matches(item, wanted, path + (str(index),)))
+    return matches
+
+
 def _fetch_all_records(client, date_str: str) -> list[dict]:
     bodies = [
         lambda page: {"date": date_str, "page": page, "page_size": PAGE_SIZE},
@@ -110,7 +146,10 @@ def main() -> None:
     parser.add_argument("--store-id", default=None)
     parser.add_argument("--store-name", default=None)
     parser.add_argument("--date", required=True, help="ГГГГ-ММ-ДД")
-    parser.add_argument("--accrual-id", action="append", required=True, dest="accrual_ids", help="можно указывать несколько раз")
+    parser.add_argument(
+        "--id", "--accrual-id", action="append", required=True, dest="ids",
+        help="ID для поиска (accrual_id ИЛИ unit_number, где бы он ни встретился в записи) — можно указывать несколько раз",
+    )
     args = parser.parse_args()
     if not args.store_id and not args.store_name:
         print("Укажите --store-id или --store-name.")
@@ -136,18 +175,20 @@ def main() -> None:
         print(f"Всего записей за {args.date}: {len(records)}")
         print("=" * 70)
 
-        wanted = set(args.accrual_ids)
-        found_ids = set()
+        wanted = set(args.ids)
+        found_ids: set[str] = set()
         for r in records:
-            rid = str(r.get("accrual_id"))
-            if rid in wanted:
-                found_ids.add(rid)
-                print(f"\n--- accrual_id={rid} — ПОЛНАЯ запись ---")
-                print(json.dumps(r, ensure_ascii=False, indent=2, default=str))
+            matches = _find_id_matches(r, wanted)
+            if not matches:
+                continue
+            found_ids.update(str(value) for _, _, value in matches)
+            match_desc = ", ".join(f"{field}={value} (путь: {path})" for path, field, value in matches)
+            print(f"\n--- совпадение: {match_desc} — ПОЛНАЯ запись ---")
+            print(json.dumps(r, ensure_ascii=False, indent=2, default=str))
 
         missing = wanted - found_ids
         if missing:
-            print(f"\nНЕ найдено в ответе за эту дату: {sorted(missing)}")
+            print(f"\nНЕ найдено ни в accrual_id, ни в unit_number, нигде в записях за эту дату: {sorted(missing)}")
     finally:
         db.close()
 
