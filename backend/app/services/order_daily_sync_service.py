@@ -176,11 +176,24 @@ def _to_float(value: object) -> float:
         return 0.0
 
 
+_MSK_OFFSET = timedelta(hours=3)  # Russia has used a single fixed UTC+3 nationwide since 2014 — no DST, no tz database needed
+
+
 def _parse_in_process_at(value: str | None) -> date | None:
+    """Ozon returns in_process_at as UTC (e.g. "...Z"). Bucketed here by
+    MOSCOW calendar day, not raw UTC day — Ozon's own cabinet reports by
+    Moscow local day (same class of bug already confirmed and fixed on
+    the frontend, see isoDate()'s own docstring in DashboardPage.tsx/
+    RnpPage.tsx: "converts to UTC first, which silently shifts the day
+    back for any timezone ahead of UTC"). A posting at 21:30 UTC on day N
+    is 00:30 MSK on day N+1 — bucketing by raw UTC date puts it a day
+    EARLY relative to Ozon's own per-day counts, which is exactly the
+    kind of systematic day-boundary mismatch a seller would notice
+    comparing our per-day order count against the cabinet's."""
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        return (datetime.fromisoformat(value.replace("Z", "+00:00")) + _MSK_OFFSET).date()
     except ValueError:
         return None
 

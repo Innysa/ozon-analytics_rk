@@ -13,6 +13,7 @@ from app.services.order_daily_sync_service import (
     _count_missing_commission_units,
     _date_chunks,
     _fetch_all_postings,
+    _parse_in_process_at,
     aggregate_postings_by_day,
     aggregate_postings_by_sku_and_day,
     commission_missing_units_note,
@@ -28,6 +29,29 @@ def _posting(*, status: str, in_process_at: str, sku: int, price: str, old_price
         products=[OzonPostingProductItem(sku=sku, offer_id="art", name="Товар", quantity=quantity, price=price)],
         financial_data={"products": [{"product_id": sku, "old_price": old_price, "price": float(price), "commission_amount": commission}]},
     )
+
+
+def test_parse_in_process_at_buckets_by_moscow_day_not_utc_day():
+    """A posting at 21:30 UTC on Sept 2 is 00:30 MSK on Sept 3 — Ozon's
+    own cabinet reports by Moscow day, so bucketing by raw UTC date would
+    silently put this order a day early relative to Ozon's own count
+    (same bug class already confirmed and fixed on the frontend, see
+    isoDate()'s own docstring)."""
+    assert _parse_in_process_at("2026-09-02T21:30:00.000000Z") == date(2026, 9, 3)
+    # Just before the MSK boundary — still the same UTC AND Moscow day.
+    assert _parse_in_process_at("2026-09-02T20:59:59.000000Z") == date(2026, 9, 2)
+    # Comfortably mid-Moscow-day — same date either way, sanity check.
+    assert _parse_in_process_at("2026-09-02T10:00:00.000000Z") == date(2026, 9, 2)
+
+
+def test_aggregate_postings_by_day_buckets_late_utc_night_order_into_next_moscow_day():
+    posting = _posting(
+        status="delivered", in_process_at="2026-09-02T22:00:00.000000Z",  # 01:00 MSK on Sept 3
+        sku=1, price="100.00", old_price=100.0, commission=-10,
+    )
+    daily = aggregate_postings_by_day([posting], cost_by_sku={})
+    assert date(2026, 9, 3) in daily
+    assert date(2026, 9, 2) not in daily
 
 
 def test_delivered_posting_with_known_cost_price():
