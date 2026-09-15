@@ -64,15 +64,35 @@ def _fetch_all_records(client, day_str: str) -> list[dict]:
     for this method, so this avoids hardcoding one, same as the diagnostic
     scripts that first confirmed this endpoint's shape. A day with zero
     records (_find_record_list finds nothing) correctly yields an empty
-    list here, not an error — see that helper's own docstring."""
+    list here, not an error — see that helper's own docstring.
+
+    DEFENSIVE, not a confirmed Ozon bug: whether `page` actually advances
+    for this endpoint has never been exercised on a real day with more
+    than PAGE_SIZE records (every real day checked so far had fewer). If
+    Ozon ever ignored `page` and re-returned the same page, this would
+    loop up to MAX_PAGES re-appending identical records, inflating every
+    sum. Guarded by `accrual_id` (present on every real record) rather
+    than a fragile whole-record/whole-list comparison — a record without
+    that key can't be deduped this way and is kept as-is, on the
+    assumption that if it were seen before, an earlier field WOULD have
+    matched and this branch wouldn't be reached for the same object
+    anyway."""
     all_records: list[dict] = []
+    seen_accrual_ids: set = set()
     page = 1
     while page <= MAX_PAGES:
         data = client.get_accrual_by_day(day=day_str, page=page, page_size=PAGE_SIZE)
         records = _find_record_list(data)
         if records is None:
             break
-        all_records.extend(records)
+        new_records = [r for r in records if r.get("accrual_id") not in seen_accrual_ids]
+        if records and not new_records:
+            break  # every record on this page was already collected — pagination isn't advancing
+        for r in new_records:
+            accrual_id = r.get("accrual_id")
+            if accrual_id is not None:
+                seen_accrual_ids.add(accrual_id)
+        all_records.extend(new_records)
         if len(records) < PAGE_SIZE:
             break
         page += 1

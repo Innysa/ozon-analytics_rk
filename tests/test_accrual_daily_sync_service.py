@@ -130,6 +130,27 @@ def test_sync_accrual_daily_statistic_paginates_until_a_short_page(db_session, t
     assert client.calls == [("2026-09-12", 1, svc.PAGE_SIZE), ("2026-09-12", 2, svc.PAGE_SIZE)]
 
 
+def test_sync_accrual_daily_statistic_stops_if_ozon_ignores_page_and_repeats(db_session, two_stores_with_users):
+    """DEFENSIVE regression test: if Ozon ever ignored the `page` param and
+    kept returning the same PAGE_SIZE-long page (never confirmed to happen,
+    but never confirmed NOT to either — no real day tested so far exceeded
+    PAGE_SIZE), the old pagination loop would re-append the identical
+    records up to MAX_PAGES, wildly inflating totals. Deduping by
+    accrual_id must stop this instead of looping forever."""
+    from app.services import accrual_daily_sync_service as svc
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    repeated_page = [{"accrual_id": f"a{i}", "total_amount": {"amount": "1.00"}, "accrued_category": "ITEM"} for i in range(svc.PAGE_SIZE)]
+    client = _FakeClient(pages=[{"result": {"records": repeated_page}}] * 5)  # same page returned every time
+
+    outcome = sync_accrual_daily_statistic(db_session, store_id=store_id, client=client, day=date(2026, 9, 12))
+
+    assert outcome.record_count == svc.PAGE_SIZE  # NOT PAGE_SIZE * 5
+    assert outcome.total_amount_rub == svc.PAGE_SIZE * 1.00
+    assert len(client.calls) == 2  # page 1 (full), page 2 (all duplicates -> stop)
+
+
 def test_sync_accrual_daily_statistic_handles_a_day_with_zero_records(db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
