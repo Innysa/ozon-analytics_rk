@@ -118,6 +118,41 @@ def main() -> None:
                 matched.add(category)
         print(f"    {field}: {round(total, 2)}  (в {seen_counts[field]} из {len(rows)} позиций){marker}")
 
+    # ПРОИЗВОДНЫЕ кандидаты — не просто сумма поля, а сумма ПРОИЗВЕДЕНИЯ
+    # цены за единицу (seller_price_per_instance) на количество единиц
+    # (delivery_commission.quantity / return_commission.quantity), плюс
+    # разница двух сумм (комиссия Ozon по доставке минус её возврат по
+    # возвращённым товарам). Обычное суммирование одного поля не могло
+    # найти это, так как это не сумма ОДНОГО поля, а комбинация.
+    weighted_revenue = 0.0
+    weighted_returns = 0.0
+    delivery_standard_fee_total = 0.0
+    return_standard_fee_total = 0.0
+    for row in rows:
+        price = _to_num(row.get("seller_price_per_instance"))
+        dc = row.get("delivery_commission") or {}
+        rc = row.get("return_commission") or {}
+        weighted_revenue += price * _to_num(dc.get("quantity"))
+        weighted_returns += price * _to_num(rc.get("quantity"))
+        delivery_standard_fee_total += _to_num(dc.get("standard_fee"))
+        return_standard_fee_total += _to_num(rc.get("standard_fee"))
+
+    derived_candidates = {
+        "Продажи = Σ(seller_price_per_instance × delivery_commission.quantity)": weighted_revenue,
+        "Возвраты = -Σ(seller_price_per_instance × return_commission.quantity)": -weighted_returns,
+        "Вознаграждение Ozon = -(Σdelivery_commission.standard_fee − Σreturn_commission.standard_fee)": (
+            -(delivery_standard_fee_total - return_standard_fee_total)
+        ),
+    }
+    print("\nПроизводные кандидаты (произведения/разности полей, не просто суммы):")
+    for label, total in derived_candidates.items():
+        marker = ""
+        for category, reference in REFERENCE_TOTALS_RUB.items():
+            if abs(total - reference) <= TOLERANCE_RUB:
+                marker = f"  ✅ == {category} ({reference} ₽)"
+                matched.add(category)
+        print(f"    {label}: {round(total, 2)}{marker}")
+
     print("\n" + "=" * 70)
     print("СВОДКА по подтверждённым категориям:")
     for category in REFERENCE_TOTALS_RUB:
