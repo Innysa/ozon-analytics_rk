@@ -389,9 +389,13 @@ export function DashboardPage() {
                 </div>
                 {dashboard.logistics.other_services_top_item_name && (
                   <p className="mt-2 text-xs text-slate-500">
-                    Крупнейшая отдельная статья внутри «Прочие услуги»: {dashboard.logistics.other_services_top_item_name} —{" "}
-                    {fmtRub(dashboard.logistics.other_services_top_item_rub)}. Такие статьи (например, агентская
-                    комиссия) у Ozon бывают крупными и волатильными в отдельные недели — это не обязательно ошибка.
+                    Крупнейшая отдельная статья, замеченная в отчётах Ozon за недели, пересекающиеся с выбранным
+                    периодом: {dashboard.logistics.other_services_top_item_name} —{" "}
+                    {fmtRub(dashboard.logistics.other_services_top_item_rub)}. Это реальная сумма Ozon ЗА ВСЮ
+                    недельную отчётную неделю целиком (не пересчитана под выбранные даты, в отличие от «Прочие
+                    услуги» выше) — поэтому она может быть БОЛЬШЕ суммы «Прочие услуги», если неделя лишь частично
+                    входит в выбранный период. Такие статьи (например, агентская комиссия) у Ozon бывают крупными и
+                    волатильными в отдельные недели — это не обязательно ошибка.
                   </p>
                 )}
                 <p className="mt-2 text-xs text-slate-400">
