@@ -1095,6 +1095,19 @@ commission_ratio, rowNumber}`.
 отчёт Ozon с другой основой учёта (по факту движения денег, а не по
 факту начисления).
 
+**«Услуги доставки» через `realization/by-day` — ПОИСК ЗАКРЫТ 2026-09-19,
+ОТРИЦАТЕЛЬНЫЙ РЕЗУЛЬТАТ.** По аналогии с «Продажами» (цена за единицу ×
+количество) проверены ВСЕ остальные числовые подполя `delivery_commission`/
+`return_commission` (`amount`, `price_per_instance`, `total`, `bonus`,
+`compensation`, `commission`, `bank_coinvestment`, `stars`,
+`pick_up_point_coinvestment`), каждое взвешенное на `quantity` того же
+словаря, на реальном дне 12.09.2026 (эталон -36 382,00 ₽) —
+`backend/scripts/check_realization_by_day_revenue_field.py`. Ни одно не
+совпало. Вывод: `realization/by-day` даёт только «Продажи»/«Возвраты»/
+«Вознаграждение Ozon», «Услуги доставки» в нём нет ни в каком виде. **Не
+запускайте этот поиск повторно без новых оснований** (например, другого
+метода Ozon, который явно называется «логистика»/«доставка»).
+
 Реализовано:
 
 - `OzonSellerClient.get_accrual_by_day(day, page, page_size)` и
