@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+docker compose exec app python backend/scripts/inspect_cash_flow_periods.py \
+    --store-id a586ccc5-6030-4ec9-b133-da9de24dafcf \
+    --date-from 2026-09-01 --date-to 2026-09-19 \
+    > /tmp/cash_flow_dump.txt
+wc -l /tmp/cash_flow_dump.txt
