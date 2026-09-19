@@ -209,11 +209,10 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
     accrual data, i.e. the whole figure is Ozon's own confirmed number,
     not partly an estimate. The frontend uses this to decide whether
     "Комиссия Ozon" still needs the "предварительно" badge independently
-    of delivered_sum_rub/is_preliminary — revenue stays on postings
-    PERMANENTLY, not pending: accrual/by-day was confirmed to expose no
-    field or price×quantity product that reproduces revenue, unlike
-    commission (see AccrualDailyStatistic's own docstring, CLOSED
-    2026-09-14).
+    of delivered_sum_rub/is_preliminary — see _revenue_rub_for_period below
+    for the analogous override of delivered_sum_rub itself, added
+    2026-09-19 once realization/by-day was confirmed to expose revenue
+    too (see AccrualDailyStatistic's own docstring).
 
     GROUPED BY DATE, not a flat row scan: OrderDailyStatistic has ONE ROW
     PER (store, date, delivery_schema) — i.e. up to two rows (FBO+FBS) for
@@ -246,6 +245,56 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
             total += accrual_by_date[d]
         else:
             total += float(order_commission_sum)
+            fully_confirmed = False
+    return total, fully_confirmed
+
+
+def _revenue_rub_for_period(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[float, bool]:
+    """"Выручка (выкуп)" for the margin block — SAME override pattern as
+    _commission_rub_for_period above, added 2026-09-19 once /v1/finance/
+    realization/by-day was confirmed (on two different real days,
+    12.09.2026 and 05.09.2026) to reproduce Ozon's own cabinet "Продажи"/
+    "Возвраты" exactly to the kopeck — see AccrualDailyStatistic.sales_rub/
+    returns_rub's own docstring. Prefers (sales_rub + returns_rub) for any
+    day AccrualDailyStatistic has been synced for, falling back to
+    OrderDailyStatistic's own postings-derived delivered_sum_rub only for
+    a day that sync hasn't covered yet.
+
+    Returns (total_revenue_rub, fully_confirmed) — same meaning as
+    _commission_rub_for_period's own return value. GROUPED BY DATE for the
+    same FBO+FBS double-counting reason documented there."""
+    order_rows = db.execute(
+        select(OrderDailyStatistic.date, func.sum(OrderDailyStatistic.delivered_sum_rub))
+        .where(
+            OrderDailyStatistic.store_id == store_id,
+            OrderDailyStatistic.date >= date_from,
+            OrderDailyStatistic.date <= date_to,
+        )
+        .group_by(OrderDailyStatistic.date)
+    ).all()
+    accrual_rows = db.execute(
+        select(AccrualDailyStatistic.date, AccrualDailyStatistic.sales_rub, AccrualDailyStatistic.returns_rub).where(
+            AccrualDailyStatistic.store_id == store_id,
+            AccrualDailyStatistic.date >= date_from,
+            AccrualDailyStatistic.date <= date_to,
+            # NOT just "row exists" — a row can exist from a successful
+            # accrual/by-day fetch while the SEPARATE realization/by-day
+            # fetch failed for that same day, leaving sales_rub/returns_rub
+            # at their 0/0 default (see AccrualDailyStatistic.revenue_
+            # confirmed's own docstring). Trusting row existence alone
+            # would silently show a failed day as "confirmed zero revenue".
+            AccrualDailyStatistic.revenue_confirmed.is_(True),
+        )
+    ).all()
+    accrual_by_date = {d: float(sales) + float(returns) for d, sales, returns in accrual_rows}
+
+    total = 0.0
+    fully_confirmed = True
+    for d, order_delivered_sum in order_rows:
+        if d in accrual_by_date:
+            total += accrual_by_date[d]
+        else:
+            total += float(order_delivered_sum)
             fully_confirmed = False
     return total, fully_confirmed
 
@@ -657,17 +706,20 @@ def compute_dashboard(
     # (/v2/finance/realization) answers "Report was not found" for the
     # current, not-yet-closed month — so delivered_sum_rub for a period
     # touching THIS month can only ever be our own postings-based running
-    # estimate, never Ozon's final figure. See MarginBlock.is_preliminary's
-    # own docstring. commission_rub is the ONE exception since 2026-09-14:
-    # _commission_rub_for_period above prefers AccrualDailyStatistic's
-    # CONFIRMED figure (exact to the kopeck against the cabinet, see that
-    # model's own docstring) for any day it's been synced for, even inside
-    # the still-open month — so is_preliminary no longer applies to
-    # commission_rub specifically once commission_from_accrual is True.
-    margin_is_preliminary = resolved_date_to >= today.replace(day=1)
+    # estimate for any day accrual/realization hasn't covered. See
+    # MarginBlock.is_preliminary's own docstring. commission_rub was the
+    # first exception, since 2026-09-14; delivered_sum_rub (via
+    # _revenue_rub_for_period) became the second, since 2026-09-19 (see
+    # AccrualDailyStatistic.sales_rub/returns_rub's own docstring) —
+    # is_preliminary no longer applies to a value once its own *_from_accrual
+    # flag is True for the whole period.
+    margin_touches_open_month = resolved_date_to >= today.replace(day=1)
     if has_order_daily_stats:
         stats = order_stats_current  # already fetched above for orders_revenue — same table, same period
         commission_rub, commission_from_accrual = _commission_rub_for_period(
+            db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
+        )
+        delivered_sum_rub, revenue_from_accrual = _revenue_rub_for_period(
             db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
         )
         cost_known = stats["delivered_units"] > 0 and stats["cost_of_delivered_known_units"] >= stats["delivered_units"]
@@ -675,20 +727,21 @@ def compute_dashboard(
         margin_pct = None
         if cost_known:
             margin_rub = round(
-                stats["delivered_sum_rub"] + commission_rub - stats["cost_of_delivered_rub"] - total_spend_current, 2
+                delivered_sum_rub + commission_rub - stats["cost_of_delivered_rub"] - total_spend_current, 2
             )
-            margin_pct = round(margin_rub / stats["delivered_sum_rub"] * 100, 2) if stats["delivered_sum_rub"] else None
+            margin_pct = round(margin_rub / delivered_sum_rub * 100, 2) if delivered_sum_rub else None
         margin = MarginBlock(
             has_data=True,
             delivered_units=stats["delivered_units"],
-            delivered_sum_rub=round(stats["delivered_sum_rub"], 2),
+            delivered_sum_rub=round(delivered_sum_rub, 2),
             commission_rub=round(commission_rub, 2),
             commission_from_accrual=commission_from_accrual,
+            revenue_from_accrual=revenue_from_accrual,
             cost_of_delivered_rub=round(stats["cost_of_delivered_rub"], 2) if cost_known else None,
             cost_known=cost_known,
             margin_rub=margin_rub,
             margin_pct=margin_pct,
-            is_preliminary=margin_is_preliminary,
+            is_preliminary=margin_touches_open_month and not revenue_from_accrual,
         )
     else:
         margin = MarginBlock(has_data=False)

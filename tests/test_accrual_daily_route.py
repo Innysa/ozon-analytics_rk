@@ -23,6 +23,9 @@ class _FakeSellerClient:
     def get_accrual_by_day(self, *, day, page, page_size):
         raise NotImplementedError  # overridden per test
 
+    def get_realization_by_day(self, *, year, month, day):
+        return {"rows": []}  # not under test here — accrual_daily_sync_service tests cover this
+
 
 def _setup_store_with_seller_creds(db_session, store_id: str):
     from app.models.ozon_credentials import OzonCredentials

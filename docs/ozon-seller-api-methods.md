@@ -26,11 +26,20 @@
 ## Финансы (finance) — актуально на 2026-09-10
 
 - `/v1/finance/balance` — баланс
-- `/v1/finance/accrual/postings` — начисления по отправлениям
-- `/v1/finance/accrual/by-day` — начисления по дням
-- `/v1/finance/accrual/types` — типы начислений (справочник)
+- `/v1/finance/accrual/postings` — начисления по отправлениям. Пробован
+  2026-09-19 (`backend/scripts/probe_realization_by_day_and_accrual_
+  reference.py`) — все опробованные тела запроса вернули ошибку валидации
+  (`PostingNumbers`: список из 1-200 номеров отправлений, НЕ диапазон
+  дат) — контракт не подтверждён, не используется.
+- `/v1/finance/accrual/by-day` — начисления по дням — **ИСПОЛЬЗУЕТСЯ**:
+  `commission_ozon_rub`, см. README, раздел «Комиссия Ozon».
+- `/v1/finance/accrual/types` — типы начислений (справочник) —
+  подтверждён 2026-09-19 (пустое тело `{}`, 124 записи `{id, name,
+  description}`), сейчас не подключён к продакшн-коду (диагностика).
 - `/v1/finance/realization/posting` — реализация по отправлению
-- `/v1/finance/realization/by-day` — реализация по дням
+- `/v1/finance/realization/by-day` — реализация по дням — **ИСПОЛЬЗУЕТСЯ**
+  (с 2026-09-19): `sales_rub`/`returns_rub` на «Выручка (выкуп)», см.
+  README, раздел «Продажи»/«Возвраты» (выручка).
 - `/v2/finance/realization` — отчёт о реализации (существовал и раньше)
 - `/v1/finance/cash-flow-statement/list` — отчёт ДДС (движение денежных
   средств) — **ИСПОЛЬЗУЕТСЯ**: блок «Логистика и услуги» на Дашборде (см.

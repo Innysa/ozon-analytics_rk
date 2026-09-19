@@ -8,6 +8,7 @@ from datetime import date
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.services.accrual_daily_sync_service import (
     _extract_commission_ozon_rub,
+    _extract_realization_revenue,
     _find_record_list,
     sync_accrual_daily_statistic,
     sync_recent_accrual_days,
@@ -16,11 +17,14 @@ from app.services.ozon.exceptions import OzonAPIError
 
 
 class _FakeClient:
-    def __init__(self, *, pages=None, raise_exc=None):
+    def __init__(self, *, pages=None, raise_exc=None, realization_data=None, realization_raise_exc=None):
         # pages: list of page responses (dicts), returned in order per call
         self._pages = pages or []
         self._raise_exc = raise_exc
+        self._realization_data = realization_data if realization_data is not None else {"rows": []}
+        self._realization_raise_exc = realization_raise_exc
         self.calls: list[tuple[str, int, int]] = []
+        self.realization_calls: list[tuple[int, int, int]] = []
 
     def get_accrual_by_day(self, *, day: str, page: int, page_size: int):
         self.calls.append((day, page, page_size))
@@ -30,6 +34,12 @@ class _FakeClient:
         if idx < len(self._pages):
             return self._pages[idx]
         return {"result": {"records": []}}
+
+    def get_realization_by_day(self, *, year: int, month: int, day: int):
+        self.realization_calls.append((year, month, day))
+        if self._realization_raise_exc:
+            raise self._realization_raise_exc
+        return self._realization_data
 
 
 def test_find_record_list_ignores_unrelated_empty_arrays():
@@ -62,16 +72,44 @@ def test_extract_commission_ozon_rub_returns_zero_when_no_posting():
     assert _extract_commission_ozon_rub({"posting": {"products": []}}) == 0.0
 
 
+def test_extract_realization_revenue_weighs_price_by_quantity_not_row_count():
+    """CONFIRMED 2026-09-19 against a real account, two different days:
+    seller_price_per_instance is a PER-UNIT price — the row's own unit
+    count lives separately under delivery_commission.quantity /
+    return_commission.quantity, so a plain sum of prices across rows
+    (ignoring quantity) undercounts revenue on any row with more than
+    one unit."""
+    data = {
+        "rows": [
+            {"seller_price_per_instance": 1000.0, "delivery_commission": {"quantity": 2}},
+            {"seller_price_per_instance": 500.0, "delivery_commission": {"quantity": 1}, "return_commission": {"quantity": 1}},
+        ]
+    }
+    sales, returns = _extract_realization_revenue(data)
+    assert sales == 2500.0  # 1000*2 + 500*1
+    assert returns == -500.0  # -(500*1)
+
+
+def test_extract_realization_revenue_handles_rows_with_no_return():
+    data = {"rows": [{"seller_price_per_instance": 100.0, "delivery_commission": {"quantity": 3}}]}
+    sales, returns = _extract_realization_revenue(data)
+    assert sales == 300.0
+    assert returns == 0.0
+
+
 def test_sync_accrual_daily_statistic_creates_new_row(db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
-    client = _FakeClient(pages=[{"result": {"records": [
-        {
-            "accrual_id": "a1", "total_amount": {"amount": "100.50"}, "accrued_category": "POSTING",
-            "posting": {"products": [{"commission": {"sale_commission": {"amount": "-30.00"}}}]},
-        },
-        {"accrual_id": "a2", "total_amount": {"amount": "-20.00"}, "accrued_category": "NON_ITEM"},
-    ]}}])
+    client = _FakeClient(
+        pages=[{"result": {"records": [
+            {
+                "accrual_id": "a1", "total_amount": {"amount": "100.50"}, "accrued_category": "POSTING",
+                "posting": {"products": [{"commission": {"sale_commission": {"amount": "-30.00"}}}]},
+            },
+            {"accrual_id": "a2", "total_amount": {"amount": "-20.00"}, "accrued_category": "NON_ITEM"},
+        ]}}],
+        realization_data={"rows": [{"seller_price_per_instance": 200.0, "delivery_commission": {"quantity": 1}}]},
+    )
 
     outcome = sync_accrual_daily_statistic(db_session, store_id=store_id, client=client, day=date(2026, 9, 12))
 
@@ -80,6 +118,9 @@ def test_sync_accrual_daily_statistic_creates_new_row(db_session, two_stores_wit
     assert outcome.record_count == 2
     assert outcome.total_amount_rub == 80.50
     assert outcome.error is None
+    assert outcome.realization_fetched is True
+    assert outcome.realization_error is None
+    assert client.realization_calls == [(2026, 9, 12)]
 
     row = db_session.query(AccrualDailyStatistic).filter(
         AccrualDailyStatistic.store_id == store_id, AccrualDailyStatistic.date == date(2026, 9, 12),
@@ -90,6 +131,36 @@ def test_sync_accrual_daily_statistic_creates_new_row(db_session, two_stores_wit
     assert row.record_count == 2
     assert row.source == "ozon_seller_api"
     assert float(row.commission_ozon_rub) == -30.00
+    assert float(row.sales_rub) == 200.0
+    assert float(row.returns_rub) == 0.0
+
+
+def test_sync_accrual_daily_statistic_realization_failure_does_not_block_accrual_sync(db_session, two_stores_with_users):
+    """realization/by-day is a SEPARATE Ozon method from accrual/by-day —
+    a failure fetching it must not roll back or block the accrual figures,
+    which are independently useful (and were already working before
+    realization/by-day was ever added)."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    client = _FakeClient(
+        pages=[{"result": {"records": [
+            {"accrual_id": "a1", "total_amount": {"amount": "50.00"}, "accrued_category": "ITEM"},
+        ]}}],
+        realization_raise_exc=OzonAPIError("Ozon вернул ошибку сервера 500"),
+    )
+
+    outcome = sync_accrual_daily_statistic(db_session, store_id=store_id, client=client, day=date(2026, 9, 12))
+
+    assert outcome.fetched is True
+    assert outcome.total_amount_rub == 50.00
+    assert outcome.realization_fetched is False
+    assert "500" in outcome.realization_error
+
+    row = db_session.query(AccrualDailyStatistic).filter(
+        AccrualDailyStatistic.store_id == store_id, AccrualDailyStatistic.date == date(2026, 9, 12),
+    ).one()
+    assert float(row.total_amount_rub) == 50.00
+    assert float(row.sales_rub) == 0.0  # default — realization never succeeded for this row
 
 
 def test_sync_accrual_daily_statistic_updates_existing_row(db_session, two_stores_with_users):

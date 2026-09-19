@@ -1,7 +1,12 @@
 """Syncs Ozon's true daily accrual total (POST /v1/finance/accrual/by-day)
 — see app.models.accrual_daily_statistic.AccrualDailyStatistic for the
 confirmed contract, including the confirmed "Комиссия Ozon" field
-(_extract_commission_ozon_rub below).
+(_extract_commission_ozon_rub below) — AND, since 2026-09-19, also calls
+the separate POST /v1/finance/realization/by-day (see OzonSellerClient.
+get_realization_by_day's own docstring) to populate sales_rub/returns_rub
+on the SAME (store, date) row. The two calls are independent — a failure
+fetching realization/by-day does not roll back or block the accrual/
+by-day half of this sync; see sync_accrual_daily_statistic below.
 """
 from __future__ import annotations
 
@@ -34,6 +39,11 @@ class AccrualSyncOutcome:
     record_count: int = 0
     total_amount_rub: float = 0.0
     error: str | None = None
+    # realization/by-day is a SEPARATE Ozon method from accrual/by-day (see
+    # this module's own docstring) — its own success/failure is tracked
+    # independently so a failure here doesn't look like the whole sync failed.
+    realization_fetched: bool = False
+    realization_error: str | None = None
 
 
 def _find_record_list(obj):
@@ -116,6 +126,31 @@ def _extract_commission_ozon_rub(record: dict) -> float:
     return total
 
 
+def _extract_realization_revenue(data: dict) -> tuple[float, float]:
+    """CONFIRMED 2026-09-19 via backend/scripts/check_realization_by_day_
+    revenue_field.py against a real account's real data, on TWO different
+    days (12.09.2026 and 05.09.2026): summing seller_price_per_instance ×
+    delivery_commission.quantity across every row reproduces the cabinet's
+    "Продажи" for that day to the kopeck both times; the negated sum of
+    seller_price_per_instance × return_commission.quantity reproduces
+    "Возвраты" both times. A row missing either sub-dict (e.g. no returns
+    that day) contributes 0 to that side, not an error — most rows have no
+    return_commission at all on a typical day.
+
+    Returns (sales_rub, returns_rub) — sales_rub positive, returns_rub
+    negative or zero, same sign convention as the cabinet itself."""
+    rows = data.get("rows") or []
+    sales = 0.0
+    returns = 0.0
+    for row in rows:
+        price = _to_num(row.get("seller_price_per_instance"))
+        dc = row.get("delivery_commission") or {}
+        rc = row.get("return_commission") or {}
+        sales += price * _to_num(dc.get("quantity"))
+        returns += price * _to_num(rc.get("quantity"))
+    return sales, -returns
+
+
 def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: date) -> AccrualSyncOutcome:
     """Fetches and upserts ONE day's total. Safe to call repeatedly for the
     same day (idempotent overwrite) — Ozon can revise recent accruals
@@ -138,6 +173,22 @@ def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: dat
     total = round(total, 2)
     commission_ozon = round(commission_ozon, 2)
 
+    # realization/by-day is a SEPARATE Ozon method (see this module's own
+    # docstring) — its failure must not roll back or block the accrual/
+    # by-day figures above, which are independently useful on their own.
+    realization_fetched = False
+    realization_error: str | None = None
+    sales_rub: float | None = None
+    returns_rub: float | None = None
+    try:
+        realization_data = client.get_realization_by_day(year=day.year, month=day.month, day=day.day)
+        sales_rub, returns_rub = _extract_realization_revenue(realization_data)
+        sales_rub = round(sales_rub, 2)
+        returns_rub = round(returns_rub, 2)
+        realization_fetched = True
+    except OzonAPIError as exc:
+        realization_error = str(exc)
+
     existing = (
         db.query(AccrualDailyStatistic)
         .filter(AccrualDailyStatistic.store_id == store_id, AccrualDailyStatistic.date == day)
@@ -151,9 +202,20 @@ def sync_accrual_daily_statistic(db: Session, *, store_id: str, client, day: dat
     existing.by_category_json = json.dumps(by_category, ensure_ascii=False)
     existing.record_count = len(records)
     existing.commission_ozon_rub = commission_ozon
+    if realization_fetched:
+        existing.sales_rub = sales_rub
+        existing.returns_rub = returns_rub
+        existing.revenue_confirmed = True
     db.commit()
 
-    return AccrualSyncOutcome(fetched=True, created=created, record_count=len(records), total_amount_rub=total)
+    return AccrualSyncOutcome(
+        fetched=True,
+        created=created,
+        record_count=len(records),
+        total_amount_rub=total,
+        realization_fetched=realization_fetched,
+        realization_error=realization_error,
+    )
 
 
 def sync_recent_accrual_days(

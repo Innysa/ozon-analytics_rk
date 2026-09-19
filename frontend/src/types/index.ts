@@ -703,6 +703,7 @@ export interface MarginBlock {
   delivered_sum_rub: number | null;
   commission_rub: number | null;
   commission_from_accrual: boolean | null;
+  revenue_from_accrual: boolean | null;
   cost_of_delivered_rub: number | null;
   cost_known: boolean | null;
   margin_rub: number | null;

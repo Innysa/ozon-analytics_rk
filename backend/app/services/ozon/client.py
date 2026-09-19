@@ -643,6 +643,39 @@ class OzonSellerClient:
         that this exact body returns real per-day data."""
         return self._post("/v1/finance/accrual/by-day", {"date": day, "page": page, "page_size": page_size})
 
+    def get_realization_by_day(self, *, year: int, month: int, day: int) -> dict:
+        """`POST /v1/finance/realization/by-day` — "реализация по дням",
+        per-SKU daily settlement. CONFIRMED 2026-09-19 on a real account,
+        TWICE on two different days (12.09.2026 and 05.09.2026): body
+        {"year", "month", "day"} as separate TOP-LEVEL INTEGERS (Ozon's
+        own validation error named the field — "GetRealizationReportByDay
+        Request.Day: value must be inside range [1, 31]" — a plain
+        day-of-month integer, not a date string) returns `{"rows": [...]}`,
+        one row per SKU: {item: {name, offer_id, barcode, sku},
+        seller_price_per_instance, delivery_commission: {quantity,
+        standard_fee, ...}, return_commission: {quantity, standard_fee,
+        ...}, commission_ratio, rowNumber}.
+
+        On BOTH confirmed days, summing seller_price_per_instance ×
+        delivery_commission.quantity across every row reproduced Ozon's
+        own cabinet "Продажи" for that day to the kopeck; the same
+        product with return_commission.quantity reproduced "Возвраты";
+        and -(Σdelivery_commission.standard_fee − Σreturn_commission.
+        standard_fee) reproduced "Вознаграждение Ozon" — see
+        backend/scripts/check_realization_by_day_revenue_field.py and
+        app.services.accrual_daily_sync_service._extract_realization_
+        revenue for the confirmed derivation.
+
+        Pagination is NOT confirmed for this method — every real day
+        checked so far (191 and 202 rows) came back in a single response
+        with no page/page_size accepted in the request body, so none is
+        sent here. A day with dramatically more distinct SKUs than any
+        checked so far could theoretically be truncated; no evidence of
+        that has been seen.
+
+        Returns the raw parsed JSON, unvalidated."""
+        return self._post("/v1/finance/realization/by-day", {"year": year, "month": month, "day": day})
+
     def get_cash_flow_statement(
         self, *, date_from: str, date_to: str, page: int = 1, page_size: int = 1000, with_details: bool = True
     ) -> dict:

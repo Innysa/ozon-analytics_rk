@@ -1014,6 +1014,206 @@ def test_margin_block_commission_not_double_counted_across_fbo_and_fbs_rows_on_s
     assert block["commission_from_accrual"] is True
 
 
+def test_margin_block_revenue_prefers_confirmed_accrual_over_postings_estimate(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-19 (see AccrualDailyStatistic.sales_rub/returns_rub's
+    own docstring): sales_rub + returns_rub is Ozon's own exact revenue
+    figure — it must win over OrderDailyStatistic's own postings-derived
+    delivered_sum_rub estimate for any day it covers (revenue_confirmed=True),
+    same override pattern as commission_ozon_rub."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=1, sales_rub=1500, returns_rub=-50, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["delivered_sum_rub"] == 1450.0  # 1500 + (-50), NOT the postings estimate (1200)
+    assert block["revenue_from_accrual"] is True
+    # commission_ozon_rub on the same accrual row defaults to 0 (not set here) — since
+    # the row EXISTS for this date, _commission_rub_for_period trusts that 0, not the
+    # postings estimate (-100). 1450 (accrual revenue) + 0 (accrual commission) - 400 (cost)
+    assert block["commission_rub"] == 0.0
+    assert block["margin_rub"] == pytest.approx(1050.0, abs=0.01)
+
+
+def test_margin_block_revenue_from_accrual_false_when_row_exists_but_not_confirmed(client, db_session, two_stores_with_users):
+    """A row can exist (with a real commission_ozon_rub) purely from a
+    successful accrual/by-day fetch while the SEPARATE realization/by-day
+    fetch failed for that same day — leaving sales_rub/returns_rub at
+    their 0/0 default and revenue_confirmed False. Must NOT be read as
+    "confirmed zero revenue" — falls back to the postings estimate."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=1, commission_ozon_rub=-333.33,
+        # sales_rub/returns_rub/revenue_confirmed left at their defaults (0/0/False)
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["delivered_sum_rub"] == 1200.0  # postings estimate, NOT a false "confirmed zero"
+    assert block["revenue_from_accrual"] is False
+
+
+def test_margin_block_revenue_from_accrual_false_when_period_only_partially_covered(client, db_session, two_stores_with_users):
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 26), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    # Only ONE of the two days has confirmed revenue data.
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=1, sales_rub=1500, returns_rub=0, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["revenue_from_accrual"] is False
+    assert block["delivered_sum_rub"] == 2700.0  # 1500 (accrual) + 1200 (postings fallback for 08-26)
+
+
+def test_margin_block_revenue_not_double_counted_across_fbo_and_fbs_rows_on_same_day(client, db_session, two_stores_with_users):
+    """Same FBO+FBS double-counting guard as commission — the accrual
+    revenue figure is already a whole-day total, applied ONCE per date."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-60,
+        source="ozon_seller_api",
+    ))
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBS",
+        ordered_units=1, ordered_sum_rub=800, ordered_sum_discounted_rub=800,
+        delivered_units=1, delivered_sum_rub=800,
+        cost_of_delivered_rub=200, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-40,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=2, sales_rub=2000, returns_rub=0, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["delivered_sum_rub"] == 2000.0  # NOT 4000
+    assert block["revenue_from_accrual"] is True
+
+
+def test_margin_block_is_preliminary_false_when_revenue_confirmed_even_in_open_month(client, db_session, two_stores_with_users):
+    """Since 2026-09-19, is_preliminary no longer applies once the DAILY
+    realization/by-day source has confirmed every day in the period, even
+    if that period touches the still-open current calendar month — the
+    figure is no longer this app's own running postings estimate."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    today = date.today()
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=today, delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=today, total_amount_rub=0,
+        by_category_json="{}", record_count=1, sales_rub=1500, returns_rub=0, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": today.isoformat(), "date_to": today.isoformat()},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["revenue_from_accrual"] is True
+    assert block["is_preliminary"] is False
+
+
 def test_store_isolation(client, db_session, two_stores_with_users):
     from app.models.product_card_statistic import ProductCardStatistic
 
