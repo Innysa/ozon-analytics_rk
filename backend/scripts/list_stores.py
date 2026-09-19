@@ -1,9 +1,10 @@
-"""Read-only diagnostic: prints every store's internal id (a UUID — what
-every other script in this directory means by --store-id) next to its
-name, so you don't have to guess it from Ozon's own numeric Client-Id
-(which is a DIFFERENT number, not usable as --store-id here).
+"""Diagnostic: lists every store with its id and name — no Ozon API call,
+just reads the database. Used to confirm which store_id a diagnostic
+script's hardcoded UUID actually points to, after a real mismatch was
+found between a per-store dashboard figure and a diagnostic dump that
+assumed the wrong store id for "Комфорт дом" (2026-09-19).
 
-No arguments, no shell quoting to get right — just run it as-is:
+Usage (on the real server):
 
     docker compose exec app python backend/scripts/list_stores.py
 """
@@ -22,13 +23,11 @@ def main() -> None:
     db = SessionLocal()
     try:
         stores = db.query(Store).order_by(Store.name).all()
-        if not stores:
-            print("Магазинов в базе нет.")
-            return
-        for s in stores:
-            print(f"{s.id}  —  {s.name}")
     finally:
         db.close()
+
+    for s in stores:
+        print(f"{s.id}  —  {s.name}")
 
 
 if __name__ == "__main__":
