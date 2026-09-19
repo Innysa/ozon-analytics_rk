@@ -544,7 +544,22 @@ def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) 
     account) doesn't get mistaken for a sync bug when it dominates
     other_services_rub for a given range. Deliberately no "% of total"
     threshold — always surfaces the single biggest item, since this
-    project has no confirmed basis to pick a significance cutoff."""
+    project has no confirmed basis to pick a significance cutoff.
+
+    RECONFIRMED 2026-09-19 on a real account via `backend/scripts/
+    inspect_cash_flow_periods.py`'s full item-name listing (not just the
+    single largest): after subtracting fines/storage/partner/FBO/ad items,
+    "Прочие услуги" on this account was made up of essentially only TWO
+    named items, not an unbounded pile of unknowns —
+    "MarketplaceServiseItemAgencyFeeForSale" (this same volatile item, can
+    swing positive some weeks) and "MarketplaceServiseItemPointsAwarded"
+    (loyalty points credited to buyers — always POSITIVE, so it partially
+    offsets the agency fee rather than adding to the deduction). A third,
+    much smaller item, "MarketplaceServiceSellerReturnsCargoAssortment"
+    (a per-shipment returns-cargo-sorting fee, max observed ~-2 300 ₽), was
+    also present but immaterial next to the other two. Another account
+    could see different named items here — this isn't a closed, universal
+    list, just evidence this bucket is explainable, not noise."""
     best: tuple[str, float] | None = None
     for period in periods:
         if not period.services_items_json:
