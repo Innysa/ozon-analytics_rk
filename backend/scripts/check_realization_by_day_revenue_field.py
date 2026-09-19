@@ -89,7 +89,17 @@ def _flatten_numeric_fields(row: dict, prefix: str = "") -> dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--file", required=True, help="путь к уже сохранённому JSON-файлу")
+    parser.add_argument("--sales-ref", type=float, default=None, help="эталонное «Продажи» для ДРУГОГО дня (по умолчанию — эталон за 12.09.2026)")
+    parser.add_argument("--returns-ref", type=float, default=None, help="эталонное «Возвраты» для ДРУГОГО дня")
+    parser.add_argument("--commission-ref", type=float, default=None, help="эталонное «Вознаграждение Ozon» для ДРУГОГО дня")
     args = parser.parse_args()
+
+    if args.sales_ref is not None:
+        REFERENCE_TOTALS_RUB["Продажи"] = args.sales_ref
+    if args.returns_ref is not None:
+        REFERENCE_TOTALS_RUB["Возвраты"] = args.returns_ref
+    if args.commission_ref is not None:
+        REFERENCE_TOTALS_RUB["Вознаграждение Ozon"] = args.commission_ref
 
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
     _, rows = _find_item_list(data)
