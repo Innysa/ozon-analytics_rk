@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--sales-ref", type=float, default=None, help="эталонное «Продажи» для ДРУГОГО дня (по умолчанию — эталон за 12.09.2026)")
     parser.add_argument("--returns-ref", type=float, default=None, help="эталонное «Возвраты» для ДРУГОГО дня")
     parser.add_argument("--commission-ref", type=float, default=None, help="эталонное «Вознаграждение Ozon» для ДРУГОГО дня")
+    parser.add_argument("--logistics-ref", type=float, default=None, help="эталонное «Услуги доставки» для ДРУГОГО дня")
     args = parser.parse_args()
 
     if args.sales_ref is not None:
@@ -100,6 +101,8 @@ def main() -> None:
         REFERENCE_TOTALS_RUB["Возвраты"] = args.returns_ref
     if args.commission_ref is not None:
         REFERENCE_TOTALS_RUB["Вознаграждение Ozon"] = args.commission_ref
+    if args.logistics_ref is not None:
+        REFERENCE_TOTALS_RUB["Услуги доставки"] = args.logistics_ref
 
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
     _, rows = _find_item_list(data)
@@ -154,6 +157,29 @@ def main() -> None:
             -(delivery_standard_fee_total - return_standard_fee_total)
         ),
     }
+
+    # ДОПОЛНИТЕЛЬНО (2026-09-19, поиск «Услуги доставки»): delivery_commission/
+    # return_commission несут и ДРУГИЕ числовые подполя, кроме quantity/
+    # standard_fee (уже использованных выше) — amount, price_per_instance,
+    # total, bonus, compensation, commission, bank_coinvestment, stars,
+    # pick_up_point_coinvestment. По аналогии с seller_price_per_instance
+    # эти подполя тоже похожи на цену ЗА ЕДИНИЦУ — пробуем каждое,
+    # взвешенное на quantity ИЗ ТОГО ЖЕ словаря (не seller_price_per_instance),
+    # а не просто сырую сумму (это уже проверено в разделе выше и не совпало).
+    for dict_name in ("delivery_commission", "return_commission"):
+        sample = next((row.get(dict_name) for row in rows if isinstance(row.get(dict_name), dict)), None)
+        if not sample:
+            continue
+        for field in sample:
+            if field in ("quantity", "standard_fee"):  # standard_fee already checked above
+                continue
+            weighted_total = 0.0
+            for row in rows:
+                d = row.get(dict_name) or {}
+                weighted_total += _to_num(d.get(field)) * _to_num(d.get("quantity"))
+            derived_candidates[f"Σ({dict_name}.{field} × {dict_name}.quantity)"] = weighted_total
+            derived_candidates[f"-Σ({dict_name}.{field} × {dict_name}.quantity)"] = -weighted_total
+
     print("\nПроизводные кандидаты (произведения/разности полей, не просто суммы):")
     for label, total in derived_candidates.items():
         marker = ""
