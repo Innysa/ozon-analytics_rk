@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date as _date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -174,10 +175,20 @@ def main() -> None:
         client_id = decrypt_secret(creds.client_id_encrypted)
         api_key = decrypt_secret(creds.api_key_encrypted)
 
+        parsed_date = _date.fromisoformat(args.date)
         with OzonSellerClient(ClientCredentials(client_id=client_id, api_key=api_key)) as client:
             _try_bodies(
                 client, "/v1/finance/realization/by-day", "1) Реализация по дням",
                 bodies=[
+                    # CONFIRMED 2026-09-19: Ozon's own error named the field —
+                    # "GetRealizationReportByDayRequest.Day: value must be
+                    # inside range [1, 31]" — a plain day-of-month INTEGER,
+                    # not a date string. Tried FIRST now, informed by that
+                    # error plus the sibling /v2/finance/realization's own
+                    # confirmed {"year", "month"} top-level-int convention.
+                    ("year/month/day как отдельные целые (по ошибке Ozon + образцу /v2/finance/realization)",
+                     {"year": parsed_date.year, "month": parsed_date.month, "day": parsed_date.day}),
+                    ("year/month/day + пагинация", {"year": parsed_date.year, "month": parsed_date.month, "day": parsed_date.day, "page": 1, "page_size": 1000}),
                     ("date как строка + пагинация (по образцу accrual/by-day)", {"date": args.date, "page": 1, "page_size": 1000}),
                     ("date как диапазон (по образцу ДДС)", {"date": {"from": args.date, "to": args.date}, "page": 1, "page_size": 1000}),
                     ("только дата, без пагинации", {"date": args.date}),
