@@ -1014,6 +1014,91 @@ def test_margin_block_commission_not_double_counted_across_fbo_and_fbs_rows_on_s
     assert block["commission_from_accrual"] is True
 
 
+def test_margin_block_commission_includes_a_day_with_accrual_but_no_order_row_yet(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-19 on a real 19-day range: the order sync and the
+    accrual-daily sync run independently and can finish at different
+    times — "today" can have AccrualDailyStatistic data (accrual/by-day
+    already synced) while OrderDailyStatistic for that same date hasn't
+    landed yet. The OLD code iterated only over order_rows' dates, which
+    SILENTLY DROPPED that whole day's confirmed commission from the total
+    (a real account saw a ~281 000 ₽ gap from exactly this). Must be
+    counted via the UNION of dates from both tables."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    # 08-26 has ONLY accrual data — no OrderDailyStatistic row for it at all.
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=1, commission_ozon_rub=-333.33,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 26), total_amount_rub=0,
+        by_category_json="{}", record_count=1, commission_ozon_rub=-281300.00,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["commission_rub"] == pytest.approx(-281633.33, abs=0.01)  # -333.33 + -281300.00, NOT -333.33 alone
+    assert block["commission_from_accrual"] is True
+
+
+def test_margin_block_revenue_includes_a_day_with_accrual_but_no_order_row_yet(client, db_session, two_stores_with_users):
+    """Same union-of-dates fix as commission above, for revenue."""
+    from app.models.accrual_daily_statistic import AccrualDailyStatistic
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), delivery_schema="FBO",
+        ordered_units=1, ordered_sum_rub=1200, ordered_sum_discounted_rub=1200,
+        delivered_units=1, delivered_sum_rub=1200,
+        cost_of_delivered_rub=400, cost_of_delivered_known_units=1,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 25), total_amount_rub=0,
+        by_category_json="{}", record_count=1, sales_rub=1500, returns_rub=0, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    # 08-26 has ONLY accrual/revenue data — no OrderDailyStatistic row at all.
+    db_session.add(AccrualDailyStatistic(
+        store_id=store_id, date=date(2026, 8, 26), total_amount_rub=0,
+        by_category_json="{}", record_count=1, sales_rub=900, returns_rub=0, revenue_confirmed=True,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-21", "date_to": "2026-08-30"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["margin"]
+    assert block["delivered_sum_rub"] == pytest.approx(2400.0, abs=0.01)  # 1500 + 900, NOT 1500 alone
+    assert block["revenue_from_accrual"] is True
+
+
 def test_margin_block_revenue_prefers_confirmed_accrual_over_postings_estimate(client, db_session, two_stores_with_users):
     """CONFIRMED 2026-09-19 (see AccrualDailyStatistic.sales_rub/returns_rub's
     own docstring): sales_rub + returns_rub is Ozon's own exact revenue

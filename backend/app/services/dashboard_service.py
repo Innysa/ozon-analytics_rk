@@ -205,14 +205,25 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
     existed, or before its trailing window/backfill reached that day).
 
     Returns (total_commission_rub, fully_confirmed) — fully_confirmed is
-    True only when EVERY day that has order data in this period also has
-    accrual data, i.e. the whole figure is Ozon's own confirmed number,
-    not partly an estimate. The frontend uses this to decide whether
-    "Комиссия Ozon" still needs the "предварительно" badge independently
-    of delivered_sum_rub/is_preliminary — see _revenue_rub_for_period below
-    for the analogous override of delivered_sum_rub itself, added
-    2026-09-19 once realization/by-day was confirmed to expose revenue
-    too (see AccrualDailyStatistic's own docstring).
+    True only when EVERY day counted in this period got the accrual figure,
+    i.e. the whole figure is Ozon's own confirmed number, not partly an
+    estimate. The frontend uses this to decide whether "Комиссия Ozon"
+    still needs the "предварительно" badge independently of delivered_
+    sum_rub/is_preliminary — see _revenue_rub_for_period below for the
+    analogous override of delivered_sum_rub itself, added 2026-09-19 once
+    realization/by-day was confirmed to expose revenue too (see
+    AccrualDailyStatistic's own docstring).
+
+    UNION of dates from BOTH tables, not just OrderDailyStatistic's own —
+    CONFIRMED 2026-09-19 via a real 19-day range where the two syncs run
+    at different times of day: "today" had AccrualDailyStatistic data
+    (accrual/by-day already synced) but NO OrderDailyStatistic row yet
+    (the order sync for today hadn't run yet at the moment the dashboard
+    was loaded). Iterating only over order_rows' dates SILENTLY DROPPED
+    that whole day's real, confirmed commission from the total — not an
+    estimate substituted for it, an outright omission (a real account
+    showed this as a ~281 000 ₽ gap for exactly one day). A day present in
+    accrual_by_date but absent from order_by_date must still be counted.
 
     GROUPED BY DATE, not a flat row scan: OrderDailyStatistic has ONE ROW
     PER (store, date, delivery_schema) — i.e. up to two rows (FBO+FBS) for
@@ -229,6 +240,7 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
         )
         .group_by(OrderDailyStatistic.date)
     ).all()
+    order_by_date = {d: float(c) for d, c in order_rows}
     accrual_rows = db.execute(
         select(AccrualDailyStatistic.date, AccrualDailyStatistic.commission_ozon_rub).where(
             AccrualDailyStatistic.store_id == store_id,
@@ -240,11 +252,11 @@ def _commission_rub_for_period(db: Session, *, store_id: str, date_from: date, d
 
     total = 0.0
     fully_confirmed = True
-    for d, order_commission_sum in order_rows:
+    for d in set(order_by_date) | set(accrual_by_date):
         if d in accrual_by_date:
             total += accrual_by_date[d]
         else:
-            total += float(order_commission_sum)
+            total += order_by_date[d]
             fully_confirmed = False
     return total, fully_confirmed
 
@@ -261,8 +273,11 @@ def _revenue_rub_for_period(db: Session, *, store_id: str, date_from: date, date
     a day that sync hasn't covered yet.
 
     Returns (total_revenue_rub, fully_confirmed) — same meaning as
-    _commission_rub_for_period's own return value. GROUPED BY DATE for the
-    same FBO+FBS double-counting reason documented there."""
+    _commission_rub_for_period's own return value, including the SAME
+    UNION-of-dates fix (see that function's own docstring) — a day with
+    revenue_confirmed AccrualDailyStatistic data but no OrderDailyStatistic
+    row yet must still be counted, not silently dropped. GROUPED BY DATE
+    for the same FBO+FBS double-counting reason documented there."""
     order_rows = db.execute(
         select(OrderDailyStatistic.date, func.sum(OrderDailyStatistic.delivered_sum_rub))
         .where(
@@ -272,6 +287,7 @@ def _revenue_rub_for_period(db: Session, *, store_id: str, date_from: date, date
         )
         .group_by(OrderDailyStatistic.date)
     ).all()
+    order_by_date = {d: float(s) for d, s in order_rows}
     accrual_rows = db.execute(
         select(AccrualDailyStatistic.date, AccrualDailyStatistic.sales_rub, AccrualDailyStatistic.returns_rub).where(
             AccrualDailyStatistic.store_id == store_id,
@@ -290,11 +306,11 @@ def _revenue_rub_for_period(db: Session, *, store_id: str, date_from: date, date
 
     total = 0.0
     fully_confirmed = True
-    for d, order_delivered_sum in order_rows:
+    for d in set(order_by_date) | set(accrual_by_date):
         if d in accrual_by_date:
             total += accrual_by_date[d]
         else:
-            total += float(order_delivered_sum)
+            total += order_by_date[d]
             fully_confirmed = False
     return total, fully_confirmed
 
