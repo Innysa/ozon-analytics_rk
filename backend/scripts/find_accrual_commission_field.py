@@ -28,6 +28,21 @@ postings-based figures PERMANENTLY — this is a decision, not a TODO. See
 AccrualDailyStatistic's own docstring and dashboard_service.
 _commission_rub_for_period's own docstring for where this is wired up.
 
+**NEW EVIDENCE 2026-09-19 — this closure is about /v1/finance/accrual/
+by-day SPECIFICALLY, not about revenue being unreachable in general.** A
+real account's own "Начисления"/"Логистика" XLSX cabinet exports (covering
+01.09-19.09.2026) DO show a full "Группа услуг" breakdown including
+"Продажи"/"Возвраты" as real per-line data with a `Тип начисления` column
+— meaning Ozon's cabinet generates these exports from a report Ozon
+exposes somewhere, just apparently not through this specific method's
+JSON fields. This project had never tried /v1/finance/realization/by-day
+("реализация по дням") or /v1/finance/accrual/postings ("начисления по
+отправлениям") — both listed in this account's own method list
+(docs/ozon-seller-api-methods.md) but never called. See
+backend/scripts/probe_realization_by_day_and_accrual_reference.py, built
+to check those specifically, before concluding revenue is unreachable
+project-wide.
+
 Ground truth this was checked against (independently confirmed by the
 user from Ozon's own cabinet AND the "Начисления" XLSX export, for
 store_id a586ccc5-6030-4ec9-b133-da9de24dafcf on 2026-09-12 — see
