@@ -211,12 +211,14 @@ def test_localization_is_none_without_a_synced_rating_summary(client, db_session
 
 
 def test_localization_pct_on_total_row_only_after_rating_summary_sync(client, db_session, two_stores_with_users):
-    """localization_pct/localization_calculation_date come from
-    StoreRatingSummary (populated by POST .../sync/ozon-rating-summary, see
-    tests/test_rating_summary_sync.py) — store-wide, so ONLY the "Итого" row
-    ever gets a value; per-product rows stay None regardless (Ozon's
-    /v1/rating/summary has no per-SKU breakdown — see this module's own
-    docstring)."""
+    """"Итого" row's localization_pct/localization_calculation_date come
+    from StoreRatingSummary (populated by POST .../sync/ozon-rating-summary,
+    see tests/test_rating_summary_sync.py) — store-wide, so a
+    StoreRatingSummary row alone does NOT populate any per-product row's
+    localization_pct (that needs a SEPARATE source — Product.localization_pct
+    from the «Локальность продаж» XLSX import, see
+    test_product_row_localization_from_manual_import below and
+    app.services.product_localization_import)."""
     from datetime import datetime, timezone
 
     from app.models.store_rating_summary import StoreRatingSummary
@@ -237,6 +239,28 @@ def test_localization_pct_on_total_row_only_after_rating_summary_sync(client, db
     assert body["rows"][0]["localization_pct"] is None
     assert body["total"]["localization_pct"] == 65
     assert body["total"]["localization_calculation_date"] == "2026-09-04"
+
+
+def test_product_row_localization_from_manual_import(client, db_session, two_stores_with_users):
+    """Per-product localization_pct comes from Product.localization_pct
+    (the «Локальность продаж» XLSX import — see
+    app.services.product_localization_import), a DIFFERENT source from the
+    "Итого" row's StoreRatingSummary — confirms the fix that let per-product
+    rows carry a real value at all (2026-09-20)."""
+    from datetime import date
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    product = _seed_product(db_session, store_id)
+    product.localization_pct = 42.5
+    product.localization_period_end = date(2026, 9, 19)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    row = resp.json()["rows"][0]
+    assert row["localization_pct"] == 42.5
+    assert row["localization_calculation_date"] == "2026-09-19"
 
 
 def test_set_plan_persists_and_is_reflected_in_response(client, db_session, two_stores_with_users):

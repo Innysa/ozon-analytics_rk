@@ -1,6 +1,7 @@
+from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, new_uuid
@@ -30,5 +31,16 @@ class Product(TimestampMixin, Base):
     fbo_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fbs_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Per-product «Доля локальных продаж» — like cost_price_rub, no Ozon
+    # Seller API method exposes this per SKU (confirmed, see README's «РНП
+    # Товары» section), so it's imported from the cabinet's own «Планирование
+    # поставок → Локальность продаж» export instead — see
+    # app.services.product_localization_import for the weighted-average
+    # collapse from Ozon's real per-cluster rows down to one number here.
+    # localization_period_end is that export's own reported period end date
+    # (shown to the user as "по состоянию на <date>"), not the upload time.
+    localization_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    localization_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     store = relationship("Store")

@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -17,6 +18,8 @@ class ProductOut(BaseModel):
     fbo_stock: int | None
     fbs_stock: int | None
     is_archived: bool
+    localization_pct: Decimal | None
+    localization_period_end: date | None
 
     model_config = {"from_attributes": True}
 

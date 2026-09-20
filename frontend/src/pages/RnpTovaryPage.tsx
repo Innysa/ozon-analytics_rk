@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { BulkPlanEntry as BulkPlanEntryType, ProductPlannerOut, ProductPlannerRow, SuggestedPlan, SyncRun } from "../types";
+import type { BulkPlanEntry as BulkPlanEntryType, ImportSummary, ProductPlannerOut, ProductPlannerRow, SuggestedPlan, SyncRun } from "../types";
 import type { MetricPlanFactActual } from "../types";
 
 const MONTH_NAMES = [
@@ -86,6 +86,29 @@ export function RnpTovaryPage() {
     }
   };
 
+  // Единственный подтверждённый источник локализации ПО ТОВАРАМ — см.
+  // app.services.product_localization_import: Seller API отдаёт только
+  // общий % на магазин, а per-product разбивка живёт в отдельном отчёте
+  // кабинета «Планирование поставок → Локальность продаж», без API —
+  // только ручная (пере)загрузка XLSX.
+  const uploadLocalization = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!currentStore) return;
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setNotice("Загрузка отчёта «Локальность продаж»...");
+    try {
+      const result = await api.upload<ImportSummary>(`/stores/${currentStore.id}/products/upload-localization`, file);
+      setNotice(
+        `Загружено: обновлено товаров ${result.created}` +
+          (result.errors.length ? `. Примечания: ${result.errors.slice(0, 3).join("; ")}` : "")
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка загрузки файла");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -124,6 +147,13 @@ export function RnpTovaryPage() {
           >
             {syncingLocalization ? "Обновление..." : "Обновить локализацию"}
           </button>
+          <label
+            className="cursor-pointer rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200"
+            title="Кабинет Ozon → Планирование поставок → FBO → Локальность продаж → вкладка «По товарам» → «Скачать XLSX»"
+          >
+            Загрузить локализацию по товарам (XLSX)
+            <input type="file" accept=".xlsx" className="hidden" onChange={uploadLocalization} />
+          </label>
         </div>
       </div>
 
@@ -132,9 +162,11 @@ export function RnpTovaryPage() {
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
         План вводится только по «Заказы» и «Рекламный бюджет» — «Выкупы» и «Прибыль» показывают только прогноз и
         факт. «Прогноз мес.» — линейная экстраполяция факта на основе прошедших дней месяца. «Хватит на» — по темпу
-        продаж текущего календарного месяца. «Локализация» по товарам недоступна из API Ozon — Seller API отдаёт
-        только один % на весь магазин (кнопка «Обновить локализацию» выше, строка «Итого» ниже); по каждому товару
-        отдельно эту долю можно увидеть только в кабинете Ozon, в разделе «Локальность продаж».
+        продаж текущего календарного месяца. «Локализация» по магазину («Итого») — из Ozon Seller API (кнопка
+        «Обновить локализацию»). Локализация по каждому товару — Seller API её не отдаёт вообще, поэтому она берётся
+        из отдельного отчёта кабинета Ozon: «Планирование поставок» → «Локальность продаж» → вкладка «По товарам» →
+        «Скачать XLSX» — загрузите этот файл кнопкой «Загрузить локализацию по товарам» выше, чтобы обновить (Ozon
+        считает эту долю отдельно по каждому кластеру доставки — здесь показан взвешенный по продажам средний %).
       </div>
 
       {!data ? (
@@ -357,7 +389,16 @@ function ProductPlannerCard({
                 muted={row.localization_pct === null}
               />
             ) : (
-              <IndicatorTile label="Локализация" value="недоступно по товару" sub="есть только по магазину в «Итого»" muted />
+              <IndicatorTile
+                label="Локализация"
+                value={row.localization_pct !== null ? fmtPct(row.localization_pct) : "нет данных"}
+                sub={
+                  row.localization_calculation_date
+                    ? `на ${row.localization_calculation_date}`
+                    : "загрузите отчёт «Локальность продаж» кнопкой выше"
+                }
+                muted={row.localization_pct === null}
+              />
             )}
             <IndicatorTile
               label="Остатки"

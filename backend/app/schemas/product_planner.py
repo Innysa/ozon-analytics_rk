@@ -79,8 +79,13 @@ class ProductPlannerRow(BaseModel):
     margin_before_ad_pct: float | None = None  # Прибыль до ДРР / Выручка выкупа × 100
     margin_after_ad_pct: float | None = None  # Прибыль с ДРР / Выручка выкупа × 100
 
-    localization_pct: float | None = None  # только для «Итого» — Ozon отдаёт это ТОЛЬКО как одно число на весь магазин (POST /v1/rating/summary), без разбивки по товарам; на per-product строках всегда None (см. README)
-    localization_calculation_date: date | None = None  # дата, на которую Ozon посчитал localization_pct (не дата синхронизации самого приложения) — только для «Итого»
+    # «Итого»: из Ozon Seller API (POST /v1/rating/summary, одно число на весь
+    # магазин). Per-product строки: из ручного импорта «Планирование поставок
+    # → Локальность продаж» (Product.localization_pct — см. app.services.
+    # product_localization_import) — None, пока файл не загружен. Разные
+    # источники, поэтому числа не обязаны совпадать день-в-день (см. README).
+    localization_pct: float | None = None
+    localization_calculation_date: date | None = None  # дата, на которую посчитан localization_pct — из соответствующего источника выше
 
     daily: list[DailyBreakdownEntry] = []
 

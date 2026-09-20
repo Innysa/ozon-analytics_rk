@@ -17,14 +17,25 @@ sync services — this module reads, it never calls Ozon itself:
 2026-09-11 (via backend/scripts/debug_rating_summary.py against a real
 account) that Ozon Seller API's POST /v1/rating/summary returns this, but
 only as a SINGLE ACCOUNT-WIDE number (`localization_index.
-localization_percentage`) — no per-product breakdown exists via API (Ozon's
-own "Локальность продаж" UI report remains the only place to see it broken
-down by SKU). So `ProductPlannerRow.localization_pct` is populated ONLY on
-the aggregated "Итого" row (from app.models.store_rating_summary.
-StoreRatingSummary, itself only ever refreshed by a manual sync — see
-app.api.routes.sync.sync_ozon_rating_summary — never by this function,
-which stays a pure read like everything else here); every per-product row's
-localization_pct stays always None.
+localization_percentage`) — no per-product breakdown exists via ANY Seller
+API method (re-confirmed 2026-09-20: /v1/product/rating-by-sku, the one
+remaining candidate whose name suggested a per-SKU number, turned out to be
+an unrelated content-completeness score — see README's «РНП Товары»
+section for the full trail). So `ProductPlannerRow.localization_pct` on the
+aggregated "Итого" row comes from app.models.store_rating_summary.
+StoreRatingSummary (refreshed by a manual sync — see app.api.routes.sync.
+sync_ozon_rating_summary — never by this function, which stays a pure read
+like everything else here).
+
+Per-product rows get a DIFFERENT source, added 2026-09-20: Ozon's own
+cabinet DOES expose a per-SKU (actually per-SKU-per-cluster) localization
+share under a different tool entirely — «Планирование поставок →
+Локальность продаж», a UI report with no confirmed API equivalent — so it's
+imported the same way as the other manual CSV/XLSX exports in this project
+(see app.services.product_localization_import for the weighted-average
+collapse down to one number per SKU). `Product.localization_pct` stays None
+until the user uploads that export at least once; nothing in this module
+computes it.
 
 КРПП (Коэффициент рентабельности рекламных расходов) — formula CONFIRMED
 by the user directly (2026-09-11, from their own reference spreadsheet's
@@ -289,7 +300,8 @@ def _row_for_product(
         krpp_pct=krpp_pct,
         margin_before_ad_pct=margin_before_pct,
         margin_after_ad_pct=margin_after_pct,
-        localization_pct=None,
+        localization_pct=float(product.localization_pct) if product and product.localization_pct is not None else None,
+        localization_calculation_date=product.localization_period_end if product else None,
         daily=daily,
     )
 
