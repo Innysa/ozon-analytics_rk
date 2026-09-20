@@ -29,6 +29,24 @@ const AD_STATE_LABELS: Record<string, string> = {
 import { ReviewCard } from "../components/ReviewCard";
 import { ChangeHistoryPanel } from "../components/ChangeHistoryPanel";
 
+// Same convention as RnpPage.tsx/DashboardPage.tsx/AdvertisingPage.tsx (each
+// keeps its own copy rather than sharing a utils module — see those files).
+function isoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function defaultDateTo(): string {
+  return isoDate(new Date());
+}
+
+function defaultDateFrom(): string {
+  const d = new Date();
+  return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
 type Tab = "overview" | "reviews" | "analytics" | "ads" | "sales" | "search" | "history" | "recommendations";
 
 const TABS: { key: Tab; label: string; planned?: boolean }[] = [
@@ -47,6 +65,13 @@ export function ProductDetailPage() {
   const { currentStore } = useStore();
   const [tab, setTab] = useState<Tab>("overview");
   const [product, setProduct] = useState<Product | null>(null);
+  // Общий период для вкладок «Реклама»/«Продажи»/«Поисковые запросы» — те же
+  // даты по умолчанию, что на «Дашборде»/«РНП» (1-е число месяца — сегодня).
+  // Добавлено 2026-09-20 по просьбе пользователя: без периода эти вкладки
+  // грузили ВСЮ историю товара целиком, без ограничения, и продолжали бы
+  // расти безгранично по мере накопления данных за год.
+  const [dateFrom, setDateFrom] = useState(defaultDateFrom());
+  const [dateTo, setDateTo] = useState(defaultDateTo());
 
   useEffect(() => {
     if (!currentStore || !productId) return;
@@ -55,18 +80,29 @@ export function ProductDetailPage() {
 
   if (!currentStore || !productId) return null;
 
+  const showDateRange = tab === "ads" || tab === "sales" || tab === "search";
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        {product?.image_url ? (
-          <img src={product.image_url} alt="" className="h-14 w-14 rounded object-cover" />
-        ) : (
-          <div className="flex h-14 w-14 items-center justify-center rounded bg-slate-100 text-xs text-slate-400">нет фото</div>
-        )}
-        <div>
-          <h1 className="text-lg font-semibold text-slate-800">{product?.name ?? "Загрузка..."}</h1>
-          <div className="text-xs text-slate-500">SKU {product?.ozon_sku} {product?.offer_id ? `· Артикул ${product.offer_id}` : ""}</div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {product?.image_url ? (
+            <img src={product.image_url} alt="" className="h-14 w-14 rounded object-cover" />
+          ) : (
+            <div className="flex h-14 w-14 items-center justify-center rounded bg-slate-100 text-xs text-slate-400">нет фото</div>
+          )}
+          <div>
+            <h1 className="text-lg font-semibold text-slate-800">{product?.name ?? "Загрузка..."}</h1>
+            <div className="text-xs text-slate-500">SKU {product?.ozon_sku} {product?.offer_id ? `· Артикул ${product.offer_id}` : ""}</div>
+          </div>
         </div>
+        {showDateRange && (
+          <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1">
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} max={dateTo} className="text-xs text-slate-600 outline-none" />
+            <span className="text-xs text-slate-400">—</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} min={dateFrom} className="text-xs text-slate-600 outline-none" />
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-1 border-b border-slate-200">
@@ -89,9 +125,9 @@ export function ProductDetailPage() {
         )}
         {tab === "reviews" && <ProductReviewsTab storeId={currentStore.id} productId={productId} />}
         {tab === "analytics" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} />}
-        {tab === "ads" && <ProductAdsTab storeId={currentStore.id} productId={productId} />}
-        {tab === "sales" && <ProductSalesTab storeId={currentStore.id} productId={productId} />}
-        {tab === "search" && <ProductSearchQueriesTab storeId={currentStore.id} productId={productId} />}
+        {tab === "ads" && <ProductAdsTab storeId={currentStore.id} productId={productId} dateFrom={dateFrom} dateTo={dateTo} />}
+        {tab === "sales" && <ProductSalesTab storeId={currentStore.id} productId={productId} dateFrom={dateFrom} dateTo={dateTo} />}
+        {tab === "search" && <ProductSearchQueriesTab storeId={currentStore.id} productId={productId} dateFrom={dateFrom} dateTo={dateTo} />}
         {tab === "history" && <ChangeHistoryPanel storeId={currentStore.id} productId={productId} />}
         {tab === "recommendations" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} recommendationsOnly />}
       </div>
@@ -374,14 +410,17 @@ function fmtPct(v: number | null): string {
   return `${v.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%`;
 }
 
-function ProductAdsTab({ storeId, productId }: { storeId: string; productId: string }) {
+function ProductAdsTab({
+  storeId, productId, dateFrom, dateTo,
+}: { storeId: string; productId: string; dateFrom: string; dateTo: string }) {
   const [auto, setAuto] = useState<ProductAdvertisingAutoDaily | null>(null);
   const [csv, setCsv] = useState<AdvertisingAnalytics | null>(null);
 
   useEffect(() => {
-    api.get<ProductAdvertisingAutoDaily>(`/stores/${storeId}/advertising/product-auto-daily?product_id=${productId}`).then(setAuto);
-    api.get<AdvertisingAnalytics>(`/stores/${storeId}/advertising/analytics?product_id=${productId}`).then(setCsv);
-  }, [storeId, productId]);
+    const params = `product_id=${productId}&date_from=${dateFrom}&date_to=${dateTo}`;
+    api.get<ProductAdvertisingAutoDaily>(`/stores/${storeId}/advertising/product-auto-daily?${params}`).then(setAuto);
+    api.get<AdvertisingAnalytics>(`/stores/${storeId}/advertising/analytics?${params}`).then(setCsv);
+  }, [storeId, productId, dateFrom, dateTo]);
 
   if (!auto || !csv) return <div className="text-slate-500">Загрузка...</div>;
 
@@ -432,7 +471,14 @@ function ProductAdsTab({ storeId, productId }: { storeId: string; productId: str
                 </thead>
                 <tbody>
                   {auto.by_campaign.map((c) => (
-                    <ProductCampaignRow key={c.campaign_id} storeId={storeId} productId={productId} campaign={c} />
+                    <ProductCampaignRow
+                      key={c.campaign_id}
+                      storeId={storeId}
+                      productId={productId}
+                      campaign={c}
+                      dateFrom={dateFrom}
+                      dateTo={dateTo}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -491,14 +537,24 @@ function ProductCampaignRow({
   storeId,
   productId,
   campaign,
+  dateFrom,
+  dateTo,
 }: {
   storeId: string;
   productId: string;
   campaign: ProductAdCampaignBreakdown;
+  dateFrom: string;
+  dateTo: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [days, setDays] = useState<ProductCampaignDailyRow[] | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Кэш сбрасывается при смене периода — иначе раскрытая строка продолжала
+  // бы показывать данные за старый диапазон дат.
+  useEffect(() => {
+    setDays(null);
+  }, [dateFrom, dateTo]);
 
   const toggle = () => {
     const next = !expanded;
@@ -507,7 +563,7 @@ function ProductCampaignRow({
       setLoading(true);
       api
         .get<ProductCampaignDailyListResponse>(
-          `/stores/${storeId}/advertising/product-campaign-daily?product_id=${productId}&ozon_campaign_id=${encodeURIComponent(campaign.campaign_id)}`
+          `/stores/${storeId}/advertising/product-campaign-daily?product_id=${productId}&ozon_campaign_id=${encodeURIComponent(campaign.campaign_id)}&date_from=${dateFrom}&date_to=${dateTo}`
         )
         .then((d) => setDays(d.items))
         .finally(() => setLoading(false));
@@ -593,24 +649,27 @@ function combineProductOrderRowsByDate(rows: ProductOrderDailyStatistic[]): DayO
   return Array.from(byDate.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
-function ProductSalesTab({ storeId, productId }: { storeId: string; productId: string }) {
+function ProductSalesTab({
+  storeId, productId, dateFrom, dateTo,
+}: { storeId: string; productId: string; dateFrom: string; dateTo: string }) {
   const [summary, setSummary] = useState<ProductCardAnalytics | null>(null);
   const [rows, setRows] = useState<ProductCardStatisticListResponse | null>(null);
   const [orderRows, setOrderRows] = useState<ProductOrderDailyStatistic[] | null>(null);
   const [funnelRows, setFunnelRows] = useState<ProductAnalyticsDailyStatistic[] | null>(null);
 
   useEffect(() => {
-    api.get<ProductCardAnalytics>(`/stores/${storeId}/product-analytics/summary?product_id=${productId}`).then(setSummary);
+    const params = `product_id=${productId}&date_from=${dateFrom}&date_to=${dateTo}`;
+    api.get<ProductCardAnalytics>(`/stores/${storeId}/product-analytics/summary?${params}`).then(setSummary);
     api
-      .get<ProductCardStatisticListResponse>(`/stores/${storeId}/product-analytics?product_id=${productId}`)
+      .get<ProductCardStatisticListResponse>(`/stores/${storeId}/product-analytics?${params}`)
       .then(setRows);
     api
-      .get<ProductOrderDailyStatisticListResponse>(`/stores/${storeId}/orders/product-daily-statistics?product_id=${productId}`)
+      .get<ProductOrderDailyStatisticListResponse>(`/stores/${storeId}/orders/product-daily-statistics?${params}`)
       .then((d) => setOrderRows(d.items));
     api
-      .get<ProductAnalyticsDailyStatisticListResponse>(`/stores/${storeId}/product-analytics/auto?product_id=${productId}`)
+      .get<ProductAnalyticsDailyStatisticListResponse>(`/stores/${storeId}/product-analytics/auto?${params}`)
       .then((d) => setFunnelRows(d.items));
-  }, [storeId, productId]);
+  }, [storeId, productId, dateFrom, dateTo]);
 
   if (!summary || !orderRows || !funnelRows) return <div className="text-slate-500">Загрузка...</div>;
 
@@ -827,12 +886,18 @@ function ProductSalesTab({ storeId, productId }: { storeId: string; productId: s
   );
 }
 
-function ProductSearchQueriesTab({ storeId, productId }: { storeId: string; productId: string }) {
+function ProductSearchQueriesTab({
+  storeId, productId, dateFrom, dateTo,
+}: { storeId: string; productId: string; dateFrom: string; dateTo: string }) {
   const [summary, setSummary] = useState<SearchQueryAnalytics | null>(null);
 
   useEffect(() => {
-    api.get<SearchQueryAnalytics>(`/stores/${storeId}/search-queries/summary?product_id=${productId}`).then(setSummary);
-  }, [storeId, productId]);
+    // Этот роут называет параметры period_start/period_end, а не
+    // date_from/date_to, как остальные — см. app.api.routes.search_queries.
+    api
+      .get<SearchQueryAnalytics>(`/stores/${storeId}/search-queries/summary?product_id=${productId}&period_start=${dateFrom}&period_end=${dateTo}`)
+      .then(setSummary);
+  }, [storeId, productId, dateFrom, dateTo]);
 
   if (!summary) return <div className="text-slate-500">Загрузка...</div>;
   if (!summary.has_data) {

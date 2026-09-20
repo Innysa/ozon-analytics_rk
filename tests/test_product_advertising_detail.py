@@ -101,6 +101,29 @@ def test_two_days_produce_day_over_day_comparison(db_session, two_stores_with_us
     assert comp.revenue_rub.direction == "down"
 
 
+def test_date_range_excludes_rows_outside_window(db_session, two_stores_with_users):
+    """Added 2026-09-20: without a date range, this used to return the
+    product's ENTIRE history unconditionally — the product detail page's
+    "Реклама" tab kept growing forever as data accumulated. date_from/
+    date_to omitted (None) must still behave exactly as before (see the
+    other tests above, none of which pass a range)."""
+    from app.services.advertising_analytics_service import compute_product_advertising_auto_daily
+
+    d = two_stores_with_users
+    _make_campaign(db_session, d["store_a"].id, ozon_campaign_id="c1", name="Кампания 1")
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 8, 1), spend=100, revenue=500, impressions=1000, clicks=20)
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 9, 1), spend=50, revenue=200, impressions=400, clicks=10)
+    db_session.flush()
+
+    result = compute_product_advertising_auto_daily(
+        db_session, store_id=d["store_a"].id, ozon_sku="111", date_from=date(2026, 9, 1), date_to=date(2026, 9, 30)
+    )
+    assert result.total_spend_rub == pytest.approx(50)
+
+    unfiltered = compute_product_advertising_auto_daily(db_session, store_id=d["store_a"].id, ozon_sku="111")
+    assert unfiltered.total_spend_rub == pytest.approx(150)
+
+
 def test_route_end_to_end_and_store_isolation(client, db_session, two_stores_with_users):
     from app.models.product import Product
 
@@ -156,6 +179,25 @@ def test_daily_rows_only_that_product_and_campaign(db_session, two_stores_with_u
     assert rows[0].drr_calculated_pct == pytest.approx(150 / 400 * 100, rel=1e-3)
     assert rows[1].date == date(2026, 9, 1)
     assert rows[1].spend_rub == pytest.approx(100)
+
+
+def test_daily_rows_date_range_excludes_rows_outside_window(db_session, two_stores_with_users):
+    """Same 2026-09-20 fix as compute_product_advertising_auto_daily above
+    — this expanded-campaign-row detail used to have no way to narrow the
+    range at all."""
+    from app.services.advertising_analytics_service import compute_product_campaign_daily_rows
+
+    d = two_stores_with_users
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 8, 1), spend=100, revenue=500, impressions=1000, clicks=20)
+    _add_row(db_session, store_id=d["store_a"].id, ozon_campaign_id="c1", ozon_sku="111", day=date(2026, 9, 1), spend=50, revenue=200, impressions=400, clicks=10)
+    db_session.flush()
+
+    rows = compute_product_campaign_daily_rows(
+        db_session, store_id=d["store_a"].id, ozon_sku="111", ozon_campaign_id="c1",
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 30),
+    )
+    assert len(rows) == 1
+    assert rows[0].date == date(2026, 9, 1)
 
 
 def test_daily_rows_empty_when_no_match(db_session, two_stores_with_users):

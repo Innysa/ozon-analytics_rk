@@ -78,6 +78,8 @@ def product_advertising_auto_daily(
     product_id: str,
     ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
     db: Session = Depends(get_db),
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> ProductAdvertisingAutoDailyOut:
     """Auto-collected (Ozon Performance API) advertising numbers for one
     product, broken down by campaign — the per-product counterpart of
@@ -87,7 +89,9 @@ def product_advertising_auto_daily(
     product = db.get(Product, product_id)
     if not product or product.store_id != ctx.store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
-    return compute_product_advertising_auto_daily(db, store_id=ctx.store_id, ozon_sku=product.ozon_sku)
+    return compute_product_advertising_auto_daily(
+        db, store_id=ctx.store_id, ozon_sku=product.ozon_sku, date_from=date_from, date_to=date_to
+    )
 
 
 @router.get("/product-campaign-daily", response_model=ProductCampaignDailyListResponse)
@@ -96,6 +100,8 @@ def product_campaign_daily(
     ozon_campaign_id: str,
     ctx: StoreContext = Depends(require_store_role(StoreRole.VIEWER)),
     db: Session = Depends(get_db),
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> ProductCampaignDailyListResponse:
     """Expanded-row detail for one campaign on the product detail page's
     "Реклама" tab — day-by-day spend/impressions/clicks/orders/revenue/ДРР
@@ -105,7 +111,8 @@ def product_campaign_daily(
     if not product or product.store_id != ctx.store_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
     items = compute_product_campaign_daily_rows(
-        db, store_id=ctx.store_id, ozon_sku=product.ozon_sku, ozon_campaign_id=ozon_campaign_id
+        db, store_id=ctx.store_id, ozon_sku=product.ozon_sku, ozon_campaign_id=ozon_campaign_id,
+        date_from=date_from, date_to=date_to,
     )
     return ProductCampaignDailyListResponse(items=items, total=len(items))
 

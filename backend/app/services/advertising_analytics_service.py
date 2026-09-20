@@ -220,18 +220,30 @@ def compute_campaign_auto_daily_detail(db: Session, *, store_id: str, campaign_i
     )
 
 
-def compute_product_advertising_auto_daily(db: Session, *, store_id: str, ozon_sku: str) -> ProductAdvertisingAutoDailyOut:
+def compute_product_advertising_auto_daily(
+    db: Session, *, store_id: str, ozon_sku: str, date_from: date | None = None, date_to: date | None = None
+) -> ProductAdvertisingAutoDailyOut:
     """Same aggregation as compute_campaign_auto_daily_detail, but sliced by
     SKU across every campaign that advertised it, instead of by one campaign
     across every SKU it covers — a campaign usually spans many products, so
     this groups by ozon_campaign_id to show which campaigns actually drive
-    this product's numbers."""
-    rows = db.scalars(
-        select(AdvertisingDailyStatistic).where(
-            AdvertisingDailyStatistic.store_id == store_id,
-            AdvertisingDailyStatistic.ozon_sku == ozon_sku,
-        )
-    ).all()
+    this product's numbers.
+
+    date_from/date_to added 2026-09-20 (user's own product detail page kept
+    growing unboundedly with every calendar day ever collected, no way to
+    narrow it — same fix as the other per-product tabs, which already had
+    this filter) — omitted (None), this still returns the product's ENTIRE
+    history, same as before, so existing callers that don't pass a range
+    keep working unchanged."""
+    stmt = select(AdvertisingDailyStatistic).where(
+        AdvertisingDailyStatistic.store_id == store_id,
+        AdvertisingDailyStatistic.ozon_sku == ozon_sku,
+    )
+    if date_from:
+        stmt = stmt.where(AdvertisingDailyStatistic.date >= date_from)
+    if date_to:
+        stmt = stmt.where(AdvertisingDailyStatistic.date <= date_to)
+    rows = db.scalars(stmt).all()
     if not rows:
         return ProductAdvertisingAutoDailyOut(has_data=False)
 
@@ -321,7 +333,7 @@ def compute_product_advertising_auto_daily(db: Session, *, store_id: str, ozon_s
 
 
 def compute_product_campaign_daily_rows(
-    db: Session, *, store_id: str, ozon_sku: str, ozon_campaign_id: str
+    db: Session, *, store_id: str, ozon_sku: str, ozon_campaign_id: str, date_from: date | None = None, date_to: date | None = None
 ) -> list[ProductCampaignDailyRow]:
     """The expanded-row detail for one campaign on the product detail page's
     "Реклама" tab: every day of auto-collected AdvertisingDailyStatistic for
@@ -329,14 +341,20 @@ def compute_product_campaign_daily_rows(
     compute_product_advertising_auto_daily's by_campaign totals, just not
     summed across dates this time. Filtered by ozon_campaign_id (not the
     internal campaign_id FK) so it still works for a campaign whose
-    AdvertisingCampaign metadata was never synced."""
-    rows = db.scalars(
-        select(AdvertisingDailyStatistic).where(
-            AdvertisingDailyStatistic.store_id == store_id,
-            AdvertisingDailyStatistic.ozon_sku == ozon_sku,
-            AdvertisingDailyStatistic.ozon_campaign_id == ozon_campaign_id,
-        )
-    ).all()
+    AdvertisingCampaign metadata was never synced.
+
+    date_from/date_to — same 2026-09-20 fix as compute_product_advertising_
+    auto_daily above, same "omitted means unfiltered" default."""
+    stmt = select(AdvertisingDailyStatistic).where(
+        AdvertisingDailyStatistic.store_id == store_id,
+        AdvertisingDailyStatistic.ozon_sku == ozon_sku,
+        AdvertisingDailyStatistic.ozon_campaign_id == ozon_campaign_id,
+    )
+    if date_from:
+        stmt = stmt.where(AdvertisingDailyStatistic.date >= date_from)
+    if date_to:
+        stmt = stmt.where(AdvertisingDailyStatistic.date <= date_to)
+    rows = db.scalars(stmt).all()
 
     by_date: dict[date, dict[str, float]] = defaultdict(
         lambda: {"spend": 0.0, "revenue": 0.0, "impressions": 0.0, "clicks": 0.0, "orders": 0.0}
