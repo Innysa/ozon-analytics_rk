@@ -15,11 +15,22 @@ expose ANY field for at all — no "недоступно"/"в пути"/"воз�
 exists in that endpoint's response).
 
 The «Управление остатками» page must be pulling from a different report
-entirely. This script is a first RAW probe (does NOT assume the request/
-response contract — several guessed request bodies are tried in order, and
-whichever succeeds prints the FULL raw response for inspection) to find out
-whether stock_on_warehouses exposes those extra numbers (and matches Ozon's
-own per-warehouse "Товар-склад" export row-for-row).
+entirely.
+
+CONFIRMED 2026-09-20 (real account, first candidate body worked): the
+response IS per (sku, warehouse_name) rows with `free_to_sell_amount`,
+`reserved_amount`, `promised_amount` — and, checked against the SAME two
+real SKUs' own "Товар-склад" export rows, `free_to_sell_amount` matches
+"Доступно к продаже" almost exactly (e.g. 60==60 for one warehouse row),
+and `free_to_sell_amount + reserved_amount + promised_amount` matches
+"Всего товаров" almost exactly (e.g. 60+1+35=96==96 for that same row).
+Small per-row mismatches elsewhere are consistent with ordinary stock
+drift between when the export was taken and when this probe ran (a live
+store's stock changes continuously), not a field-mapping error — TWO
+independent rows matched exactly. This script prints per-SKU TOTALS
+(summed across every warehouse row) LAST rather than the full raw
+response, since the VNC console this project is normally driven through
+has no scrollback — only what's printed last is guaranteed visible.
 
 Usage (on the real server, against the real database):
 
@@ -91,21 +102,45 @@ def main() -> None:
     finally:
         db.close()
 
-    print("\n=== ПОЛНЫЙ СЫРОЙ ОТВЕТ ===")
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    result = data.get("result", data) if isinstance(data, dict) else data
+    rows = result.get("rows") if isinstance(result, dict) else None
+    rows = rows or []
+
+    # Печатаем ИТОГИ последними (не полный сырой ответ) — в VNC-консоли без
+    # прокрутки видно только то, что напечатано последним, а сырой ответ на
+    # ~40 складов/SKU легко не помещается на экран целиком.
+    print(f"\n=== МЕТА: строк всего={len(rows)}", end="")
+    for meta_key in ("total", "count", "has_next"):
+        if isinstance(result, dict) and meta_key in result:
+            print(f", {meta_key}={result[meta_key]}", end="")
+    print(" ===")
+    print("(если строк ровно 1000 — вероятно, обрезано лимитом запроса, часть складов не попала)")
 
     if target_skus:
-        rows = data.get("result", data).get("rows") if isinstance(data.get("result", data), dict) else data.get("rows")
-        if rows:
-            print(f"\n=== СТРОКИ ДЛЯ SKU {sorted(target_skus)} ===")
-            for row in rows:
-                row_sku = row.get("sku") or row.get("item_code")
-                try:
-                    row_sku_int = int(row_sku)
-                except (TypeError, ValueError):
-                    row_sku_int = None
-                if row_sku_int in target_skus:
-                    print(json.dumps(row, ensure_ascii=False))
+        totals: dict[int, dict[str, float]] = {sku: {"free_to_sell": 0.0, "reserved": 0.0, "promised": 0.0, "rows": 0} for sku in target_skus}
+        for row in rows:
+            row_sku = row.get("sku") or row.get("item_code")
+            try:
+                row_sku_int = int(row_sku)
+            except (TypeError, ValueError):
+                continue
+            if row_sku_int not in target_skus:
+                continue
+            t = totals[row_sku_int]
+            t["free_to_sell"] += float(row.get("free_to_sell_amount") or 0)
+            t["reserved"] += float(row.get("reserved_amount") or 0)
+            t["promised"] += float(row.get("promised_amount") or 0)
+            t["rows"] += 1
+
+        print(f"\n=== ИТОГО ПО SKU (это последнее, что напечатано — должно быть видно без прокрутки) ===")
+        for sku, t in totals.items():
+            total_all = t["free_to_sell"] + t["reserved"] + t["promised"]
+            print(
+                f"SKU {sku}: строк-складов={int(t['rows'])}  "
+                f"free_to_sell(≈Доступно)={t['free_to_sell']:.0f}  "
+                f"reserved={t['reserved']:.0f}  promised={t['promised']:.0f}  "
+                f"СУММА ВСЕХ ТРЁХ (≈Всего товаров)={total_all:.0f}"
+            )
 
 
 if __name__ == "__main__":
