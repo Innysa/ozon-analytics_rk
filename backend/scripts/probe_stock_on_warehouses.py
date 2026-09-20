@@ -118,6 +118,7 @@ def main() -> None:
 
     if target_skus:
         totals: dict[int, dict[str, float]] = {sku: {"free_to_sell": 0.0, "reserved": 0.0, "promised": 0.0, "rows": 0} for sku in target_skus}
+        matched_rows: dict[int, list[dict]] = {sku: [] for sku in target_skus}
         for row in rows:
             row_sku = row.get("sku") or row.get("item_code")
             try:
@@ -131,6 +132,22 @@ def main() -> None:
             t["reserved"] += float(row.get("reserved_amount") or 0)
             t["promised"] += float(row.get("promised_amount") or 0)
             t["rows"] += 1
+            matched_rows[row_sku_int].append(row)
+
+        # CONFIRMED 2026-09-20: per-SKU row COUNTS came back far lower than
+        # this account's real non-zero-warehouse count (e.g. SKU 3034472572
+        # got only 4 rows here vs 17 non-zero warehouses in the "Товар-склад"
+        # export summing to the same SKU's own confirmed 99 "Всего товаров"
+        # — a ~57-unit gap far too large to be ordinary stock drift). So the
+        # per-SKU warehouse LIST itself, not just the totals, needs checking
+        # — printed here (still before the totals, which stay last/visible).
+        for sku, sku_rows in matched_rows.items():
+            print(f"\n--- строки для SKU {sku} (склад: free_to_sell/reserved/promised) ---")
+            for row in sku_rows:
+                print(
+                    f"  {row.get('warehouse_name')}: "
+                    f"{row.get('free_to_sell_amount')}/{row.get('reserved_amount')}/{row.get('promised_amount')}"
+                )
 
         print(f"\n=== ИТОГО ПО SKU (это последнее, что напечатано — должно быть видно без прокрутки) ===")
         for sku, t in totals.items():
