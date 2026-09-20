@@ -162,7 +162,7 @@ def main() -> None:
                 raw = json.loads(r.raw_payload)
                 for path, item in _find_paths(raw, args.find_key, []):
                     found_any = True
-                    print(f"    {r.period_begin} — {r.period_end}: {path}  price={item.get('price')!r}")
+                    print(f"    {r.period_begin} — {r.period_end}: {path}  name={item.get('name')!r}  price={item.get('price')!r}")
             if not found_any:
                 print("    Не найдено ни в одном сохранённом периоде (проверьте написание подстроки).")
             return
