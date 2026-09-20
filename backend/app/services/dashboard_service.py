@@ -459,7 +459,13 @@ def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
 # shown vs a real ~-117 306 for 1-12.09, per the user's own --find-key output
 # and manual per-period sum). Fixed by checking the FULL hint list against
 # BOTH buckets.
-_PARTNER_SERVICE_HINTS = ("InsuranceService", "AcquiringItem", "AcquiringOperation")
+_PARTNER_SERVICE_HINTS = (
+    "InsuranceService", "AcquiringItem", "AcquiringOperation",
+    # CONFIRMED 2026-09-20 (see _categorize_service_items's own docstring
+    # for how these were found and matched to the cabinet's «Услуги
+    # партнёров» breakdown):
+    "TemporaryStorageRedistribution", "PackageRedistribution", "SellerReturnsCargoAssortment",
+)
 # "Кросс-докинг" (MarketplaceServiceItemCrossdocking, confirmed price matched
 # exactly to the Начисления report's own "Кросс-докинг" line) is confirmed to
 # live in `services` only so far — no evidence yet of it (or
@@ -486,13 +492,36 @@ _FBO_SERVICE_HINTS_IN_SERVICES = ("Crossdocking", "SupplyInboundAdditional")
 # -sourced "Расход на рекламу (авто)" card, just from a different source.
 _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES = ("CostPerClick", "PromotionWithCostPerOrder", "PremiumSellerBonusAccrual")
 
+# CONFIRMED 2026-09-20 (real account, inspect_cash_flow_periods.py
+# --find-key HandoverPlace, EVERY stored period): the exact same item
+# (same name, same price) is present TWICE in Ozon's own raw payload —
+# once under details.delivery.delivery_services.items[] (feeding
+# logistics_sum via delivery_services_total, correctly) and AGAIN under
+# details.services.items[] (which would otherwise fall, uncategorized,
+# into "Прочие услуги" — double-counting the same real money in two
+# different tiles). Excluded here for the same reason ad spend is
+# excluded above — it's already fully represented by the Логистика tile.
+_LOGISTICS_DUPLICATE_HINTS_IN_SERVICES = ("DeliveryToHandoverPlaceOzon",)
+
 
 def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
     """Pulls (fines, storage) out of a CashFlowStatementPeriod.
     services_items_json blob, by CONFIRMED real item-name substrings
     (checked against a real account's full diagnostic dump, 2026-09-10):
     "Fine" -> a real fine (e.g. FinesShipmentNonRecommendedSlot), "Storage"
-    -> real storage fee (MarketplaceServiceItemTemporaryStorageRedistribution).
+    -> a real plain storage fee (MarketplaceServiceStorageItem).
+
+    CORRECTED 2026-09-20: MarketplaceServiceItemTemporaryStorageRedistribution
+    was PREVIOUSLY (mis)matched here too (same "Storage" substring) — but a
+    real account's own Ozon cabinet groups it under «Услуги партнёров»
+    ("Временное размещение товара партнерами"), not «Хранение». Excluded via
+    the "Redistribution" check below and moved to _PARTNER_SERVICE_HINTS
+    instead, alongside two other real items found the same way (2026-09-20,
+    full services_items_json name dump cross-checked against the cabinet's
+    own «Услуги партнёров» breakdown): MarketplaceServiceItemPackageRedistribution
+    ("Упаковка товара партнёрами") and MarketplaceServiceSellerReturnsCargoAssortment
+    ("Обработка возвратов, отмен и невыкупов партнёрами" — name match by
+    semantics/magnitude, not an exact confirmed translation).
 
     Deliberately does NOT also return an "other" sum computed from the
     remaining items — the caller derives that as (period.services_total -
@@ -515,7 +544,7 @@ def _categorize_service_items(items_json: str | None) -> tuple[float, float]:
         price = float(item.get("price") or 0)
         if "Fine" in name:
             fines += price
-        elif "Storage" in name:
+        elif "Storage" in name and "Redistribution" not in name:
             storage += price
     return fines, storage
 
@@ -546,20 +575,26 @@ def _largest_uncategorized_service_item(periods: list[CashFlowStatementPeriod]) 
     threshold — always surfaces the single biggest item, since this
     project has no confirmed basis to pick a significance cutoff.
 
-    RECONFIRMED 2026-09-19 on a real account via `backend/scripts/
-    inspect_cash_flow_periods.py`'s full item-name listing (not just the
-    single largest): after subtracting fines/storage/partner/FBO/ad items,
-    "Прочие услуги" on this account was made up of essentially only TWO
-    named items, not an unbounded pile of unknowns —
-    "MarketplaceServiseItemAgencyFeeForSale" (this same volatile item, can
-    swing positive some weeks) and "MarketplaceServiseItemPointsAwarded"
-    (loyalty points credited to buyers — always POSITIVE, so it partially
-    offsets the agency fee rather than adding to the deduction). A third,
-    much smaller item, "MarketplaceServiceSellerReturnsCargoAssortment"
-    (a per-shipment returns-cargo-sorting fee, max observed ~-2 300 ₽), was
-    also present but immaterial next to the other two. Another account
-    could see different named items here — this isn't a closed, universal
-    list, just evidence this bucket is explainable, not noise."""
+    RECONFIRMED 2026-09-19, then CORRECTED 2026-09-20 after actually
+    reading the FULL scrollback of `backend/scripts/inspect_cash_flow_
+    periods.py`'s item-name listing rather than a console view that had
+    silently cut off most of it: "Прочие услуги" is NOT just 2-3 items —
+    on a real account it was 20+ distinct names (product disposal, cargo
+    shortage/surplus, first-review collection, RFBS service fees, and
+    more), most individually small. The two that actually dominate by
+    magnitude are still "MarketplaceServiseItemAgencyFeeForSale" (highly
+    volatile, can swing positive some weeks) and "MarketplaceServiseItem
+    PointsAwarded" (loyalty points credited to buyers — always POSITIVE,
+    so it partially offsets the deduction rather than adding to it).
+    Three more real items initially seen here on 2026-09-19
+    (MarketplaceServiceItemPackageRedistribution, ...TemporaryStorage
+    Redistribution, MarketplaceServiceSellerReturnsCargoAssortment) were
+    reclassified into _PARTNER_SERVICE_HINTS on 2026-09-20 (see
+    _categorize_service_items's own docstring) once matched against the
+    cabinet's own «Услуги партнёров» breakdown — they're no longer part
+    of what lands here. Another account could see a different mix of
+    names — this isn't a closed, universal list, just evidence this
+    bucket is a real (if long) enumeration, not unexplained noise."""
     best: tuple[str, float] | None = None
     for period in periods:
         if not period.services_items_json:
@@ -800,6 +835,7 @@ def compute_dashboard(
             logistics_sum = returns_sum = others_total_sum = 0.0
             partner_from_services_sum = partner_from_others_sum = 0.0
             fbo_from_services_sum = ad_in_services_sum = 0.0
+            logistics_duplicate_in_services_sum = 0.0
             is_estimated = False
             for p in periods_in_range:
                 fraction = _period_overlap_fraction(p.period_begin, p.period_end, resolved_date_from, resolved_date_to)
@@ -810,6 +846,7 @@ def compute_dashboard(
                 partner_from_others = _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS)
                 fbo_from_services = _sum_matching_items(p.services_items_json, _FBO_SERVICE_HINTS_IN_SERVICES)
                 ad_in_services = _sum_matching_items(p.services_items_json, _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES)
+                logistics_duplicate_in_services = _sum_matching_items(p.services_items_json, _LOGISTICS_DUPLICATE_HINTS_IN_SERVICES)
 
                 fines_sum += fines * fraction
                 storage_sum += storage * fraction
@@ -817,6 +854,7 @@ def compute_dashboard(
                 partner_from_others_sum += partner_from_others * fraction
                 fbo_from_services_sum += fbo_from_services * fraction
                 ad_in_services_sum += ad_in_services * fraction
+                logistics_duplicate_in_services_sum += logistics_duplicate_in_services * fraction
                 services_total_sum += float(p.services_total or 0) * fraction
                 logistics_sum += float(p.delivery_services_total or 0) * fraction
                 returns_sum += float(p.delivery_return_total or 0) * fraction
@@ -835,7 +873,7 @@ def compute_dashboard(
             # _AD_HINTS_TO_EXCLUDE_FROM_OTHER_SERVICES's own comment.
             other_services_sum = (
                 services_total_sum - fines_sum - storage_sum - partner_from_services_sum
-                - fbo_from_services_sum - ad_in_services_sum
+                - fbo_from_services_sum - ad_in_services_sum - logistics_duplicate_in_services_sum
             )
             other_deductions_sum = others_total_sum - partner_from_others_sum
             # Deliberately the RAW (non-prorated) item — this is an

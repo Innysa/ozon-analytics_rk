@@ -68,7 +68,7 @@
   подтверждённым контрактом): «Логистика» (доставка — последняя миля,
   приём в пункте, магистраль), «Обработка возвратов», «Хранение» и
   «Штрафы» (вытащены по подтверждённым реальным названиям статей —
-  `...TemporaryStorage...` и `Fines...` — из статьи `services`, которую
+  `MarketplaceServiceStorageItem` и `Fines...` — из статьи `services`, которую
   Ozon иначе отдаёт одной суммой), «Прочие удержания» (отдельная статья
   Ozon `others` — например, эквайринг, компенсации) и «Прочие услуги»
   (остаток статьи `services` — реклама за клик, страхование и всё, что не
@@ -850,21 +850,56 @@ statement()` / `app.services.cash_flow_statement_sync_service`:
   `MarketplaceServiceItemRedistributionLastMileCourier` (последняя миля),
   `MarketplaceServiceItemRedistributionDropoff`,
   `MarketplaceServiceItemDeliveryToHandoverPlaceOzon` (передача в пункт
-  приёма Ozon).
-- **`services`** — подтверждённо СМЕШАННАЯ статья: реальные позиции
-  включают `MarketplaceServiceItemTemporaryStorageRedistribution`
-  (хранение), `MarketplaceServiceCostPerClick` (реклама за клик — да,
-  реклама тоже здесь, отдельно от `AdvertisingDailyStatistic`),
-  `FinesShipmentNonRecommendedSlot` (**штраф** — подтверждено 2026-09-10,
-  тем же ручным grep) и позицию с именем, начинающимся на `InsuranceSe...`
-  (страхование). Ozon не даёт отдельную подсумму под каждую категорию —
-  только `total` + список позиций, поэтому приложение хранит `services`
-  как есть (`services_total`/`services_items_json`), а разбивку на
-  Дашборде делает при чтении (`dashboard_service._categorize_service_items`)
-  по подтверждённым подстрокам в имени позиции: `"Storage"` → «Хранение»,
-  `"Fine"` → «Штрафы», всё остальное (включая ещё не встречавшиеся имена)
-  остаётся в «Прочие услуги» — угадывания категории по неполному списку
-  имён здесь нет, только подстроки, реально встреченные в ответе Ozon.
+  приёма Ozon). **ВАЖНО, подтверждено 2026-09-20 через `--find-key
+  HandoverPlace` по ВСЕМ сохранённым периодам**: `MarketplaceServiceItem
+  DeliveryToHandoverPlaceOzon` — это ДУБЛИКАТ: та же статья с ТОЙ ЖЕ
+  суммой одновременно лежит и здесь, и внутри `services.items[]` (см.
+  ниже) — это особенность сырого ответа самого Ozon, не наша ошибка
+  синхронизации. Раньше эта сумма молча учитывалась дважды (один раз в
+  «Логистике», второй раз в «Прочих услугах»); исключена из «Прочих
+  услуг» через `_LOGISTICS_DUPLICATE_HINTS_IN_SERVICES`.
+- **`services`** — подтверждённо СМЕШАННАЯ статья: полный список
+  уникальных имён (2026-09-20, `inspect_cash_flow_periods.py`, реальный
+  аккаунт, все сохранённые периоды) оказался НАМНОГО длиннее, чем
+  казалось раньше по частичному просмотру консоли без прокрутки —
+  порядка 20+ разных имён, не 2-3. Подтверждённые категории:
+  `MarketplaceServiceStorageItem` (хранение), `MarketplaceServiceCostPerClick`
+  (реклама за клик — да, реклама тоже здесь, отдельно от
+  `AdvertisingDailyStatistic`), `FinesShipmentNonRecommendedSlot`/
+  `FinesErrorIndexExceeded` (**штраф**), `InsuranceServiceSellerItem`
+  (страхование), `MarketplaceRedistributionOfAcquiringItem` (эквайринг),
+  `MarketplaceServiceItemCrossdocking` (Услуги FBO),
+  `MarketplaceServiceItemElectronicServicesPremiumSellerBonusAccrual`/
+  `MarketplaceServicePromotionWithCostPerOrder` (реклама, другой формат).
+  **ИСПРАВЛЕНО 2026-09-20**: `MarketplaceServiceItemTemporaryStorageRedistribution`
+  РАНЬШЕ тоже матчился по подстроке `"Storage"` и попадал в «Хранение» —
+  но по кабинету Ozon это «Временное размещение товара ПАРТНЁРАМИ», не
+  обычное хранение. Убрано из «Хранение» (`"Storage" and "Redistribution"
+  not in name`) и перенесено в `_PARTNER_SERVICE_HINTS`, вместе с двумя
+  новыми подтверждёнными партнёрскими статьями: `MarketplaceServiceItem
+  PackageRedistribution` («Упаковка товара партнёрами») и
+  `MarketplaceServiceSellerReturnsCargoAssortment` (по семантике/порядку
+  величины — «Обработка возвратов, отмен и невыкупов партнёрами», точное
+  соответствие названию НЕ подтверждено дословно). Ozon не даёт отдельную
+  подсумму под каждую категорию — только `total` + список позиций,
+  поэтому приложение хранит `services` как есть (`services_total`/
+  `services_items_json`), а разбивку на Дашборде делает при чтении
+  (`dashboard_service._categorize_service_items`/`_sum_matching_items`)
+  по подтверждённым подстрокам в имени позиции — всё остальное (включая
+  ещё не встречавшиеся имена) остаётся в «Прочие услуги», угадывания
+  категории по неполному списку имён здесь нет.
+
+  **НЕ НАЙДЕНО, 2026-09-20**: самая крупная статья кабинета Ozon внутри
+  «Услуги партнёров» — «Доставка до места выдачи партнёрами» (~42 тыс. ₽
+  за 01-19.09.2026) — отсутствует и в `services`/`delivery_services`/
+  `delivery_return`/`others`. Похоже, кабинет агрегирует её из
+  чего-то, чего нет в этом отчёте (ДДС), либо считает как разницу двух
+  других чисел. Деньги при этом НЕ теряются из общей суммы (`services_total`
+  их всё равно включает) — просто конкретно эта статья остаётся
+  неопознанной внутри «Прочие услуги» вместо «Услуги партнёров». Не
+  тратьте время на повторный точечный поиск по названию без новых
+  оснований (например, доступа к «Позаказному отчёту о реализации» —
+  но см. его же контракт выше, поля совпадают с уже перебранными).
 - **`others`** — отдельная статья со своим `{"total", "items"}`, НЕ то же
   самое, что `services` (это одноуровневые соседние поля внутри записи
   `details[]`). Подтверждённые реальные позиции:

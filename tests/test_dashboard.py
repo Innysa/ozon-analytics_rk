@@ -273,10 +273,16 @@ def test_logistics_block_sums_periods_fully_contained_in_range(client, db_sessio
 
 def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, db_session, two_stores_with_users):
     """Confirmed 2026-09-10 (real item names, not guessed): a fine
-    (FinesShipmentNonRecommendedSlot) and a storage fee
-    (MarketplaceServiceItemTemporaryStorageRedistribution) both live inside
-    services.items[] — the Дашборд must pull them into their own figures
-    rather than leaving them buried in one "Прочие услуги" lump."""
+    (FinesShipmentNonRecommendedSlot) lives inside services.items[] — the
+    Дашборд must pull it into its own figure rather than leaving it
+    buried in one "Прочие услуги" lump.
+
+    MarketplaceServiceItemTemporaryStorageRedistribution was ORIGINALLY
+    matched here too (same "Storage" substring) and asserted as
+    storage_rub below — CORRECTED 2026-09-20: a real account's own Ozon
+    cabinet groups this item under «Услуги партнёров» ("Временное
+    размещение товара партнерами"), not «Хранение», so it now goes to
+    partner_services_rub instead (see _PARTNER_SERVICE_HINTS)."""
     import json
 
     from app.models.cash_flow_statement_period import CashFlowStatementPeriod
@@ -313,12 +319,13 @@ def test_logistics_block_splits_fines_and_storage_out_of_services_items(client, 
     assert resp.status_code == 200
     block = resp.json()["logistics"]
     assert block["fines_rub"] == -504
-    assert block["storage_rub"] == -1404
-    assert block["other_services_rub"] == -81971.47  # remainder: -83879.47 - (-504) - (-1404)
+    assert block["storage_rub"] == 0
+    assert block["other_services_rub"] == -81971.47  # remainder: -83879.47 - (-504) - (-1404 partner)
     # "Эквайринг" (AcquiringOperation) is pulled OUT of "others" into
     # partner_services_rub — see test_logistics_block_splits_partner_and_fbo_services.
+    # TemporaryStorageRedistribution (-1404, from services) also lands here now.
     assert block["other_deductions_rub"] == -3020.95  # -26715.76 - (-23694.81)
-    assert block["partner_services_rub"] == -23694.81
+    assert block["partner_services_rub"] == -25098.81  # -23694.81 (others) + -1404 (services)
     assert block["other_services_top_item_name"] == "MarketplaceServiceUnknownFutureItem"
     assert block["other_services_top_item_rub"] == -81971.47
 
@@ -369,6 +376,51 @@ def test_logistics_block_splits_partner_and_fbo_services(client, db_session, two
     assert block["fbo_services_rub"] == -6288
     assert block["other_services_rub"] == -100  # -25183.48 - (-18795.48) - (-6288)
     assert block["other_deductions_rub"] == -3020.95  # -48322.45 - (-45301.5)
+
+
+def test_logistics_block_excludes_duplicate_handover_item_from_other_services(client, db_session, two_stores_with_users):
+    """CONFIRMED 2026-09-20 on a real account (inspect_cash_flow_periods.py
+    --find-key HandoverPlace, every stored period): Ozon's own raw payload
+    lists the EXACT SAME item (same name, same price) twice — once inside
+    details.delivery.delivery_services.items[] (correctly rolled into
+    delivery_services_total, i.e. logistics_rub) and AGAIN inside
+    details.services.items[] — which, before this fix, fell uncategorized
+    into "Прочие услуги", double-counting the same real money in two
+    different tiles."""
+    import json
+
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    services_items = [
+        {"name": "MarketplaceServiceItemDeliveryToHandoverPlaceOzon", "price": -2350},
+        {"name": "MarketplaceServiceUnknownFutureItem", "price": -100},
+    ]
+    delivery_services_items = [
+        {"name": "MarketplaceServiceItemDeliveryToHandoverPlaceOzon", "price": -2350},
+    ]
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 8, 17), period_end=date(2026, 8, 23),
+        orders_amount=5000, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        services_total=-2450, services_items_json=json.dumps(services_items),
+        delivery_services_total=-2350, delivery_services_items_json=json.dumps(delivery_services_items),
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-08-17", "date_to": "2026-08-23"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["logistics_rub"] == -2350
+    # -2450 (services_total) - (-2350 duplicate) = -100 — NOT -2450, which
+    # would double-count the -2350 already shown in logistics_rub above.
+    assert block["other_services_rub"] == -100
 
 
 def test_logistics_block_finds_partner_service_hints_in_either_bucket(client, db_session, two_stores_with_users):
