@@ -35,6 +35,15 @@ class DailyBreakdownEntry(BaseModel):
     date: date
     orders_sum_rub: float
     orders_units: int
+    # База для правильного «СПП» по дню — см. ProductOrderDailyStatistic
+    # (app.models) и OrderDailyStatistic's own docstring для полной истории:
+    # orders_sum_rub считается от Ozon-овской «Цены до скидки» (НЕ то, от
+    # чего Ozon считает свой СПП), эти три поля — от приближения к «Вашей
+    # цене» (Product.price_rub), известного только для заказанных штук, чей
+    # SKU есть в нашей таблице Product.
+    orders_sum_seller_price_rub: float = 0.0
+    orders_sum_discounted_for_known_seller_price_rub: float = 0.0
+    orders_units_with_known_seller_price: int = 0
     buyouts_sum_rub: float
     buyouts_units: int
     ad_spend_rub: float

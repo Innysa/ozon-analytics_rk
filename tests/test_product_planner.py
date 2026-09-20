@@ -25,12 +25,18 @@ def _seed_product(db_session, store_id, *, sku="SKU-PLAN-1", name="Товар", 
     return product
 
 
-def _seed_order_stat(db_session, store_id, sku, day, *, ordered_units, ordered_sum_rub, delivered_units, delivered_sum_rub):
+def _seed_order_stat(
+    db_session, store_id, sku, day, *, ordered_units, ordered_sum_rub, delivered_units, delivered_sum_rub,
+    ordered_sum_seller_price_rub=0, ordered_sum_discounted_for_known_seller_price_rub=0, ordered_units_with_known_seller_price=0,
+):
     from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 
     db_session.add(ProductOrderDailyStatistic(
         store_id=store_id, ozon_sku=sku, date=day, delivery_schema="FBO",
         ordered_units=ordered_units, ordered_sum_rub=ordered_sum_rub, ordered_sum_discounted_rub=ordered_sum_rub,
+        ordered_sum_seller_price_rub=ordered_sum_seller_price_rub,
+        ordered_sum_discounted_for_known_seller_price_rub=ordered_sum_discounted_for_known_seller_price_rub,
+        ordered_units_with_known_seller_price=ordered_units_with_known_seller_price,
         delivered_units=delivered_units, delivered_sum_rub=delivered_sum_rub,
         cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=0,
         source="ozon_seller_api",
@@ -81,6 +87,33 @@ def test_past_month_forecast_equals_actual(client, db_session, two_stores_with_u
     assert row["margin_after_ad_pct"] == round(700 / 1600 * 100, 2)
     # КРПП = Прибыль_с_ДРР / Прибыль_до_ДРР
     assert row["krpp_pct"] == round(700 / 800 * 100, 2)
+
+
+def test_daily_breakdown_carries_seller_price_spp_base(client, db_session, two_stores_with_users):
+    """See RnpTovaryPage.tsx's «СПП (расчёт)» row (added 2026-09-20, same fix
+    as the store-level РНП page — see OrderDailyStatistic's own docstring):
+    the daily breakdown must carry ordered_sum_seller_price_rub/
+    ordered_sum_discounted_for_known_seller_price_rub/ordered_units_with_
+    known_seller_price through from ProductOrderDailyStatistic, NOT just the
+    old (wrong-base) ordered_sum_rub."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    _seed_order_stat(
+        db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1),
+        ordered_units=1, ordered_sum_rub=13000, delivered_units=1, delivered_sum_rub=3791,
+        ordered_sum_seller_price_rub=6000, ordered_sum_discounted_for_known_seller_price_rub=3791,
+        ordered_units_with_known_seller_price=1,
+    )
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    day = resp.json()["rows"][0]["daily"][0]
+    assert day["orders_sum_seller_price_rub"] == 6000
+    assert day["orders_sum_discounted_for_known_seller_price_rub"] == 3791
+    assert day["orders_units_with_known_seller_price"] == 1
 
 
 def test_future_month_has_no_forecast(client, db_session, two_stores_with_users):

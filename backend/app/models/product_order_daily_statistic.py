@@ -11,6 +11,18 @@ Deliberately does not carry cost_of_delivered_rub (Себестоимость/М
 separate concern, computed at the store level on the Дашборд from
 Product.cost_price_rub — see OrderDailyStatistic) — this table only answers
 "how much of this product sold, per day", not margin.
+
+ordered_sum_seller_price_rub / ordered_sum_discounted_for_known_seller_
+price_rub / ordered_units_with_known_seller_price — added 2026-09-20, same
+three columns and same reasoning as OrderDailyStatistic's own (see that
+model's own docstring for the full story): a correct base for a per-product,
+per-day «СПП» on «РНП Товары»'s daily breakdown table, requested by the user
+right after confirming the store-level fix on «РНП». Same join (by SKU,
+against Product.price_rub) and same known/unknown split — kept as a KNOWN/
+unknown split here too, not simplified to "the whole row is one SKU so it's
+all-or-nothing", so `aggregate_postings_by_sku_and_day` in
+app.services.order_daily_sync_service can stay a single shared code path
+with aggregate_postings_by_day rather than two subtly different ones.
 """
 from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -37,6 +49,11 @@ class ProductOrderDailyStatistic(TimestampMixin, Base):
     ordered_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     ordered_sum_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)  # по old_price (без скидки)
     ordered_sum_discounted_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)  # по price (с учётом скидки)
+
+    # См. докстринг класса — база для правильного «СПП» на «РНП Товары».
+    ordered_sum_seller_price_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    ordered_sum_discounted_for_known_seller_price_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    ordered_units_with_known_seller_price: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     delivered_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivered_sum_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)

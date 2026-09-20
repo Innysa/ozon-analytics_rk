@@ -43,6 +43,9 @@ class ProductOrderDailyStatisticOut(BaseModel):
     ordered_units: int
     ordered_sum_rub: float
     ordered_sum_discounted_rub: float
+    ordered_sum_seller_price_rub: float
+    ordered_sum_discounted_for_known_seller_price_rub: float
+    ordered_units_with_known_seller_price: int
 
     delivered_units: int
     delivered_sum_rub: float

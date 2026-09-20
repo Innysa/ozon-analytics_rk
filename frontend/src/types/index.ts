@@ -406,6 +406,9 @@ export interface ProductOrderDailyStatistic {
   ordered_units: number;
   ordered_sum_rub: number;
   ordered_sum_discounted_rub: number;
+  ordered_sum_seller_price_rub: number;
+  ordered_sum_discounted_for_known_seller_price_rub: number;
+  ordered_units_with_known_seller_price: number;
   delivered_units: number;
   delivered_sum_rub: number;
   cancelled_units: number;
@@ -767,6 +770,13 @@ export interface DailyBreakdownEntry {
   date: string;
   orders_sum_rub: number;
   orders_units: number;
+  // База для СПП по дню — см. ProductOrderDailyStatistic (Python) и
+  // RnpTovaryPage.tsx: orders_sum_rub — это Ozon-овская "Цена до скидки"
+  // (НЕ база для СПП), эти три поля — приближение к «Вашей цене», известное
+  // только для заказанных штук, чей SKU есть в нашей таблице Product.
+  orders_sum_seller_price_rub: number;
+  orders_sum_discounted_for_known_seller_price_rub: number;
+  orders_units_with_known_seller_price: number;
   buyouts_sum_rub: number;
   buyouts_units: number;
   ad_spend_rub: number;

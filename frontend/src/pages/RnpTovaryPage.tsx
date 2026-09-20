@@ -475,6 +475,31 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">СПП (расчёт)</td>
+            {row.daily.map((d) => {
+              // База «Ваша цена» (см. DailyBreakdownEntry-докстринг в
+              // frontend/src/types/index.ts) — НЕ orders_sum_rub (Цена до
+              // скидки), которая давала завышенный СПП на РНП (~75% вместо
+              // реальных ~40-53%, см. RnpPage.tsx). sppKnown отражает,
+              // покрыты ли ВСЕ заказанные штуки за день известной ценой
+              // продавца.
+              const sppKnown = d.orders_units_with_known_seller_price >= d.orders_units && d.orders_units > 0;
+              const sppPct =
+                d.orders_sum_seller_price_rub > 0
+                  ? ((d.orders_sum_seller_price_rub - d.orders_sum_discounted_for_known_seller_price_rub) / d.orders_sum_seller_price_rub) * 100
+                  : null;
+              return (
+                <td
+                  key={d.date}
+                  className="whitespace-nowrap px-2 text-center"
+                  title={sppKnown || sppPct === null ? undefined : "Текущая цена продавца известна не для всех заказанных товаров — СПП посчитан только по известным"}
+                >
+                  {sppPct === null ? "—" : `${sppKnown ? "" : "≈"}${fmtPct(sppPct)}`}
+                </td>
+              );
+            })}
+          </tr>
+          <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">

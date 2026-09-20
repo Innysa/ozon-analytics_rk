@@ -83,6 +83,9 @@ HISTORY_MONTHS_FOR_SUGGESTION = 3
 class _DailyAgg:
     orders_units: int = 0
     orders_sum_rub: float = 0.0
+    orders_sum_seller_price_rub: float = 0.0
+    orders_sum_discounted_for_known_seller_price_rub: float = 0.0
+    orders_units_with_known_seller_price: int = 0
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
     ad_spend_rub: float = 0.0
@@ -169,6 +172,9 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         day = agg.day(r.date)
         day.orders_units += r.ordered_units
         day.orders_sum_rub += float(r.ordered_sum_rub or 0)
+        day.orders_sum_seller_price_rub += float(r.ordered_sum_seller_price_rub or 0)
+        day.orders_sum_discounted_for_known_seller_price_rub += float(r.ordered_sum_discounted_for_known_seller_price_rub or 0)
+        day.orders_units_with_known_seller_price += r.ordered_units_with_known_seller_price
         day.buyouts_units += r.delivered_units
         day.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
 
@@ -224,6 +230,9 @@ def _row_for_product(
             date=d,
             orders_sum_rub=round(day.orders_sum_rub, 2),
             orders_units=day.orders_units,
+            orders_sum_seller_price_rub=round(day.orders_sum_seller_price_rub, 2),
+            orders_sum_discounted_for_known_seller_price_rub=round(day.orders_sum_discounted_for_known_seller_price_rub, 2),
+            orders_units_with_known_seller_price=day.orders_units_with_known_seller_price,
             buyouts_sum_rub=round(day.buyouts_sum_rub, 2),
             buyouts_units=day.buyouts_units,
             ad_spend_rub=round(day.ad_spend_rub, 2),
@@ -332,6 +341,9 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             total_day = total_agg.day(d)
             total_day.orders_units += day.orders_units
             total_day.orders_sum_rub += day.orders_sum_rub
+            total_day.orders_sum_seller_price_rub += day.orders_sum_seller_price_rub
+            total_day.orders_sum_discounted_for_known_seller_price_rub += day.orders_sum_discounted_for_known_seller_price_rub
+            total_day.orders_units_with_known_seller_price += day.orders_units_with_known_seller_price
             total_day.buyouts_units += day.buyouts_units
             total_day.buyouts_sum_rub += day.buyouts_sum_rub
             total_day.ad_spend_rub += day.ad_spend_rub
@@ -424,6 +436,9 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
         daily=[
             DailyBreakdownEntry(
                 date=d, orders_sum_rub=round(day.orders_sum_rub, 2), orders_units=day.orders_units,
+                orders_sum_seller_price_rub=round(day.orders_sum_seller_price_rub, 2),
+                orders_sum_discounted_for_known_seller_price_rub=round(day.orders_sum_discounted_for_known_seller_price_rub, 2),
+                orders_units_with_known_seller_price=day.orders_units_with_known_seller_price,
                 buyouts_sum_rub=round(day.buyouts_sum_rub, 2), buyouts_units=day.buyouts_units,
                 ad_spend_rub=round(day.ad_spend_rub, 2), profit_rub=None,
             )

@@ -259,6 +259,29 @@ def test_by_sku_and_day_keeps_different_skus_separate():
     assert by_sku_day[("222", date(2026, 9, 2))]["delivered_sum_rub"] == 50.0
 
 
+def test_by_sku_and_day_seller_price_known_and_unknown_skus():
+    """Same СПП-base fix as the store-level aggregate_postings_by_day (see
+    test_seller_price_known_feeds_correct_spp_base_not_old_price above), for
+    «РНП Товары»'s per-product daily breakdown table — SKU 111's price is
+    known, SKU 222's isn't, and each must be handled independently even
+    though they share the same day bucket key structure."""
+    p1 = _posting(status="delivered", in_process_at="2026-09-02T01:00:00.000000Z", sku=111, price="3791.00", old_price=13000.0, commission=-300)
+    p2 = _posting(status="delivered", in_process_at="2026-09-02T02:00:00.000000Z", sku=222, price="500.00", old_price=1000.0, commission=-50)
+
+    by_sku_day = aggregate_postings_by_sku_and_day([p1, p2], seller_price_by_sku={"111": 6000.0})
+
+    known = by_sku_day[("111", date(2026, 9, 2))]
+    assert known["ordered_sum_seller_price_rub"] == 6000.0
+    assert known["ordered_sum_discounted_for_known_seller_price_rub"] == 3791.0
+    assert known["ordered_units_with_known_seller_price"] == 1
+
+    unknown = by_sku_day[("222", date(2026, 9, 2))]
+    assert unknown["ordered_units"] == 1  # still counted everywhere else
+    assert unknown["ordered_sum_seller_price_rub"] == 0
+    assert unknown["ordered_sum_discounted_for_known_seller_price_rub"] == 0
+    assert unknown["ordered_units_with_known_seller_price"] == 0
+
+
 def test_by_sku_and_day_same_sku_multiple_postings_summed():
     p1 = _posting(status="delivered", in_process_at="2026-09-02T01:00:00.000000Z", sku=111, price="100.00", old_price=100.0, commission=-10)
     p2 = _posting(status="delivered", in_process_at="2026-09-02T20:00:00.000000Z", sku=111, price="100.00", old_price=100.0, commission=-10)

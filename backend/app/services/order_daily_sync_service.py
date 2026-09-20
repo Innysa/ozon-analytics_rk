@@ -313,19 +313,27 @@ def aggregate_postings_by_day(
 def _empty_sku_bucket() -> dict:
     return {
         "ordered_units": 0, "ordered_sum_rub": 0.0, "ordered_sum_discounted_rub": 0.0,
+        "ordered_sum_seller_price_rub": 0.0, "ordered_sum_discounted_for_known_seller_price_rub": 0.0,
+        "ordered_units_with_known_seller_price": 0,
         "delivered_units": 0, "delivered_sum_rub": 0.0,
         "cancelled_units": 0, "cancelled_sum_rub": 0.0,
         "unfinished_units": 0, "commission_rub": 0.0,
     }
 
 
-def aggregate_postings_by_sku_and_day(postings: list[OzonPostingItem]) -> dict[tuple[str, date], dict]:
+def aggregate_postings_by_sku_and_day(
+    postings: list[OzonPostingItem], *, seller_price_by_sku: dict[str, float] | None = None
+) -> dict[tuple[str, date], dict]:
     """Same aggregation as aggregate_postings_by_day, but keyed by (sku, day)
     instead of just day — the per-line sku that function discards after
     computing cost/commission. No extra Ozon call: same already-fetched
     postings, just not thrown away this time. Deliberately excludes cost
     (see ProductOrderDailyStatistic's own docstring — margin stays a
-    store-level concern)."""
+    store-level concern).
+
+    seller_price_by_sku feeds the СПП-base columns — see
+    ProductOrderDailyStatistic's own docstring."""
+    seller_price_by_sku = seller_price_by_sku or {}
     daily: dict[tuple[str, date], dict] = {}
     for posting in postings:
         day = _parse_in_process_at(posting.in_process_at)
@@ -349,6 +357,12 @@ def aggregate_postings_by_sku_and_day(postings: list[OzonPostingItem]) -> dict[t
             bucket["ordered_sum_discounted_rub"] += price * qty
             bucket["commission_rub"] += commission
 
+            seller_price = seller_price_by_sku.get(sku)
+            if seller_price is not None:
+                bucket["ordered_sum_seller_price_rub"] += seller_price * qty
+                bucket["ordered_sum_discounted_for_known_seller_price_rub"] += price * qty
+                bucket["ordered_units_with_known_seller_price"] += qty
+
             if status_bucket == "delivered":
                 bucket["delivered_units"] += qty
                 bucket["delivered_sum_rub"] += price * qty
@@ -365,6 +379,9 @@ def _apply_sku_bucket(stat: ProductOrderDailyStatistic, bucket: dict) -> None:
     stat.ordered_units = bucket["ordered_units"]
     stat.ordered_sum_rub = bucket["ordered_sum_rub"]
     stat.ordered_sum_discounted_rub = bucket["ordered_sum_discounted_rub"]
+    stat.ordered_sum_seller_price_rub = bucket["ordered_sum_seller_price_rub"]
+    stat.ordered_sum_discounted_for_known_seller_price_rub = bucket["ordered_sum_discounted_for_known_seller_price_rub"]
+    stat.ordered_units_with_known_seller_price = bucket["ordered_units_with_known_seller_price"]
     stat.delivered_units = bucket["delivered_units"]
     stat.delivered_sum_rub = bucket["delivered_sum_rub"]
     stat.cancelled_units = bucket["cancelled_units"]
@@ -587,7 +604,7 @@ def sync_order_daily_statistics(
 
         # Same already-fetched postings, additionally broken down per SKU —
         # no extra Ozon call (see aggregate_postings_by_sku_and_day).
-        by_sku_day = aggregate_postings_by_sku_and_day(postings)
+        by_sku_day = aggregate_postings_by_sku_and_day(postings, seller_price_by_sku=seller_price_by_sku)
         for (sku, day), bucket in by_sku_day.items():
             existing_sku = (
                 db.query(ProductOrderDailyStatistic)
