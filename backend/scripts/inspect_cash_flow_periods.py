@@ -230,6 +230,14 @@ def main() -> None:
             "services_items_json (Прочие услуги)": "services_items_json",
             "delivery_services_items_json (Логистика)": "delivery_services_items_json",
             "delivery_return_items_json (Возврат)": "delivery_return_items_json",
+            # ДОБАВЛЕНО 2026-09-20: _PARTNER_SERVICE_HINTS/_FBO_SERVICE_HINTS
+            # в dashboard_service.py ищут статьи и в services_items_json, И
+            # в others_items_json (см. их собственные комментарии) — этот
+            # скрипт раньше показывал только первое, из-за чего статьи вроде
+            # "Доставка до места выдачи партнёрами" (реальная сумма ~42 тыс.
+            # ₽, подтверждено 2026-09-20 сравнением с кабинетом Ozon) не
+            # попадали в этот список вообще.
+            "others_items_json (Прочие удержания)": "others_items_json",
         }
         for label, attr in field_map.items():
             names: dict[str, list[float]] = {}
