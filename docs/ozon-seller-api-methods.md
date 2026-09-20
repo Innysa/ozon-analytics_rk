@@ -184,7 +184,12 @@
 `/v2/product/info/stocks-by-warehouse/fbs`, `/v1/product/import/*`, `/v1/product/import-by-sku`,
 `/v1/product/attributes/update`, `/v1/product/update/{offer-id,discount}`,
 `/v1/product/related-sku/get`, `/v1/product/visibility/{set,info}`,
-`/v1/product/{archive,unarchive}`, `/v1/product/rating-by-sku`,
+`/v1/product/{archive,unarchive}`,
+`/v1/product/rating-by-sku` — **ПРОВЕРЕНО 2026-09-20**: это контент-рейтинг
+карточки (заполненность атрибутов/фото — `improve_attributes`,
+`fulfilled`/`cost` по порогам типа "Заполнено от 70% атрибутов"), НЕ
+«Локализация» (% локальных заказов) — не путать, несмотря на похожее
+название. См. раздел «РНП Товары» ниже про Локализацию.
 `/v1/product/quant/{list,info}`, `/v1/product/action/timer/*`,
 `/v1/product/stairway-discount/by-quantity/*`, `/v1/product/placement-zone/info`,
 `/v1/product/prices/details`, `/v2/product/pictures/*`, `/v1/product/pictures/import`,
