@@ -176,6 +176,8 @@ function MetricGroupRow({
   onEditSum,
   onEditUnits,
   onEditPct,
+  forecastPct,
+  actualPct,
 }: {
   label: string;
   metric: MetricPlanFactActual;
@@ -188,6 +190,11 @@ function MetricGroupRow({
   onEditSum?: (v: string) => void;
   onEditUnits?: (v: string) => void;
   onEditPct?: (v: string) => void;
+  // Доп. строка «X%» под Прогноз/Факт — сейчас только для «Рекламный
+  // бюджет» (ДРР % = расход / выкупы за тот же месяц), по просьбе
+  // пользователя показать не только рубли.
+  forecastPct?: number | null;
+  actualPct?: number | null;
 }) {
   return (
     <div
@@ -203,19 +210,12 @@ function MetricGroupRow({
           </div>
           <div className="text-xs text-slate-500">
             План месяц
-            <input
-              type="number"
-              value={editSumValue ?? ""}
-              onChange={(e) => onEditSum?.(e.target.value)}
-              className="mt-0.5 w-full rounded border border-slate-300 px-1.5 py-0.5 text-xs"
-              placeholder="сумма"
-            />
             {unit === "sum_and_units" && (
               <input
                 type="number"
                 value={editUnitsValue ?? ""}
                 onChange={(e) => onEditUnits?.(e.target.value)}
-                className="mt-1 w-full rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+                className="mt-0.5 w-full max-w-[90px] rounded border border-slate-300 px-1.5 py-0.5 text-xs"
                 placeholder="шт"
               />
             )}
@@ -239,11 +239,13 @@ function MetricGroupRow({
         Прогноз мес.
         <div className="font-medium text-slate-700">{fmtRub(metric.forecast_month_rub)}</div>
         {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.forecast_month_units)} шт</div>}
+        {forecastPct !== undefined && <div className="text-slate-400">{fmtPct(forecastPct ?? null)}</div>}
       </div>
       <div className="text-xs text-slate-500">
         Факт мес.
         <div className="font-medium text-slate-700">{fmtRub(metric.actual_month_rub)}</div>
         {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.actual_month_units)} шт</div>}
+        {actualPct !== undefined && <div className="text-slate-400">{fmtPct(actualPct ?? null)}</div>}
       </div>
     </div>
   );
@@ -396,6 +398,15 @@ function ProductPlannerCard({
               planMode="pct"
               editPctValue={edit.ad_budget_pct}
               onEditPct={(v) => setEdit((s) => ({ ...s, ad_budget_pct: v }))}
+              // ДРР % = расход / выкупы за тот же месяц — прогноз и факт
+              // считаются от соответствующих значений «Выкупы» (та же пара
+              // Прогноз/Факт), а не только факт, который уже был в заголовке.
+              forecastPct={
+                row.buyouts.forecast_month_rub && row.ad_budget.forecast_month_rub !== null
+                  ? (row.ad_budget.forecast_month_rub / row.buyouts.forecast_month_rub) * 100
+                  : null
+              }
+              actualPct={row.drr_pct_actual}
             />
             <MetricGroupRow label="Прибыль (с ДРР)" metric={row.profit} unit="sum_only" plannable={false} />
           </div>
