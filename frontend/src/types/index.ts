@@ -843,6 +843,14 @@ export interface OrderDailyStatistic {
   ordered_units: number;
   ordered_sum_rub: number;
   ordered_sum_discounted_rub: number;
+  // База для «СПП (расчёт)» — см. OrderDailyStatistic (Python) и
+  // RnpPage.tsx's sppPct: ordered_sum_rub использует Ozon-овскую "Цену до
+  // скидки" (подтверждённо НЕ то, от чего Ozon считает свой СПП), эти три
+  // поля — приближение к «Вашей цене» (текущая цена из каталога), известное
+  // только для строк, где SKU есть в нашей таблице Product.
+  ordered_sum_seller_price_rub: number;
+  ordered_sum_discounted_for_known_seller_price_rub: number;
+  ordered_units_with_known_seller_price: number;
   delivered_units: number;
   delivered_sum_rub: number;
   cost_of_delivered_rub: number;

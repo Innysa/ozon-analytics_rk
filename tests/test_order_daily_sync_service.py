@@ -83,6 +83,42 @@ def test_delivered_posting_without_known_cost_price_leaves_cost_at_zero():
     assert bucket["cost_of_delivered_known_units"] == 0
 
 
+def test_seller_price_known_feeds_correct_spp_base_not_old_price():
+    """CONFIRMED root cause (2026-09-20, real account) of README's "Известная
+    проблема" for «СПП (расчёт)»: old_price (Ozon's "Цена до скидки") is a
+    reference/strikethrough price, not the base Ozon's own cabinet uses for
+    its СПП% — that's "Ваша цена" (seller_price_by_sku here, sourced from
+    Product.price_rub). Real example: old_price=13000 (matched the user's
+    own "Цены и акции" export's "Цена до скидки" exactly), seller price
+    (Product.price_rub) 6000 (close to but not identical to that export's
+    "Ваша цена" 6200 — ordinary price-change drift, not a wrong field)."""
+    posting = _posting(status="delivered", in_process_at="2026-09-19T10:00:00.000000Z", sku=1, price="3791.00", old_price=13000.0, commission=-300)
+
+    daily = aggregate_postings_by_day([posting], cost_by_sku={}, seller_price_by_sku={"1": 6000.0})
+
+    bucket = daily[date(2026, 9, 19)]
+    assert bucket["ordered_sum_rub"] == 13000.0  # unchanged — still "Цена до скидки", not repurposed
+    assert bucket["ordered_sum_seller_price_rub"] == 6000.0
+    assert bucket["ordered_sum_discounted_for_known_seller_price_rub"] == 3791.0
+    assert bucket["ordered_units_with_known_seller_price"] == 1
+
+
+def test_seller_price_unknown_sku_excluded_from_seller_price_totals_not_defaulted():
+    """A SKU absent from seller_price_by_sku (never synced into our Product
+    table, or deleted) must NOT silently default to 0 or to price/old_price
+    — that would corrupt the ratio. It's simply excluded, same "known vs
+    unknown" split as cost_of_delivered_known_units."""
+    posting = _posting(status="delivered", in_process_at="2026-09-19T10:00:00.000000Z", sku=999, price="500.00", old_price=1000.0, commission=-50)
+
+    daily = aggregate_postings_by_day([posting], cost_by_sku={}, seller_price_by_sku={})
+
+    bucket = daily[date(2026, 9, 19)]
+    assert bucket["ordered_units"] == 1  # still counted everywhere else
+    assert bucket["ordered_sum_seller_price_rub"] == 0
+    assert bucket["ordered_sum_discounted_for_known_seller_price_rub"] == 0
+    assert bucket["ordered_units_with_known_seller_price"] == 0
+
+
 def test_cancelled_posting_goes_to_cancelled_bucket_not_delivered():
     posting = _posting(status="cancelled", in_process_at="2026-09-03T10:00:00.000000Z", sku=1, price="500.00", old_price=500.0, commission=0)
 

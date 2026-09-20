@@ -59,6 +59,9 @@ interface DayRow {
   orderedUnits: number;
   orderedSumRub: number;
   orderedSumDiscountedRub: number;
+  orderedSumSellerPriceRub: number;
+  orderedSumDiscountedForKnownSellerPriceRub: number;
+  orderedUnitsWithKnownSellerPrice: number;
   deliveredUnits: number;
   deliveredSumRub: number;
   costOfDeliveredRub: number;
@@ -73,6 +76,7 @@ interface DayRow {
 function emptyDay(date: string): DayRow {
   return {
     date, orderedUnits: 0, orderedSumRub: 0, orderedSumDiscountedRub: 0,
+    orderedSumSellerPriceRub: 0, orderedSumDiscountedForKnownSellerPriceRub: 0, orderedUnitsWithKnownSellerPrice: 0,
     deliveredUnits: 0, deliveredSumRub: 0, costOfDeliveredRub: 0, costOfDeliveredKnownUnits: 0,
     cancelledUnits: 0, cancelledSumRub: 0, unfinishedUnits: 0, commissionRub: 0, adSpendRub: 0,
   };
@@ -85,6 +89,9 @@ function combineByDate(orderRows: OrderDailyStatistic[], adRows: AdvertisingDail
     acc.orderedUnits += r.ordered_units;
     acc.orderedSumRub += r.ordered_sum_rub;
     acc.orderedSumDiscountedRub += r.ordered_sum_discounted_rub;
+    acc.orderedSumSellerPriceRub += r.ordered_sum_seller_price_rub;
+    acc.orderedSumDiscountedForKnownSellerPriceRub += r.ordered_sum_discounted_for_known_seller_price_rub;
+    acc.orderedUnitsWithKnownSellerPrice += r.ordered_units_with_known_seller_price;
     acc.deliveredUnits += r.delivered_units;
     acc.deliveredSumRub += r.delivered_sum_rub;
     acc.costOfDeliveredRub += r.cost_of_delivered_rub;
@@ -109,6 +116,9 @@ function sumRows(rows: DayRow[]): DayRow {
     total.orderedUnits += r.orderedUnits;
     total.orderedSumRub += r.orderedSumRub;
     total.orderedSumDiscountedRub += r.orderedSumDiscountedRub;
+    total.orderedSumSellerPriceRub += r.orderedSumSellerPriceRub;
+    total.orderedSumDiscountedForKnownSellerPriceRub += r.orderedSumDiscountedForKnownSellerPriceRub;
+    total.orderedUnitsWithKnownSellerPrice += r.orderedUnitsWithKnownSellerPrice;
     total.deliveredUnits += r.deliveredUnits;
     total.deliveredSumRub += r.deliveredSumRub;
     total.costOfDeliveredRub += r.costOfDeliveredRub;
@@ -124,7 +134,18 @@ function sumRows(rows: DayRow[]): DayRow {
 
 function RowCells({ row }: { row: DayRow }) {
   const totalUnits = row.orderedUnits;
-  const sppPct = row.orderedSumRub > 0 ? ((row.orderedSumRub - row.orderedSumDiscountedRub) / row.orderedSumRub) * 100 : null;
+  // База «Ваша цена» (см. OrderDailyStatistic.ordered_sum_seller_price_rub
+  // и RnpPage.tsx-докстринг типа OrderDailyStatistic во frontend/src/types)
+  // — НЕ старая "Цена до скидки" (ordered_sum_rub), которая давала ~75%
+  // вместо реального СПП ~40-53% на реальном аккаунте пользователя.
+  // sppKnown отражает, покрыты ли ВСЕ заказанные штуки известной ценой
+  // продавца — если нет, показываем "≈" вместо точного знака равенства,
+  // тем же принципом, что costKnown ниже для себестоимости.
+  const sppKnown = row.orderedUnitsWithKnownSellerPrice >= totalUnits && totalUnits > 0;
+  const sppPct =
+    row.orderedSumSellerPriceRub > 0
+      ? ((row.orderedSumSellerPriceRub - row.orderedSumDiscountedForKnownSellerPriceRub) / row.orderedSumSellerPriceRub) * 100
+      : null;
   const avgCheckBefore = totalUnits > 0 ? row.orderedSumRub / totalUnits : null;
   const avgCheckAfter = totalUnits > 0 ? row.orderedSumDiscountedRub / totalUnits : null;
   const buyoutPct = totalUnits > 0 ? (row.deliveredUnits / totalUnits) * 100 : null;
@@ -139,7 +160,9 @@ function RowCells({ row }: { row: DayRow }) {
       <td>{row.orderedUnits.toLocaleString("ru-RU")}</td>
       <td>{fmtRub(row.orderedSumRub)}</td>
       <td>{fmtRub(row.orderedSumDiscountedRub)}</td>
-      <td>{fmtPct(sppPct)}</td>
+      <td title={sppKnown || sppPct === null ? undefined : "Текущая цена продавца известна не для всех заказанных товаров — СПП посчитан только по известным"}>
+        {sppPct === null ? "—" : `${sppKnown ? "" : "≈"}${fmtPct(sppPct)}`}
+      </td>
       <td>{avgCheckBefore !== null ? fmtRub(avgCheckBefore) : "—"}</td>
       <td>{avgCheckAfter !== null ? fmtRub(avgCheckAfter) : "—"}</td>
       <td>

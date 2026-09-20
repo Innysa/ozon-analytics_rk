@@ -245,6 +245,8 @@ def _count_missing_commission_units(postings: list[OzonPostingItem]) -> int:
 def _empty_bucket() -> dict:
     return {
         "ordered_units": 0, "ordered_sum_rub": 0.0, "ordered_sum_discounted_rub": 0.0,
+        "ordered_sum_seller_price_rub": 0.0, "ordered_sum_discounted_for_known_seller_price_rub": 0.0,
+        "ordered_units_with_known_seller_price": 0,
         "delivered_units": 0, "delivered_sum_rub": 0.0,
         "cost_of_delivered_rub": 0.0, "cost_of_delivered_known_units": 0,
         "cancelled_units": 0, "cancelled_sum_rub": 0.0,
@@ -252,9 +254,18 @@ def _empty_bucket() -> dict:
     }
 
 
-def aggregate_postings_by_day(postings: list[OzonPostingItem], *, cost_by_sku: dict[str, float]) -> dict[date, dict]:
+def aggregate_postings_by_day(
+    postings: list[OzonPostingItem], *, cost_by_sku: dict[str, float], seller_price_by_sku: dict[str, float] | None = None
+) -> dict[date, dict]:
     """Pure aggregation over already-fetched postings — kept separate from
-    the HTTP fetch loop so it's testable without a fake client."""
+    the HTTP fetch loop so it's testable without a fake client.
+
+    seller_price_by_sku feeds ordered_sum_seller_price_rub/ordered_sum_
+    discounted_for_known_seller_price_rub/ordered_units_with_known_seller_
+    price — see OrderDailyStatistic's own docstring for why this exists
+    (a correct «СПП (расчёт)» base) and why it's a KNOWN/unknown split
+    rather than defaulting missing SKUs to 0 or to `price`/`old_price`."""
+    seller_price_by_sku = seller_price_by_sku or {}
     daily: dict[date, dict] = {}
     for posting in postings:
         day = _parse_in_process_at(posting.in_process_at)
@@ -276,6 +287,12 @@ def aggregate_postings_by_day(postings: list[OzonPostingItem], *, cost_by_sku: d
             bucket["ordered_sum_rub"] += old_price * qty
             bucket["ordered_sum_discounted_rub"] += price * qty
             bucket["commission_rub"] += commission
+
+            seller_price = seller_price_by_sku.get(str(product.sku)) if product.sku is not None else None
+            if seller_price is not None:
+                bucket["ordered_sum_seller_price_rub"] += seller_price * qty
+                bucket["ordered_sum_discounted_for_known_seller_price_rub"] += price * qty
+                bucket["ordered_units_with_known_seller_price"] += qty
 
             if status_bucket == "delivered":
                 bucket["delivered_units"] += qty
@@ -360,6 +377,9 @@ def _apply_bucket(stat: OrderDailyStatistic, bucket: dict) -> None:
     stat.ordered_units = bucket["ordered_units"]
     stat.ordered_sum_rub = bucket["ordered_sum_rub"]
     stat.ordered_sum_discounted_rub = bucket["ordered_sum_discounted_rub"]
+    stat.ordered_sum_seller_price_rub = bucket["ordered_sum_seller_price_rub"]
+    stat.ordered_sum_discounted_for_known_seller_price_rub = bucket["ordered_sum_discounted_for_known_seller_price_rub"]
+    stat.ordered_units_with_known_seller_price = bucket["ordered_units_with_known_seller_price"]
     stat.delivered_units = bucket["delivered_units"]
     stat.delivered_sum_rub = bucket["delivered_sum_rub"]
     stat.cost_of_delivered_rub = bucket["cost_of_delivered_rub"]
@@ -491,6 +511,17 @@ def sync_order_daily_statistics(
         .filter(Product.store_id == store_id, Product.cost_price_rub.isnot(None))
         .all()
     }
+    # For ordered_sum_seller_price_rub (see OrderDailyStatistic's own
+    # docstring) — a CURRENT catalog-price snapshot, not the seller's price
+    # on each order's own historical date (Ozon exposes no such per-order
+    # field), but a confirmed close approximation and a real improvement
+    # over the old, confirmed-wrong "Цена до скидки" base.
+    seller_price_by_sku = {
+        sku: float(price)
+        for sku, price in db.query(Product.ozon_sku, Product.price_rub)
+        .filter(Product.store_id == store_id, Product.price_rub.isnot(None))
+        .all()
+    }
 
     # Shared across BOTH schemas (FBO, FBS) and every chunk in this run —
     # see ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS's own comment. Starts at the
@@ -532,7 +563,7 @@ def sync_order_daily_statistics(
         outcome.fetched_by_schema[schema_label] = outcome.fetched_by_schema.get(schema_label, 0) + len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)
         outcome.commission_missing_units += _count_missing_commission_units(postings)
-        daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku)
+        daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku, seller_price_by_sku=seller_price_by_sku)
 
         for day, bucket in daily.items():
             existing = (

@@ -38,6 +38,45 @@ a cost price set at sync time, so the UI can tell "0 ₽ себестоимос�
 (genuinely free) apart from "себестоимость ещё не введена для этих
 товаров" (unknown) — comparing it to delivered_units is how the UI decides
 which case applies.
+
+ordered_sum_seller_price_rub / ordered_sum_discounted_for_known_seller_
+price_rub / ordered_units_with_known_seller_price — added 2026-09-20 to fix
+README's "Известная проблема" for «СПП (расчёт)»: that column used to be
+computed on the frontend from ordered_sum_rub (= sum of `old_price`, i.e.
+Ozon's own "Цена до скидки" — an inflated reference/strikethrough price),
+which CONFIRMED on a real account (two real SKUs, exact match: our stored
+old_price_rub == the account's own "Цены и акции" export's "Цена до
+скидки" column, 13000==13000 and 7000==7000) is NOT the base Ozon's own
+cabinet uses for its "СПП" percentage — that base is "Ваша цена" (the
+seller's own current price), which the SAME export showed running ~40-48%
+discount for actually-selling SKUs vs the ~65-79% our old formula produced
+using "Цена до скидки" as the base — matching the user's own complaint
+(cabinet showed 40-53%, we showed ~75%).
+
+"Ваша цена" isn't present in ANY posting/order field at all (postings only
+carry `price`/`old_price` = the sale price and the inflated reference) —
+the closest available approximation is Product.price_rub, populated from
+the SEPARATE catalog sync (/v3/product/info/list's own `price` field).
+CONFIRMED close but not exact against the same real export (within ~3.2-
+3.4% on two real SKUs, e.g. our price_rub=6000 vs the export's "Ваша
+цена"=6200) — plausibly ordinary price-change drift between the export's
+timestamp and the catalog's last sync, not a wrong field. Still a real
+improvement over the confirmed-wrong "Цена до скидки" basis, not a
+guess dressed up as one.
+
+Because Product.price_rub is a CURRENT snapshot (not the seller's price on
+the historical order's own date), and not every ordered SKU is guaranteed
+to still exist in our Product table (deleted/never-synced offer), each
+order line's seller price is looked up at sync time and MAY be missing —
+exactly the same "known vs unknown" split as cost_of_delivered_known_units
+above, not silently treated as 0: ordered_sum_seller_price_rub and
+ordered_sum_discounted_for_known_seller_price_rub are summed ONLY over
+lines where a price was found (so the ratio between them stays internally
+consistent — never mixing a "known-price" numerator against an "all-units"
+denominator or vice versa), and ordered_units_with_known_seller_price
+tracks how many units that covers, so the UI can flag when it's less than
+ordered_units instead of silently presenting a partial-coverage percentage
+as if it covered every order.
 """
 from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,6 +99,12 @@ class OrderDailyStatistic(TimestampMixin, Base):
     ordered_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     ordered_sum_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)  # по old_price (без скидки)
     ordered_sum_discounted_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)  # по price (с учётом скидки)
+
+    # См. докстринг класса — база для правильного «СПП (расчёт)», ПОДМНОЖЕСТВО
+    # ordered_units/ordered_sum_discounted_rub (только строки с известной ценой продавца).
+    ordered_sum_seller_price_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    ordered_sum_discounted_for_known_seller_price_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    ordered_units_with_known_seller_price: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     delivered_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivered_sum_rub: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
