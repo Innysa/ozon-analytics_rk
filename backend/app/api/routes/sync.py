@@ -14,6 +14,7 @@ from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.membership import StoreRole
 from app.models.ozon_credentials import OzonCredentials
 from app.models.product import Product
+from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
 from app.models.review import Review, ReviewSource, ReviewStatus
 from app.models.store_rating_summary import StoreRatingSummary
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
@@ -237,6 +238,20 @@ def sync_ozon_products(
         p.ozon_product_id: p for p in all_existing_products if p.ozon_product_id is not None
     }
 
+    # See ProductPriceDailySnapshot's own docstring — a daily history of
+    # price_rub/old_price_rub/fbo_stock/fbs_stock captured on every catalog
+    # sync, so «СПП (расчёт)» can use a SKU's price on its OWN historical
+    # day instead of always today's snapshot. Preloaded once (not queried
+    # per product inside _upsert) — a sync can touch thousands of products.
+    price_snapshot_date = datetime.now(timezone.utc).date()
+    existing_snapshots_today = {
+        s.ozon_sku: s
+        for s in db.query(ProductPriceDailySnapshot).filter(
+            ProductPriceDailySnapshot.store_id == ctx.store_id,
+            ProductPriceDailySnapshot.date == price_snapshot_date,
+        ).all()
+    }
+
     fetched = created = updated = 0
     skipped_invalid_sku: list[str] = []
     error_message = None
@@ -317,6 +332,17 @@ def sync_ozon_products(
                     created += 1
                 existing_by_product_id[item.id] = product
                 existing_by_sku[sku] = product
+
+                snapshot = existing_snapshots_today.get(sku)
+                if snapshot is None:
+                    snapshot = ProductPriceDailySnapshot(store_id=ctx.store_id, ozon_sku=sku, date=price_snapshot_date)
+                    db.add(snapshot)
+                    existing_snapshots_today[sku] = snapshot
+                snapshot.price_rub = price
+                snapshot.old_price_rub = old_price
+                snapshot.fbo_stock = fbo_stock
+                snapshot.fbs_stock = fbs_stock
+                snapshot.source = "ozon_seller_api"
 
             # Confirmed on a real account: /v3/product/info/list queried by
             # product_id can hand back sku=0 ("no SKU assigned yet") for a

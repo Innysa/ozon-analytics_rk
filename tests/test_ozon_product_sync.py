@@ -207,6 +207,63 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
     assert len(products_resp2.json()) == 1
 
 
+def test_sync_ozon_products_captures_daily_price_snapshot(client, two_stores_with_users, monkeypatch, db_session):
+    """ADDED 2026-09-22 — see ProductPriceDailySnapshot's own docstring: each
+    catalog sync must also record today's price/stock as a dated row, not
+    just overwrite Product's own single current snapshot. Two syncs on the
+    SAME day must upsert (one row for today), not duplicate — matches the
+    unique constraint (store_id, ozon_sku, date)."""
+    from datetime import datetime, timezone
+
+    from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
+
+    d = two_stores_with_users
+    login(client, "admin@example.com", "adminpass123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.side_effect = lambda *, last_id="": (empty_response if last_id else list_response)
+        fake.get_products_info.return_value = info_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+
+    today = datetime.now(timezone.utc).date()
+    snapshots = (
+        db_session.query(ProductPriceDailySnapshot)
+        .filter(ProductPriceDailySnapshot.store_id == d["store_a"].id, ProductPriceDailySnapshot.date == today)
+        .all()
+    )
+    assert len(snapshots) == 1
+    snap = snapshots[0]
+    assert snap.ozon_sku == "4936624632"
+    assert float(snap.price_rub) == 20.0
+    assert float(snap.old_price_rub) == 100.0
+    assert snap.fbs_stock == 0
+    assert snap.fbo_stock == 0
+
+    # Second sync, same day — must upsert the SAME row, not add a second one.
+    resp2 = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp2.status_code == 200
+    snapshots2 = (
+        db_session.query(ProductPriceDailySnapshot)
+        .filter(ProductPriceDailySnapshot.store_id == d["store_a"].id, ProductPriceDailySnapshot.date == today)
+        .all()
+    )
+    assert len(snapshots2) == 1
+
+
 def test_stale_sku_zero_row_is_corrected_in_place_not_duplicated(client, two_stores_with_users, monkeypatch, db_session):
     """Regression test: a product row stuck at ozon_sku="0" (Ozon's own "no
     SKU assigned yet" sentinel — see the skip in sync_ozon_products) used to

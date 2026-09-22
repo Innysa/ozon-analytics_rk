@@ -28,6 +28,7 @@ from app.models.realization_report_month import RealizationReportMonth
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
 from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
+from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
 
 __all__ = [
     "User",
@@ -60,4 +61,5 @@ __all__ = [
     "AccrualDailyStatistic",
     "AccrualReportDailyStatistic",
     "ProductAccrualReportDailyStatistic",
+    "ProductPriceDailySnapshot",
 ]

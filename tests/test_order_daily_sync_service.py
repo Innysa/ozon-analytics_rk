@@ -119,6 +119,54 @@ def test_seller_price_unknown_sku_excluded_from_seller_price_totals_not_defaulte
     assert bucket["ordered_units_with_known_seller_price"] == 0
 
 
+def test_day_aware_seller_price_preferred_over_flat_snapshot():
+    """ADDED 2026-09-22 (see ProductPriceDailySnapshot's own docstring):
+    seller_price_by_sku_and_date — the real price on THIS order's own day —
+    must win over the flat (today's-snapshot) seller_price_by_sku when both
+    are available for the same (sku, day), since the whole point is that
+    Ozon's own seller price genuinely differs day to day."""
+    posting = _posting(status="delivered", in_process_at="2026-09-01T10:00:00.000000Z", sku=1, price="1500.00", old_price=3000.0, commission=-100)
+
+    daily = aggregate_postings_by_day(
+        [posting], cost_by_sku={},
+        seller_price_by_sku={"1": 6000.0},  # today's snapshot — must be ignored, a day-specific value exists
+        seller_price_by_sku_and_date={("1", date(2026, 9, 1)): 2400.0},
+    )
+
+    bucket = daily[date(2026, 9, 1)]
+    assert bucket["ordered_sum_seller_price_rub"] == 2400.0
+
+
+def test_day_aware_seller_price_falls_back_to_flat_snapshot_for_uncovered_day():
+    """A day the history doesn't cover yet (e.g. before daily snapshotting
+    started) still gets the OLD flat-snapshot approximation, not "unknown"
+    — the day-aware map only IMPROVES accuracy where it has data, never
+    regresses coverage relative to the pre-existing behavior."""
+    posting = _posting(status="delivered", in_process_at="2026-08-01T10:00:00.000000Z", sku=1, price="1500.00", old_price=3000.0, commission=-100)
+
+    daily = aggregate_postings_by_day(
+        [posting], cost_by_sku={},
+        seller_price_by_sku={"1": 6000.0},
+        seller_price_by_sku_and_date={("1", date(2026, 9, 1)): 2400.0},  # a different day only
+    )
+
+    bucket = daily[date(2026, 8, 1)]
+    assert bucket["ordered_sum_seller_price_rub"] == 6000.0
+
+
+def test_by_sku_and_day_prefers_day_aware_seller_price_too():
+    posting = _posting(status="delivered", in_process_at="2026-09-01T10:00:00.000000Z", sku=1, price="1500.00", old_price=3000.0, commission=-100)
+
+    by_sku_day = aggregate_postings_by_sku_and_day(
+        [posting],
+        seller_price_by_sku={"1": 6000.0},
+        seller_price_by_sku_and_date={("1", date(2026, 9, 1)): 2400.0},
+    )
+
+    bucket = by_sku_day[("1", date(2026, 9, 1))]
+    assert bucket["ordered_sum_seller_price_rub"] == 2400.0
+
+
 def test_cancelled_posting_goes_to_cancelled_bucket_not_delivered():
     posting = _posting(status="cancelled", in_process_at="2026-09-03T10:00:00.000000Z", sku=1, price="500.00", old_price=500.0, commission=0)
 
@@ -521,3 +569,52 @@ def test_sync_pause_doubles_on_rate_limit_and_caps_at_max(db_session, monkeypatc
     # FBO: 1 -> 2 -> 4 (capped, 4*2=8 > max=4). FBS then inherits the
     # already-elevated 4s pause for its own 3 (successful) chunks.
     assert sleep_calls == [2.0, 4.0, 4.0, 4.0, 4.0, 4.0]
+
+
+def test_full_sync_prefers_price_snapshot_of_the_orders_own_day(db_session, monkeypatch):
+    """End-to-end regression test for the 2026-09-22 fix (see
+    ProductPriceDailySnapshot's own docstring): a store with a HISTORICAL
+    price snapshot that differs from Product's CURRENT price_rub must get
+    the historical value in ordered_sum_seller_price_rub for an order
+    placed on that historical day — not today's (wrong, drifted) price."""
+    import app.services.order_daily_sync_service as svc
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product import Product
+    from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
+    from app.models.store import Store
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+    db_session.add(Product(store_id=store.id, ozon_sku="1", name="Товар", price_rub=6000.0))
+    db_session.add(ProductPriceDailySnapshot(store_id=store.id, ozon_sku="1", date=date(2026, 9, 1), price_rub=2400.0))
+    db_session.commit()
+
+    historical_posting = _posting(
+        status="delivered", in_process_at="2026-09-01T10:00:00.000000Z", sku=1, price="1500.00", old_price=3000.0, commission=-100,
+    )
+
+    class _FakeClient:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            if offset == 0:
+                return OzonPostingListResponse(result=OzonPostingListResult(postings=[historical_posting], has_next=False))
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+        def list_fbs_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+    svc.sync_order_daily_statistics(
+        db_session, store_id=store.id, client=_FakeClient(),
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 1),
+    )
+    db_session.commit()
+
+    stat = (
+        db_session.query(OrderDailyStatistic)
+        .filter(OrderDailyStatistic.store_id == store.id, OrderDailyStatistic.date == date(2026, 9, 1))
+        .first()
+    )
+    assert stat is not None
+    # 2400 (that day's real snapshot), NOT 6000 (Product's current price_rub).
+    assert float(stat.ordered_sum_seller_price_rub) == 2400.0

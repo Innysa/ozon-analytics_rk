@@ -83,6 +83,7 @@ from app.core.config import get_settings
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
+from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
 from app.models.sync_run import SyncRun, SyncSourceType, SyncStatus
 from app.services.ozon.exceptions import OzonAPIError, OzonRateLimited
 from app.services.ozon.schemas import OzonPostingItem
@@ -255,7 +256,9 @@ def _empty_bucket() -> dict:
 
 
 def aggregate_postings_by_day(
-    postings: list[OzonPostingItem], *, cost_by_sku: dict[str, float], seller_price_by_sku: dict[str, float] | None = None
+    postings: list[OzonPostingItem], *, cost_by_sku: dict[str, float],
+    seller_price_by_sku: dict[str, float] | None = None,
+    seller_price_by_sku_and_date: dict[tuple[str, date], float] | None = None,
 ) -> dict[date, dict]:
     """Pure aggregation over already-fetched postings — kept separate from
     the HTTP fetch loop so it's testable without a fake client.
@@ -264,8 +267,20 @@ def aggregate_postings_by_day(
     discounted_for_known_seller_price_rub/ordered_units_with_known_seller_
     price — see OrderDailyStatistic's own docstring for why this exists
     (a correct «СПП (расчёт)» base) and why it's a KNOWN/unknown split
-    rather than defaulting missing SKUs to 0 or to `price`/`old_price`."""
+    rather than defaulting missing SKUs to 0 or to `price`/`old_price`.
+
+    seller_price_by_sku_and_date (ADDED 2026-09-22 — see
+    ProductPriceDailySnapshot's own docstring for the full story: Ozon's
+    own seller price for a SKU genuinely moves day to day — algorithmic
+    "эластичный бустинг" pricing — so using today's price for every
+    historical day was quietly understating СПП accuracy the further back
+    an order was) is checked FIRST, per (sku, this posting's own day) —
+    falls back to the flat seller_price_by_sku (today's snapshot) only for
+    a (sku, day) this history doesn't cover yet (e.g. before daily
+    snapshotting started, or a gap in syncing), never silently drops to
+    "unknown" just because the day-aware map exists at all."""
     seller_price_by_sku = seller_price_by_sku or {}
+    seller_price_by_sku_and_date = seller_price_by_sku_and_date or {}
     daily: dict[date, dict] = {}
     for posting in postings:
         day = _parse_in_process_at(posting.in_process_at)
@@ -288,7 +303,10 @@ def aggregate_postings_by_day(
             bucket["ordered_sum_discounted_rub"] += price * qty
             bucket["commission_rub"] += commission
 
-            seller_price = seller_price_by_sku.get(str(product.sku)) if product.sku is not None else None
+            sku_str = str(product.sku) if product.sku is not None else None
+            seller_price = seller_price_by_sku_and_date.get((sku_str, day)) if sku_str is not None else None
+            if seller_price is None and sku_str is not None:
+                seller_price = seller_price_by_sku.get(sku_str)
             if seller_price is not None:
                 bucket["ordered_sum_seller_price_rub"] += seller_price * qty
                 bucket["ordered_sum_discounted_for_known_seller_price_rub"] += price * qty
@@ -322,7 +340,8 @@ def _empty_sku_bucket() -> dict:
 
 
 def aggregate_postings_by_sku_and_day(
-    postings: list[OzonPostingItem], *, seller_price_by_sku: dict[str, float] | None = None
+    postings: list[OzonPostingItem], *, seller_price_by_sku: dict[str, float] | None = None,
+    seller_price_by_sku_and_date: dict[tuple[str, date], float] | None = None,
 ) -> dict[tuple[str, date], dict]:
     """Same aggregation as aggregate_postings_by_day, but keyed by (sku, day)
     instead of just day — the per-line sku that function discards after
@@ -332,8 +351,11 @@ def aggregate_postings_by_sku_and_day(
     store-level concern).
 
     seller_price_by_sku feeds the СПП-base columns — see
-    ProductOrderDailyStatistic's own docstring."""
+    ProductOrderDailyStatistic's own docstring. seller_price_by_sku_and_date
+    is checked first, same per-day preference as aggregate_postings_by_day's
+    own — see that function's own docstring for the full reasoning."""
     seller_price_by_sku = seller_price_by_sku or {}
+    seller_price_by_sku_and_date = seller_price_by_sku_and_date or {}
     daily: dict[tuple[str, date], dict] = {}
     for posting in postings:
         day = _parse_in_process_at(posting.in_process_at)
@@ -357,7 +379,9 @@ def aggregate_postings_by_sku_and_day(
             bucket["ordered_sum_discounted_rub"] += price * qty
             bucket["commission_rub"] += commission
 
-            seller_price = seller_price_by_sku.get(sku)
+            seller_price = seller_price_by_sku_and_date.get((sku, day))
+            if seller_price is None:
+                seller_price = seller_price_by_sku.get(sku)
             if seller_price is not None:
                 bucket["ordered_sum_seller_price_rub"] += seller_price * qty
                 bucket["ordered_sum_discounted_for_known_seller_price_rub"] += price * qty
@@ -529,14 +553,30 @@ def sync_order_daily_statistics(
         .all()
     }
     # For ordered_sum_seller_price_rub (see OrderDailyStatistic's own
-    # docstring) — a CURRENT catalog-price snapshot, not the seller's price
-    # on each order's own historical date (Ozon exposes no such per-order
-    # field), but a confirmed close approximation and a real improvement
-    # over the old, confirmed-wrong "Цена до скидки" base.
+    # docstring) — a CURRENT catalog-price snapshot, kept as the FALLBACK
+    # for any (sku, day) not covered by seller_price_by_sku_and_date below
+    # (e.g. a day before daily snapshotting started, or a gap in syncing).
     seller_price_by_sku = {
         sku: float(price)
         for sku, price in db.query(Product.ozon_sku, Product.price_rub)
         .filter(Product.store_id == store_id, Product.price_rub.isnot(None))
+        .all()
+    }
+    # PREFERRED source, checked first — see ProductPriceDailySnapshot's own
+    # docstring: a SKU's real seller price moves day to day (Ozon's own
+    # algorithmic pricing), so this gives each order's own historical day
+    # its OWN price instead of always today's snapshot above.
+    seller_price_by_sku_and_date = {
+        (sku, snap_date): float(price)
+        for sku, snap_date, price in db.query(
+            ProductPriceDailySnapshot.ozon_sku, ProductPriceDailySnapshot.date, ProductPriceDailySnapshot.price_rub,
+        )
+        .filter(
+            ProductPriceDailySnapshot.store_id == store_id,
+            ProductPriceDailySnapshot.price_rub.isnot(None),
+            ProductPriceDailySnapshot.date >= resolved_date_from,
+            ProductPriceDailySnapshot.date <= resolved_date_to,
+        )
         .all()
     }
 
@@ -580,7 +620,10 @@ def sync_order_daily_statistics(
         outcome.fetched_by_schema[schema_label] = outcome.fetched_by_schema.get(schema_label, 0) + len(postings)
         outcome.skipped_no_process_date += sum(1 for p in postings if _parse_in_process_at(p.in_process_at) is None)
         outcome.commission_missing_units += _count_missing_commission_units(postings)
-        daily = aggregate_postings_by_day(postings, cost_by_sku=cost_by_sku, seller_price_by_sku=seller_price_by_sku)
+        daily = aggregate_postings_by_day(
+            postings, cost_by_sku=cost_by_sku, seller_price_by_sku=seller_price_by_sku,
+            seller_price_by_sku_and_date=seller_price_by_sku_and_date,
+        )
 
         for day, bucket in daily.items():
             existing = (
@@ -604,7 +647,10 @@ def sync_order_daily_statistics(
 
         # Same already-fetched postings, additionally broken down per SKU —
         # no extra Ozon call (see aggregate_postings_by_sku_and_day).
-        by_sku_day = aggregate_postings_by_sku_and_day(postings, seller_price_by_sku=seller_price_by_sku)
+        by_sku_day = aggregate_postings_by_sku_and_day(
+            postings, seller_price_by_sku=seller_price_by_sku,
+            seller_price_by_sku_and_date=seller_price_by_sku_and_date,
+        )
         for (sku, day), bucket in by_sku_day.items():
             existing_sku = (
                 db.query(ProductOrderDailyStatistic)
