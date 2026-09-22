@@ -593,22 +593,6 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Показы</td>
-            {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2 text-center">
-                {fmtNum(d.ad_impressions)}
-              </td>
-            ))}
-          </tr>
-          <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Клики</td>
-            {row.daily.map((d) => (
-              <td key={d.date} className="whitespace-nowrap px-2 text-center">
-                {fmtNum(d.ad_clicks)}
-              </td>
-            ))}
-          </tr>
-          <tr className="border-b border-slate-100">
             <td className="py-1 pr-3 font-medium text-slate-600">CTR</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
