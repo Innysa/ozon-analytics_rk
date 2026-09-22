@@ -927,22 +927,19 @@ def compute_dashboard(
         other_services_sum = _group_total("Другие услуги и штрафы")
         storage_sum = _group_total("Хранение")
 
-        other_deductions_sum, other_deductions_is_estimated = _cash_flow_other_deductions(
+        other_deductions_sum, _other_deductions_is_estimated = _cash_flow_other_deductions(
             db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
         )
 
         days_total = (resolved_date_to - resolved_date_from).days + 1
         days_covered = _accrual_report_days_covered(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
-        coverage_note = (
-            f"Точно, по вашему отчёту «Начисления» — покрыты все {days_total} дн. выбранного периода"
-            if days_covered >= days_total
-            else (
-                f"Точно, по вашему отчёту «Начисления» — покрыты {days_covered} из {days_total} дн. выбранного периода "
-                "(за остальные дни отчёт не загружен, суммы ниже неполные для всего периода)"
-            )
-        )
-        if other_deductions_is_estimated:
-            coverage_note += "; «Прочие удержания» — по-прежнему оценка из отчёта ДДС (см. подсказку ниже)"
+        # Short by design — full explanation moved to the amber partial-
+        # coverage banner (frontend, shown only when covered < total) and
+        # to a hover tooltip on "Прочие удержания" (always ДДС-estimated on
+        # this path — see _cash_flow_other_deductions's own docstring),
+        # rather than a standing paragraph. CONFIRMED 2026-09-22: the user
+        # found the earlier long text "не читабельно" / "некрасиво".
+        coverage_note = f"Покрыты {days_covered} из {days_total} дн."
 
         logistics = LogisticsBlock(
             has_data=True,
@@ -1030,12 +1027,10 @@ def compute_dashboard(
                 other_services_top_item_rub=round(top_item[1], 2) if top_item else None,
                 periods_summed=len(periods_in_range),
                 is_estimated=is_estimated,
-                period_note=(
-                    f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end} "
-                    f"({len(periods_in_range)} период{'' if len(periods_in_range) == 1 else 'а' if len(periods_in_range) < 5 else 'ов'} Ozon"
-                    + (", часть периодов не совпадает с диапазоном — суммы оценочные (пропорционально дням)" if is_estimated else "")
-                    + ")"
-                ),
+                # Short by design (see accrual_report path's own comment above
+                # for why) — full period-boundary detail dropped from here;
+                # is_estimated already conveyed via the frontend's "≈ Оценка" badge.
+                period_note=f"{periods_in_range[0].period_begin} — {periods_in_range[-1].period_end}",
             )
         else:
             # Store has synced periods, but none even OVERLAP this specific

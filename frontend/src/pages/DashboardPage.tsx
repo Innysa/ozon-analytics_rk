@@ -381,32 +381,31 @@ export function DashboardPage() {
             }
           >
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-slate-400">
-                {dashboard.logistics.data_source === "accrual_report" ? (
-                  <>
-                    ✓ Точно, по вашему отчёту «Начисления» — тот же разбор по дням/группам/типам, что видно в
-                    кабинете Ozon (Финансы → Начисления). Чтобы обновить за новый период, загрузите свежий файл.
-                  </>
-                ) : (
-                  <>
-                    ≈ Оценка: автоматически, Ozon Seller API (отчёт ДДС, POST /v1/finance/cash-flow-statement/list).
-                    Для точных цифр (в том числе «Эквайринг» отдельной строкой) загрузите отчёт «Начисления» справа.
-                  </>
-                )}
-              </p>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${
+                  dashboard.logistics.data_source === "accrual_report" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                }`}
+                title={
+                  dashboard.logistics.data_source === "accrual_report"
+                    ? "Точно, по вашему отчёту «Начисления» (Финансы → Начисления в кабинете Ozon)"
+                    : "Оценка по отчёту ДДС — для точных цифр загрузите отчёт «Начисления»"
+                }
+              >
+                {dashboard.logistics.data_source === "accrual_report" ? "✓ Точно" : "≈ Оценка"}
+              </span>
               <div className="flex shrink-0 gap-2">
                 <button
                   onClick={syncLogistics}
                   disabled={syncingLogistics}
                   className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
                 >
-                  {syncingLogistics ? "Синхронизация..." : "Обновить (авто, оценка)"}
+                  {syncingLogistics ? "Синхронизация..." : "Обновить (авто)"}
                 </button>
                 <label
                   className="cursor-pointer rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200"
                   title="Кабинет Ozon → Финансы → Начисления → «Скачать отчёт» (XLSX)"
                 >
-                  Загрузить отчёт «Начисления» (точно, XLSX)
+                  Загрузить «Начисления»
                   <input type="file" accept=".xlsx" className="hidden" onChange={uploadAccrualReport} />
                 </label>
               </div>
@@ -416,20 +415,13 @@ export function DashboardPage() {
             )}
             {dashboard.logistics.periods_summed > 0 ? (
               <>
-                {dashboard.logistics.is_estimated && (
-                  <p className="mb-2 rounded-md bg-amber-50 p-2 text-xs text-amber-700">
-                    ≈ Оценка: выбранный период не совпадает с недельными периодами Ozon — часть сумм ниже посчитана
-                    пропорционально дням, а не взята из точного отчёта Ozon.
-                  </p>
-                )}
                 {dashboard.logistics.data_source === "accrual_report" &&
                   dashboard.logistics.accrual_report_days_covered !== null &&
                   dashboard.logistics.accrual_report_days_total !== null &&
                   dashboard.logistics.accrual_report_days_covered < dashboard.logistics.accrual_report_days_total && (
                     <p className="mb-2 rounded-md bg-amber-50 p-2 text-xs text-amber-700">
-                      ⚠ Отчёт «Начисления» загружен только на {dashboard.logistics.accrual_report_days_covered} из{" "}
-                      {dashboard.logistics.accrual_report_days_total} дн. выбранного периода — суммы ниже точные, но
-                      неполные для всего периода. Загрузите отчёт за оставшиеся дни, чтобы покрыть весь период.
+                      Отчёт покрывает {dashboard.logistics.accrual_report_days_covered} из{" "}
+                      {dashboard.logistics.accrual_report_days_total} дн. периода — догрузите файл за оставшиеся дни.
                     </p>
                   )}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
@@ -446,7 +438,11 @@ export function DashboardPage() {
                   )}
                   <Stat label="Услуги партнёров" value={fmtRub(dashboard.logistics.partner_services_rub)} />
                   <Stat label="Услуги FBO" value={fmtRub(dashboard.logistics.fbo_services_rub)} />
-                  <Stat label="Прочие удержания" value={fmtRub(dashboard.logistics.other_deductions_rub)} />
+                  <Stat
+                    label="Прочие удержания"
+                    value={fmtRub(dashboard.logistics.other_deductions_rub)}
+                    title={dashboard.logistics.data_source === "accrual_report" ? "Оценка по отчёту ДДС — отчёт «Начисления» эти операции не показывает" : undefined}
+                  />
                   <Stat
                     label={dashboard.logistics.data_source === "accrual_report" ? "Другие услуги и штрафы" : "Прочие услуги"}
                     value={fmtRub(dashboard.logistics.other_services_rub)}
