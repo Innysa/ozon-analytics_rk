@@ -35,6 +35,7 @@ export function RnpTovaryPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("cards");
   const [syncingLocalization, setSyncingLocalization] = useState(false);
+  const [syncingOrders, setSyncingOrders] = useState(false);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -83,6 +84,50 @@ export function RnpTovaryPage() {
       setNotice(err instanceof ApiError ? err.message : "Ошибка обновления % локализации");
     } finally {
       setSyncingLocalization(false);
+    }
+  };
+
+  // «Заказано» здесь теперь берётся из Ozon Analytics API (воронка,
+  // ProductAnalyticsDailyStatistic) там, где она уже собрана — см. докстринг
+  // app.services.product_planner_service._aggregate_month. Обычно она
+  // обновляется автоматически ночью; эта кнопка даёт обновить прямо сейчас
+  // (использует тот же роут, что и «Воронка карточки» на странице товара).
+  // Роут работает в фоне (лимит Ozon — 1 запрос/мин), поэтому статус
+  // опрашивается, как и в РНП (RnpPage.tsx) — сразу после запуска он ещё
+  // "running".
+  const pollSyncRun = async (runId: string, attempt = 0): Promise<SyncRun | null> => {
+    if (!currentStore) return null;
+    const runs = await api.get<SyncRun[]>(`/stores/${currentStore.id}/sync/runs`);
+    const run = runs.find((r) => r.id === runId) ?? null;
+    if (!run || run.status !== "running" || attempt >= 60) return run;
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return pollSyncRun(runId, attempt + 1);
+  };
+
+  const syncOrdersFunnel = async () => {
+    setSyncingOrders(true);
+    setNotice("Запрос данных «Заказано» через Ozon Analytics API (воронка)...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-product-analytics`);
+      setNotice("Обновление выполняется в фоне (лимит Ozon — 1 запрос/мин, может занять несколько минут)...");
+      const finished = await pollSyncRun(run.id);
+      if (!finished) {
+        setNotice("Не удалось получить статус обновления — обновите страницу.");
+      } else if (finished.status === "failed") {
+        setNotice(`Не удалось обновить «Заказано»: ${finished.error_message ?? "неизвестная ошибка"}`);
+      } else if (finished.status === "running") {
+        setNotice("Обновление всё ещё выполняется — проверьте журнал синхронизаций позже.");
+      } else {
+        setNotice(
+          `«Заказано» обновлено из Ozon Analytics API: получено ${finished.items_fetched}.` +
+            (finished.error_message ? ` Предупреждения: ${finished.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка обновления «Заказано»");
+    } finally {
+      setSyncingOrders(false);
     }
   };
 
@@ -140,6 +185,14 @@ export function RnpTovaryPage() {
             </button>
           </div>
           <button
+            onClick={syncOrdersFunnel}
+            disabled={syncingOrders}
+            className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+            title="Обновить «Заказано» через Ozon Analytics API — требуется Premium Plus/Premium Pro (POST /v1/analytics/data)"
+          >
+            {syncingOrders ? "Обновление..." : "Обновить «Заказано»"}
+          </button>
+          <button
             onClick={syncLocalization}
             disabled={syncingLocalization}
             className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
@@ -162,7 +215,11 @@ export function RnpTovaryPage() {
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
         План вводится только по «Заказы» и «Рекламный бюджет» — «Выкупы» и «Прибыль» показывают только прогноз и
         факт. «Прогноз мес.» — линейная экстраполяция факта на основе прошедших дней месяца. «Хватит на» — по темпу
-        продаж текущего календарного месяца. «Локализация» по магазину («Итого») — из Ozon Seller API (кнопка
+        продаж текущего календарного месяца. «Заказано, шт/₽» берётся из Ozon Analytics API (та же «воронка», что и
+        на карточке товара) для дней, где она уже собрана — это число, которое считает сам Ozon, а не то, что
+        собирает это приложение из отгрузок; обновляется автоматически ночью, либо сразу кнопкой «Обновить
+        «Заказано»» (нужен Premium Plus/Premium Pro). «Выкупы» продолжают считаться из отгрузок Ozon Seller API — по
+        ним у Ozon Analytics API аналога нет. «Локализация» по магазину («Итого») — из Ozon Seller API (кнопка
         «Обновить локализацию»). Локализация по каждому товару — Seller API её не отдаёт вообще, поэтому она берётся
         из отдельного отчёта кабинета Ozon: «Планирование поставок» → «Локальность продаж» → вкладка «По товарам» →
         «Скачать XLSX» — загрузите этот файл кнопкой «Загрузить локализацию по товарам» выше, чтобы обновить (Ozon

@@ -44,6 +44,17 @@ def _seed_order_stat(
     ))
 
 
+def _seed_funnel_stat(db_session, store_id, sku, day, *, ordered_units, revenue_rub):
+    from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
+
+    db_session.add(ProductAnalyticsDailyStatistic(
+        store_id=store_id, ozon_sku=sku, date=day,
+        revenue_rub=revenue_rub, ordered_units=ordered_units,
+        views_pdp=0, cart_adds_pdp=0, sessions_pdp=0,
+        source="ozon_seller_api",
+    ))
+
+
 def _seed_ad_spend(db_session, store_id, sku, day, *, campaign_id="camp-1", spend_rub, impressions=0, clicks=0):
     from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 
@@ -127,6 +138,82 @@ def test_profit_and_margin_subtract_ozon_commission(client, db_session, two_stor
 
     daily = row["daily"][0]
     assert daily["profit_rub"] == 400
+
+
+def test_orders_prefer_funnel_data_over_postings_when_both_exist_for_same_day(client, db_session, two_stores_with_users):
+    """ПЕРЕКЛЮЧЕНО 2026-09-22: «Заказано» (units/₽) now prefers
+    ProductAnalyticsDailyStatistic (Ozon Analytics API funnel) over
+    ProductOrderDailyStatistic (postings) for any (sku, day) both cover —
+    the user found the "Продажи" and "Воронка карточки" tabs on the same
+    product disagreeing (247 vs 293) and asked to standardize on the
+    funnel number. Выкупы must stay postings-based (no funnel equivalent)."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    day = date(PAST_YEAR, PAST_MONTH, 1)
+    _seed_order_stat(
+        db_session, store_id, "SKU-PLAN-1", day,
+        ordered_units=10, ordered_sum_rub=2000, delivered_units=8, delivered_sum_rub=1600,
+    )
+    _seed_funnel_stat(db_session, store_id, "SKU-PLAN-1", day, ordered_units=15, revenue_rub=3000)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    row = resp.json()["rows"][0]
+    assert row["orders"]["actual_month_units"] == 15
+    assert row["orders"]["actual_month_rub"] == 3000
+    day_entry = row["daily"][0]
+    assert day_entry["orders_units"] == 15
+    assert day_entry["orders_sum_rub"] == 3000
+    # Выкупы никак не затронуты — их аналог в Analytics API не существует.
+    assert row["buyouts"]["actual_month_units"] == 8
+    assert row["buyouts"]["actual_month_rub"] == 1600
+
+
+def test_orders_fall_back_to_postings_on_days_the_funnel_has_not_synced(client, db_session, two_stores_with_users):
+    """A day with no ProductAnalyticsDailyStatistic row (funnel sync hasn't
+    covered it yet, or predates Premium Plus) must keep showing the
+    postings-based figure — the funnel is preferred per-day, not all-or-
+    nothing per store/product."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    day1 = date(PAST_YEAR, PAST_MONTH, 1)
+    day2 = date(PAST_YEAR, PAST_MONTH, 2)
+    _seed_order_stat(db_session, store_id, "SKU-PLAN-1", day1, ordered_units=10, ordered_sum_rub=2000, delivered_units=8, delivered_sum_rub=1600)
+    _seed_order_stat(db_session, store_id, "SKU-PLAN-1", day2, ordered_units=4, ordered_sum_rub=800, delivered_units=3, delivered_sum_rub=600)
+    _seed_funnel_stat(db_session, store_id, "SKU-PLAN-1", day1, ordered_units=15, revenue_rub=3000)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    row = resp.json()["rows"][0]
+    daily_by_date = {entry["date"]: entry for entry in row["daily"]}
+    assert daily_by_date[day1.isoformat()]["orders_units"] == 15  # funnel
+    assert daily_by_date[day2.isoformat()]["orders_units"] == 4  # postings fallback
+    assert row["orders"]["actual_month_units"] == 19  # 15 + 4
+
+
+def test_orders_from_funnel_alone_when_postings_sync_has_no_row_that_day(client, db_session, two_stores_with_users):
+    """Motivating real-world case: postings autosync failed/is stale for a
+    day, but the funnel's own nightly sync already has that day — orders
+    must still show up from the funnel alone, not disappear."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    day = date(PAST_YEAR, PAST_MONTH, 1)
+    _seed_funnel_stat(db_session, store_id, "SKU-PLAN-1", day, ordered_units=7, revenue_rub=1400)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    row = resp.json()["rows"][0]
+    assert row["orders"]["actual_month_units"] == 7
+    assert row["orders"]["actual_month_rub"] == 1400
+    assert row["buyouts"]["actual_month_units"] == 0
 
 
 def test_daily_breakdown_carries_ad_impressions_and_clicks(client, db_session, two_stores_with_users):

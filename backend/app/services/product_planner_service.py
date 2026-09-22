@@ -4,8 +4,38 @@ plan/forecast/factual metric groups (Заказы, Выкупы, Рекламн�
 остатки, «хватит на»), from data ALREADY collected automatically by other
 sync services — this module reads, it never calls Ozon itself:
 
-  - Заказы/Выкупы: ProductOrderDailyStatistic (same Ozon Seller API
-    postings sync as the "РНП" day-based page, sliced by SKU)
+  - Выкупы: ProductOrderDailyStatistic (same Ozon Seller API postings sync
+    as the "РНП" day-based page, sliced by SKU) — no equivalent metric
+    exists in the Ozon Analytics API funnel (below), so this stays
+    postings-based.
+  - Заказы (orders_units/orders_sum_rub, incl. the daily breakdown):
+    **ПЕРЕКЛЮЧЕНО 2026-09-22** to prefer ProductAnalyticsDailyStatistic
+    (Ozon's own centrally-computed per-SKU-per-day funnel metric, "Воронка
+    карточки" on the product card — POST /v1/analytics/data, requires
+    Premium Plus/Pro) over ProductOrderDailyStatistic (our own aggregation
+    of FBO/FBS postings) for any (sku, day) where a funnel row exists,
+    falling back to the postings figure only for days the funnel sync
+    hasn't covered (e.g. before this store's Premium Plus started, or
+    before PRODUCT_ANALYTICS_STATS_SCHEDULER was enabled).
+    REASON: the user found the two tabs on the same product's page
+    ("Продажи" vs "Воронка карточки") showing DIFFERENT «Заказано, шт»
+    totals for an identical period (247 vs 293) and, combined with the
+    postings pipeline having already needed one real data-loss fix this
+    session (see order_daily_sync_service's FBO pagination-truncation
+    docstring) and a sync attempt failing outright on her store, asked to
+    just standardize on the funnel number as ground truth rather than keep
+    chasing postings-side discrepancies — "зачем изобретать велосипед".
+    IMPORTANT CAVEAT the user should know (ProductAnalyticsDailyStatistic's
+    own model docstring makes the same point): Ozon does NOT document these
+    two metrics as identical — the funnel's "ordered_units" and postings'
+    "ordered_units" are two separately-computed numbers on Ozon's side, not
+    two views of the same underlying data, so preferring one doesn't prove
+    it's "more correct" in some absolute sense, only that it's Ozon's own
+    already-aggregated figure rather than one this app reconstructs from
+    raw postings (fewer moving parts on our side, and immune to the FBO
+    pagination bug class specifically). Выкупы/Прибыль/Маржа/КРПП still
+    need postings data (delivered_units, commission_rub) that the funnel
+    simply doesn't expose, so those stay unchanged.
   - Рекламный бюджет: AdvertisingDailyStatistic.spend_rub, summed by SKU
     across every campaign that advertised it that day. Показы/Клики (per-
     day breakdown only — ADDED 2026-09-22, requested by the user alongside
@@ -97,6 +127,7 @@ from sqlalchemy.orm import Session
 
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.product import Product
+from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
 from app.models.product_monthly_plan import ProductMonthlyPlan
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.models.store_rating_summary import StoreRatingSummary
@@ -201,8 +232,12 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
     ).all()
     for r in order_rows:
         agg = by_sku.setdefault(r.ozon_sku, _ProductAgg())
-        agg.orders_units += r.ordered_units
-        agg.orders_sum_rub += float(r.ordered_sum_rub or 0)
+        # orders_units/orders_sum_rub start here as the postings-based
+        # fallback — overwritten below per (sku, day) wherever a funnel row
+        # exists (see module docstring, "ПЕРЕКЛЮЧЕНО 2026-09-22"). agg-level
+        # orders_units/orders_sum_rub are NOT accumulated here — they're
+        # summed from by_date AFTER the funnel pass below, so the total
+        # always matches what the daily breakdown actually shows.
         agg.buyouts_units += r.delivered_units
         agg.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
         agg.commission_rub += float(r.commission_rub or 0)
@@ -215,6 +250,23 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         day.buyouts_units += r.delivered_units
         day.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
         day.commission_rub += float(r.commission_rub or 0)
+
+    funnel_rows = db.scalars(
+        select(ProductAnalyticsDailyStatistic).where(
+            ProductAnalyticsDailyStatistic.store_id == store_id,
+            ProductAnalyticsDailyStatistic.date >= date_from,
+            ProductAnalyticsDailyStatistic.date <= date_to,
+        )
+    ).all()
+    for r in funnel_rows:
+        agg = by_sku.setdefault(r.ozon_sku, _ProductAgg())
+        day = agg.day(r.date)
+        day.orders_units = r.ordered_units
+        day.orders_sum_rub = float(r.revenue_rub or 0)
+
+    for agg in by_sku.values():
+        agg.orders_units = sum(day.orders_units for day in agg.by_date.values())
+        agg.orders_sum_rub = sum(day.orders_sum_rub for day in agg.by_date.values())
 
     ad_rows = db.execute(
         select(
