@@ -115,6 +115,11 @@ def build_repair_prompt(broken_output: str) -> str:
 """
 
 
+# ИСПРАВЛЕНО 2026-09-22: реальный магазин с 60+ кампаниями получал insights
+# всего на ~3 из них — модель просто выбирала несколько показательных
+# примеров вместо разбора каждой. Теперь contract явно требует ровно одну
+# запись на КАЖДУЮ кампанию из блока «Итого по кампаниям» ниже (id оттуда,
+# один в один) — неполный список больше не проходит как «готовый ответ».
 ADVERTISING_JSON_CONTRACT = """\
 Верни ТОЛЬКО валидный JSON без markdown-разметки, без пояснений вне JSON, строго такой формы:
 {
@@ -125,21 +130,39 @@ ADVERTISING_JSON_CONTRACT = """\
   "anomalies": ["конкретная аномалия или тренд, например «резкий рост расхода без роста кликов у кампании X»"],
   "recommendations": ["конкретная рекомендация по действию"]
 }
+ВАЖНО: "insights" должен содержать РОВНО ОДНУ запись на КАЖДУЮ кампанию из блока «Итого по кампаниям» ниже —
+ни одна не должна быть пропущена, даже слабая или без заметных изменений (note может быть коротким, например
+«без особенностей за период»). Используй ozon_campaign_id ТОЧНО как в списке. Не добавляй кампании, которых
+там нет.
 Заказы, ДРР и ROAS в данных ниже отсутствуют — не упоминай их и не пытайся оценить рентабельность кампаний,
 опирайся только на расход, показы, клики и CTR.
 """
 
+# Полная раскладка по дням присылается только для этого числа кампаний с
+# наибольшим расходом (список уже отсортирован по расходу, см.
+# _aggregate_campaigns) — 60+ кампаний × 2 недели по дням раздули бы запрос
+# до неприемлемого размера почти без пользы: у мелких кампаний по расходу
+# и так мало данных для тренда. Остальные попадают только в компактный
+# однострочный «Итого по кампаниям» — ЕГО модель обязана покрыть целиком
+# (см. ADVERTISING_JSON_CONTRACT выше).
+CAMPAIGNS_WITH_DAILY_DETAIL = 15
 
-def _format_campaign_for_prompt(c: dict) -> str:
+
+def _format_campaign_totals_line(c: dict) -> str:
+    return (
+        f"- id={c['ozon_campaign_id']} | {c['name']} | тип={c.get('campaign_type') or 'не указан'} | "
+        f"статус={c.get('state') or 'не указан'} | расход {c['total_spend_rub']} ₽ | показы {c['total_impressions']} | "
+        f"клики {c['total_clicks']} | CTR {c['ctr_pct'] if c['ctr_pct'] is not None else 'нет данных'}%"
+    )
+
+
+def _format_campaign_with_daily(c: dict) -> str:
     daily_lines = "\n".join(
         f"    {d['date']}: расход {d['spend_rub']} ₽, показы {d['impressions']}, клики {d['clicks']}"
         for d in c.get("daily", [])
     )
     return f"""\
-- {c['name']} (ozon_campaign_id={c['ozon_campaign_id']}, тип={c.get('campaign_type') or 'не указан'}, \
-статус={c.get('state') or 'не указан'}, дневной бюджет={c.get('daily_budget_rub') if c.get('daily_budget_rub') is not None else 'не указан'})
-  Итого за период: расход {c['total_spend_rub']} ₽, показы {c['total_impressions']}, клики {c['total_clicks']}, \
-CTR {c['ctr_pct'] if c['ctr_pct'] is not None else 'нет данных'}%
+- {c['name']} (ozon_campaign_id={c['ozon_campaign_id']})
   По дням:
 {daily_lines or '    нет данных по дням'}"""
 
@@ -151,14 +174,22 @@ def build_advertising_analysis_prompt(
     period_end: date,
     campaigns: list[dict],
 ) -> str:
-    campaigns_text = "\n".join(_format_campaign_for_prompt(c) for c in campaigns)
+    # campaigns is already sorted by total_spend_rub descending (see
+    # _aggregate_campaigns) — the top N get full daily detail for
+    # trend-spotting, everyone else still gets a totals line, and
+    # ADVERTISING_JSON_CONTRACT requires an insight for every single one.
+    totals_text = "\n".join(_format_campaign_totals_line(c) for c in campaigns)
+    daily_detail_text = "\n".join(_format_campaign_with_daily(c) for c in campaigns[:CAMPAIGNS_WITH_DAILY_DETAIL])
     return f"""\
 Ты — аналитик по рекламе на маркетплейсе Ozon. Магазин: {store_name or "не указан"}.
 Проанализируй автоматически собранную статистику рекламных кампаний за период {period_start.isoformat()} — {period_end.isoformat()}
 (источник — Ozon Performance API, показатели: расход, показы, клики, CTR; заказы и ДРР пока не собираются отдельно и в данных ниже отсутствуют).
 
-Кампании:
-{campaigns_text}
+Итого по кампаниям за период (все {len(campaigns)}, отсортированы по расходу):
+{totals_text}
+
+Раскладка по дням для {min(CAMPAIGNS_WITH_DAILY_DETAIL, len(campaigns))} кампаний с наибольшим расходом (для трендов/аномалий):
+{daily_detail_text}
 
 Задача: определи, какие кампании выглядят сильными, какие слабыми, и заметь аномалии/тренды —
 например резкий рост расхода без роста кликов, падающий CTR, кампанию с нулевыми показами при ненулевом бюджете и т.п.

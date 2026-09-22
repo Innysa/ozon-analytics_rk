@@ -124,6 +124,46 @@ def test_generate_review_saves_a_new_row(db_session, two_stores_with_users):
     assert json.loads(row.insights_json)[0]["assessment"] == "neutral"
 
 
+def test_generate_review_backfills_campaigns_the_ai_left_out_of_insights(db_session, two_stores_with_users):
+    """ИСПРАВЛЕНО 2026-09-22: реальный магазин с 60+ кампаниями получал
+    insights только на ~3 из них — модель выбирала несколько примеров
+    вместо разбора каждой, даже с явной инструкцией в промпте. Каждая
+    кампания, которую AIProvider не покрыл, должна получить нейтральную
+    заглушку — а не тихо пропасть со страницы «Реклама»."""
+    d = two_stores_with_users
+    _make_campaign(db_session, d["store_a"].id, "111", "Покрытая ИИ")
+    _make_campaign(db_session, d["store_a"].id, "222", "Пропущенная ИИ")
+    _add_daily(db_session, store_id=d["store_a"].id, ozon_campaign_id="111", day=date(2026, 8, 1), spend=500, impressions=1000, clicks=50)
+    _add_daily(db_session, store_id=d["store_a"].id, ozon_campaign_id="222", day=date(2026, 8, 1), spend=100, impressions=200, clicks=5)
+    db_session.commit()
+
+    ai = FakeAIProvider(
+        AnalyzeAdvertisingOutcome(
+            result=AdvertisingAnalysisResult(
+                overview="Обзор",
+                # Only "111" covered — "222" deliberately left out, as the
+                # real model did with most of a 60-campaign store.
+                insights=[AdvertisingCampaignInsight(ozon_campaign_id="111", campaign_name="Покрытая ИИ", assessment="strong", note="хорошо")],
+            ),
+            usage=AIUsage(model="fake"),
+            success=True,
+        )
+    )
+
+    outcome = generate_advertising_ai_review(
+        db_session, store_id=d["store_a"].id, ai_provider=ai, date_from=date(2026, 8, 1), date_to=date(2026, 8, 1)
+    )
+
+    assert outcome.saved is True
+    row = db_session.query(AdvertisingAiReview).filter(AdvertisingAiReview.store_id == d["store_a"].id).one()
+    insights = json.loads(row.insights_json)
+    assert len(insights) == 2  # both campaigns present, none silently dropped
+    by_id = {i["ozon_campaign_id"]: i for i in insights}
+    assert by_id["111"]["assessment"] == "strong"  # the AI's own real answer untouched
+    assert by_id["222"]["assessment"] == "neutral"  # backfilled placeholder
+    assert by_id["222"]["campaign_name"] == "Пропущенная ИИ"
+
+
 def test_generate_review_with_no_data_reports_a_clear_error_and_never_calls_ai(db_session, two_stores_with_users):
     d = two_stores_with_users
     ai = FakeAIProvider()

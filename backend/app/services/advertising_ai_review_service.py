@@ -34,6 +34,7 @@ from app.models.advertising_campaign import AdvertisingCampaign
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.store import Store
 from app.services.ai.base import AIProvider
+from app.services.ai.schemas import AdvertisingCampaignInsight
 
 
 @dataclass
@@ -155,6 +156,26 @@ def generate_advertising_ai_review(
         return outcome
 
     result = ai_outcome.result
+    # ИСПРАВЛЕНО 2026-09-22: даже с явным требованием в промпте покрыть
+    # КАЖДУЮ кампанию (см. ADVERTISING_JSON_CONTRACT), полагаться на то, что
+    # модель всегда выполнит инструкцию буквально, нельзя — реальный магазин
+    # с 60+ кампаниями раньше получал insights всего на ~3. Здесь
+    # добавляется недостающее: любая кампания без своей записи в insights
+    # получает нейтральную заглушку, а не тихо выпадает из списка на
+    # странице «Реклама» — так пользователь ВСЕГДА видит все кампании,
+    # даже если сама модель что-то пропустила.
+    covered_ids = {i.ozon_campaign_id for i in result.insights}
+    for c in campaigns:
+        if c["ozon_campaign_id"] not in covered_ids:
+            result.insights.append(
+                AdvertisingCampaignInsight(
+                    ozon_campaign_id=c["ozon_campaign_id"],
+                    campaign_name=c["name"],
+                    assessment="neutral",
+                    note="ИИ не включил эту кампанию в разбор — нет данных для оценки.",
+                )
+            )
+
     existing = (
         db.query(AdvertisingAiReview)
         .filter(

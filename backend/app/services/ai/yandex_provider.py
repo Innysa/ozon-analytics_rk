@@ -67,7 +67,7 @@ class YandexAIProvider(AIProvider):
     def _model_uri(self) -> str:
         return f"gpt://{self._folder_id}/{self._model}"
 
-    def _call(self, prompt_text: str, *, max_output_tokens: int = 800) -> tuple[str, AIUsage]:
+    def _call(self, prompt_text: str, *, max_output_tokens: int = 800, timeout: float | None = None) -> tuple[str, AIUsage]:
         started = time.monotonic()
         response = self._client.post(
             RESPONSES_URL,
@@ -78,6 +78,7 @@ class YandexAIProvider(AIProvider):
                 "max_output_tokens": max_output_tokens,
                 "input": prompt_text,
             },
+            timeout=timeout if timeout is not None else self._client.timeout,
         )
         latency_ms = int((time.monotonic() - started) * 1000)
         if response.status_code >= 400:
@@ -201,13 +202,26 @@ class YandexAIProvider(AIProvider):
         prompt = build_advertising_analysis_prompt(
             store_name=store_name, period_start=period_start, period_end=period_end, campaigns=campaigns
         )
+        # ИСПРАВЛЕНО 2026-09-22: фиксированные max_output_tokens=1200 не
+        # оставляли места на insights для КАЖДОЙ кампании (~60-70 токенов на
+        # запись) у магазина с 60+ кампаниями — модель молча урезала список
+        # до нескольких примеров вместо честной ошибки. Теперь бюджет растёт
+        # вместе с числом кампаний (не подтверждённый независимо, но
+        # заведомо щедрый множитель — 70 токенов/кампания), тот же бюджет
+        # передаётся и в попытку починки JSON ниже — иначе она сама обрезала
+        # бы список по тем же причинам. Таймаут запроса тоже увеличен для
+        # большого числа кампаний — генерация длиннее обычного ответа.
+        max_output_tokens = max(1200, min(16000, 500 + len(campaigns) * 70))
+        request_timeout = 30.0 if len(campaigns) <= 10 else 90.0
         try:
-            raw_text, usage = self._call(prompt, max_output_tokens=1200)
+            raw_text, usage = self._call(prompt, max_output_tokens=max_output_tokens, timeout=request_timeout)
             try:
                 parsed = self._parse_json_result(raw_text)
                 result = AdvertisingAnalysisResult.model_validate(parsed)
             except Exception:
-                repair_text, repair_usage = self._call(build_advertising_repair_prompt(raw_text))
+                repair_text, repair_usage = self._call(
+                    build_advertising_repair_prompt(raw_text), max_output_tokens=max_output_tokens, timeout=request_timeout
+                )
                 usage = AIUsage(
                     model=usage.model,
                     prompt_tokens=(usage.prompt_tokens or 0) + (repair_usage.prompt_tokens or 0),
