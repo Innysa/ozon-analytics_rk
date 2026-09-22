@@ -784,6 +784,10 @@ export interface DailyBreakdownEntry {
   buyouts_sum_rub: number;
   buyouts_units: number;
   ad_spend_rub: number;
+  // Уже собранные показы/клики из AdvertisingDailyStatistic — CTR считается
+  // на фронте (клики/показы), не хранится отдельно.
+  ad_impressions: number;
+  ad_clicks: number;
   profit_rub: number | null;
 }
 

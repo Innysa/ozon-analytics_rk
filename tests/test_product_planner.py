@@ -43,11 +43,12 @@ def _seed_order_stat(
     ))
 
 
-def _seed_ad_spend(db_session, store_id, sku, day, *, campaign_id="camp-1", spend_rub):
+def _seed_ad_spend(db_session, store_id, sku, day, *, campaign_id="camp-1", spend_rub, impressions=0, clicks=0):
     from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 
     db_session.add(AdvertisingDailyStatistic(
         store_id=store_id, ozon_campaign_id=campaign_id, ozon_sku=sku, date=day, spend_rub=spend_rub,
+        impressions=impressions, clicks=clicks,
         source="ozon_performance_api",
     ))
 
@@ -87,6 +88,32 @@ def test_past_month_forecast_equals_actual(client, db_session, two_stores_with_u
     assert row["margin_after_ad_pct"] == round(700 / 1600 * 100, 2)
     # КРПП = Прибыль_с_ДРР / Прибыль_до_ДРР
     assert row["krpp_pct"] == round(700 / 800 * 100, 2)
+
+
+def test_daily_breakdown_carries_ad_impressions_and_clicks(client, db_session, two_stores_with_users):
+    """Показы/Клики per day — requested 2026-09-22, from the SAME already-
+    collected AdvertisingDailyStatistic rows ad_spend_rub already comes
+    from (see product_planner_service's own module docstring), no new
+    sync needed. Two campaigns on the same day must sum, matching
+    ad_spend_rub's own aggregation."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    day = date(PAST_YEAR, PAST_MONTH, 1)
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", day, campaign_id="camp-1", spend_rub=50, impressions=1000, clicks=30)
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", day, campaign_id="camp-2", spend_rub=25, impressions=500, clicks=10)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    day_entry = resp.json()["rows"][0]["daily"][0]
+    assert day_entry["ad_impressions"] == 1500
+    assert day_entry["ad_clicks"] == 40
+
+    total_day = resp.json()["total"]["daily"][0]
+    assert total_day["ad_impressions"] == 1500
+    assert total_day["ad_clicks"] == 40
 
 
 def test_daily_breakdown_carries_seller_price_spp_base(client, db_session, two_stores_with_users):

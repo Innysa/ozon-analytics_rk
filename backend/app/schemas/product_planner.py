@@ -47,6 +47,12 @@ class DailyBreakdownEntry(BaseModel):
     buyouts_sum_rub: float
     buyouts_units: int
     ad_spend_rub: float
+    # ADDED 2026-09-22 — already-collected AdvertisingDailyStatistic.impressions/
+    # clicks, just not surfaced here before; CTR is derived on the frontend
+    # (clicks / impressions), not stored, same convention as the existing
+    # ДРР % row (computed from ad_spend_rub/buyouts_sum_rub, not stored).
+    ad_impressions: int = 0
+    ad_clicks: int = 0
     profit_rub: float | None = None  # None when the product's cost price isn't set
 
 

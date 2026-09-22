@@ -7,7 +7,11 @@ sync services — this module reads, it never calls Ozon itself:
   - Заказы/Выкупы: ProductOrderDailyStatistic (same Ozon Seller API
     postings sync as the "РНП" day-based page, sliced by SKU)
   - Рекламный бюджет: AdvertisingDailyStatistic.spend_rub, summed by SKU
-    across every campaign that advertised it that day
+    across every campaign that advertised it that day. Показы/Клики (per-
+    day breakdown only — ADDED 2026-09-22, requested by the user alongside
+    the daily table's other ad metrics) are the SAME already-collected
+    rows' impressions/clicks columns, summed the same way — no new sync,
+    this data was already in the database and simply wasn't surfaced here
   - Остатки: Product.fbo_stock/fbs_stock (catalog sync snapshot, not
     historical)
   - Прибыль/КРПП/маржа: computed here from the above plus
@@ -100,6 +104,8 @@ class _DailyAgg:
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
     ad_spend_rub: float = 0.0
+    ad_impressions: int = 0
+    ad_clicks: int = 0
 
 
 @dataclass
@@ -190,16 +196,21 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         day.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
 
     ad_rows = db.execute(
-        select(AdvertisingDailyStatistic.ozon_sku, AdvertisingDailyStatistic.date, AdvertisingDailyStatistic.spend_rub).where(
+        select(
+            AdvertisingDailyStatistic.ozon_sku, AdvertisingDailyStatistic.date, AdvertisingDailyStatistic.spend_rub,
+            AdvertisingDailyStatistic.impressions, AdvertisingDailyStatistic.clicks,
+        ).where(
             AdvertisingDailyStatistic.store_id == store_id,
             AdvertisingDailyStatistic.date >= date_from,
             AdvertisingDailyStatistic.date <= date_to,
         )
     ).all()
-    for sku, d, spend_rub in ad_rows:
+    for sku, d, spend_rub, impressions, clicks in ad_rows:
         agg = by_sku.setdefault(sku, _ProductAgg())
         spend = float(spend_rub or 0)
         agg.ad_spend_rub += spend
+        agg.day(d).ad_impressions += impressions or 0
+        agg.day(d).ad_clicks += clicks or 0
         agg.day(d).ad_spend_rub += spend
 
     return by_sku
@@ -247,6 +258,8 @@ def _row_for_product(
             buyouts_sum_rub=round(day.buyouts_sum_rub, 2),
             buyouts_units=day.buyouts_units,
             ad_spend_rub=round(day.ad_spend_rub, 2),
+            ad_impressions=day.ad_impressions,
+            ad_clicks=day.ad_clicks,
             profit_rub=(
                 round(day.buyouts_sum_rub - float(product.cost_price_rub) * day.buyouts_units - day.ad_spend_rub, 2)
                 if cost_known and product is not None
@@ -359,6 +372,8 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             total_day.buyouts_units += day.buyouts_units
             total_day.buyouts_sum_rub += day.buyouts_sum_rub
             total_day.ad_spend_rub += day.ad_spend_rub
+            total_day.ad_impressions += day.ad_impressions
+            total_day.ad_clicks += day.ad_clicks
 
         if plan:
             any_plan = True
@@ -452,7 +467,9 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
                 orders_sum_discounted_for_known_seller_price_rub=round(day.orders_sum_discounted_for_known_seller_price_rub, 2),
                 orders_units_with_known_seller_price=day.orders_units_with_known_seller_price,
                 buyouts_sum_rub=round(day.buyouts_sum_rub, 2), buyouts_units=day.buyouts_units,
-                ad_spend_rub=round(day.ad_spend_rub, 2), profit_rub=None,
+                ad_spend_rub=round(day.ad_spend_rub, 2),
+                ad_impressions=day.ad_impressions, ad_clicks=day.ad_clicks,
+                profit_rub=None,
             )
             for d, day in sorted(total_agg.by_date.items())
         ],
