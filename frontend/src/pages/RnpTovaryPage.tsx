@@ -210,6 +210,7 @@ function MetricGroupRow({
   onEditPct,
   forecastPct,
   actualPct,
+  pctLabel,
 }: {
   label: string;
   metric: MetricPlanFactActual;
@@ -222,11 +223,11 @@ function MetricGroupRow({
   onEditSum?: (v: string) => void;
   onEditUnits?: (v: string) => void;
   onEditPct?: (v: string) => void;
-  // Доп. строка «X%» под Прогноз/Факт — сейчас только для «Рекламный
-  // бюджет» (ДРР % = расход / выкупы за тот же месяц), по просьбе
-  // пользователя показать не только рубли.
+  // Доп. строка «X%» под Прогноз/Факт — для «Рекламный бюджет» (ДРР % =
+  // расход / выкупы за тот же месяц) и «Заказы» (% от плана в штуках).
   forecastPct?: number | null;
   actualPct?: number | null;
+  pctLabel?: string; // подпись перед %, чтобы не путать ДРР% с % от плана
 }) {
   return (
     <div
@@ -271,13 +272,21 @@ function MetricGroupRow({
         Прогноз мес.
         <div className="font-medium text-slate-700">{fmtRub(metric.forecast_month_rub)}</div>
         {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.forecast_month_units)} шт</div>}
-        {forecastPct !== undefined && <div className="text-slate-400">{fmtPct(forecastPct ?? null)}</div>}
+        {forecastPct !== undefined && (
+          <div className="text-slate-400">
+            {pctLabel ? `${pctLabel} ${fmtPct(forecastPct ?? null)}` : fmtPct(forecastPct ?? null)}
+          </div>
+        )}
       </div>
       <div className="text-xs text-slate-500">
         Факт мес.
         <div className="font-medium text-slate-700">{fmtRub(metric.actual_month_rub)}</div>
         {unit === "sum_and_units" && <div className="text-slate-400">{fmtNum(metric.actual_month_units)} шт</div>}
-        {actualPct !== undefined && <div className="text-slate-400">{fmtPct(actualPct ?? null)}</div>}
+        {actualPct !== undefined && (
+          <div className="text-slate-400">
+            {pctLabel ? `${pctLabel} ${fmtPct(actualPct ?? null)}` : fmtPct(actualPct ?? null)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -429,6 +438,22 @@ function ProductPlannerCard({
               editUnitsValue={edit.orders_units}
               onEditSum={(v) => setEdit((s) => ({ ...s, orders_sum: v }))}
               onEditUnits={(v) => setEdit((s) => ({ ...s, orders_units: v }))}
+              // % выполнения плана — от штук (план всегда вводится в штуках,
+              // рублёвый план сейчас нечем ввести на этой странице, см.
+              // editSumValue — принимается, но своего поля ввода не имеет).
+              // Прогноз/план показывает, куда придёт месяц при текущем
+              // темпе; факт/план — сколько уже выполнено на сегодня.
+              forecastPct={
+                row.orders.forecast_month_units && row.orders.plan_month_units
+                  ? (row.orders.forecast_month_units / row.orders.plan_month_units) * 100
+                  : null
+              }
+              actualPct={
+                row.orders.actual_month_units && row.orders.plan_month_units
+                  ? (row.orders.actual_month_units / row.orders.plan_month_units) * 100
+                  : null
+              }
+              pctLabel="от плана"
             />
             <MetricGroupRow label="Выкупы" metric={row.buyouts} unit="sum_and_units" plannable={false} />
             <MetricGroupRow

@@ -28,6 +28,7 @@ def _seed_product(db_session, store_id, *, sku="SKU-PLAN-1", name="Товар", 
 def _seed_order_stat(
     db_session, store_id, sku, day, *, ordered_units, ordered_sum_rub, delivered_units, delivered_sum_rub,
     ordered_sum_seller_price_rub=0, ordered_sum_discounted_for_known_seller_price_rub=0, ordered_units_with_known_seller_price=0,
+    commission_rub=0,
 ):
     from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 
@@ -38,7 +39,7 @@ def _seed_order_stat(
         ordered_sum_discounted_for_known_seller_price_rub=ordered_sum_discounted_for_known_seller_price_rub,
         ordered_units_with_known_seller_price=ordered_units_with_known_seller_price,
         delivered_units=delivered_units, delivered_sum_rub=delivered_sum_rub,
-        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=commission_rub,
         source="ozon_seller_api",
     ))
 
@@ -88,6 +89,44 @@ def test_past_month_forecast_equals_actual(client, db_session, two_stores_with_u
     assert row["margin_after_ad_pct"] == round(700 / 1600 * 100, 2)
     # КРПП = Прибыль_с_ДРР / Прибыль_до_ДРР
     assert row["krpp_pct"] == round(700 / 800 * 100, 2)
+
+
+def test_profit_and_margin_subtract_ozon_commission(client, db_session, two_stores_with_users):
+    """ИСПРАВЛЕНО 2026-09-22 — Прибыль/КРПП/Маржа here previously ignored
+    ProductOrderDailyStatistic.commission_rub entirely (unlike the
+    Дашборд's own MarginBlock, which always subtracts it) — a real product
+    showed Маржа с ДРР ~73%, implausibly high for a marketplace where
+    commission normally eats a real share of revenue. commission_rub
+    carries Ozon's own NEGATIVE sign (a deduction, see dashboard_service.py's
+    identical "+" convention), so this seeds -300 for a real deduction."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    _seed_order_stat(
+        db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1),
+        ordered_units=10, ordered_sum_rub=2000, delivered_units=8, delivered_sum_rub=1600, commission_rub=-300,
+    )
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), spend_rub=100)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    body = resp.json()
+    row = body["rows"][0]
+
+    # Прибыль до ДРР = 1600 - 100*8 - 300 = 500; Прибыль с ДРР = 500 - 100 = 400
+    assert row["profit"]["actual_month_rub"] == 400
+    assert row["margin_before_ad_pct"] == round(500 / 1600 * 100, 2)
+    assert row["margin_after_ad_pct"] == round(400 / 1600 * 100, 2)
+    assert row["krpp_pct"] == round(400 / 500 * 100, 2)
+
+    total_row = body["total"]
+    assert total_row["profit"]["actual_month_rub"] == 400
+    assert total_row["margin_before_ad_pct"] == round(500 / 1600 * 100, 2)
+
+    daily = row["daily"][0]
+    assert daily["profit_rub"] == 400
 
 
 def test_daily_breakdown_carries_ad_impressions_and_clicks(client, db_session, two_stores_with_users):

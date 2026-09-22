@@ -49,6 +49,23 @@ tooltip): "какая доля прибыли остаётся после выч
 which is the natural companion figure the КРПП tooltip doesn't itself
 define but is the standard "margin %" reading of "Прибыль".
 
+**ИСПРАВЛЕНО 2026-09-22**: Прибыль/КРПП/Маржа здесь считались как Выкупы
+минус себестоимость минус реклама — БЕЗ вычета комиссии Ozon, тогда как
+Маржа на Дашборде (dashboard_service.py) всегда вычитает и её. Пользователь
+пожаловалась на реальном товаре: Маржа с ДРР 72.81% — заметно завышено для
+маркетплейса, где комиссия обычно съедает заметную часть выручки. Причина
+оказалась именно в этом — `ProductOrderDailyStatistic.commission_rub` уже
+собирается автоматически той же синхронизацией заказов (см. этой модели
+docstring и order_daily_sync_service.py — тот же commission_amount, что и
+на «РНП»/Дашборде), просто не читался в _aggregate_month()/_row_for_
+product() ниже. Теперь Прибыль_до_ДРР = Выкупы − себестоимость − комиссия
+Ozon (Прибыль_с_ДРР дополнительно вычитает рекламу, как и раньше) — то же
+самое естественное распределение по группам, что уже подтверждено на
+Дашборде. Как и там, эта комиссия может быть немного занижена для самых
+свежих дней, для которых Ozon ещё не посчитал financial_data (см.
+commission_missing_units в order_daily_sync_service.py) — это не отдельная
+ошибка, а тот же самый, уже задокументированный и принятый разрыв.
+
 Прогноз (forecast): CONFIRMED with the user — a simple linear
 extrapolation for now (факт_к_текущему_дню / прошедшие_дни × дней_в_месяце),
 not seasonality-adjusted; can be revisited later if it proves too rough.
@@ -103,6 +120,7 @@ class _DailyAgg:
     orders_units_with_known_seller_price: int = 0
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
+    commission_rub: float = 0.0
     ad_spend_rub: float = 0.0
     ad_impressions: int = 0
     ad_clicks: int = 0
@@ -114,6 +132,7 @@ class _ProductAgg:
     orders_sum_rub: float = 0.0
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
+    commission_rub: float = 0.0
     ad_spend_rub: float = 0.0
     by_date: dict[date, _DailyAgg] = field(default_factory=dict)
 
@@ -186,6 +205,7 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         agg.orders_sum_rub += float(r.ordered_sum_rub or 0)
         agg.buyouts_units += r.delivered_units
         agg.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
+        agg.commission_rub += float(r.commission_rub or 0)
         day = agg.day(r.date)
         day.orders_units += r.ordered_units
         day.orders_sum_rub += float(r.ordered_sum_rub or 0)
@@ -194,6 +214,7 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         day.orders_units_with_known_seller_price += r.ordered_units_with_known_seller_price
         day.buyouts_units += r.delivered_units
         day.buyouts_sum_rub += float(r.delivered_sum_rub or 0)
+        day.commission_rub += float(r.commission_rub or 0)
 
     ad_rows = db.execute(
         select(
@@ -225,7 +246,11 @@ def _row_for_product(
     cost_known = product is not None and product.cost_price_rub is not None
     if cost_known:
         cost_total = float(product.cost_price_rub) * agg.buyouts_units
-        profit_before_ad = agg.buyouts_sum_rub - cost_total
+        # commission_rub carries Ozon's OWN negative sign (a deduction, same
+        # convention as OrderDailyStatistic.commission_rub on the Дашборд —
+        # see dashboard_service.py's own MarginBlock computation) — ADDING
+        # it here subtracts the commission, same as that "+" there.
+        profit_before_ad = agg.buyouts_sum_rub - cost_total + agg.commission_rub
         profit_after_ad = profit_before_ad - agg.ad_spend_rub
 
     krpp_pct = (
@@ -261,7 +286,11 @@ def _row_for_product(
             ad_impressions=day.ad_impressions,
             ad_clicks=day.ad_clicks,
             profit_rub=(
-                round(day.buyouts_sum_rub - float(product.cost_price_rub) * day.buyouts_units - day.ad_spend_rub, 2)
+                round(
+                    day.buyouts_sum_rub - float(product.cost_price_rub) * day.buyouts_units
+                    + day.commission_rub - day.ad_spend_rub,
+                    2,
+                )
                 if cost_known and product is not None
                 else None
             ),
@@ -361,6 +390,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
         total_agg.orders_sum_rub += agg.orders_sum_rub
         total_agg.buyouts_units += agg.buyouts_units
         total_agg.buyouts_sum_rub += agg.buyouts_sum_rub
+        total_agg.commission_rub += agg.commission_rub
         total_agg.ad_spend_rub += agg.ad_spend_rub
         for d, day in agg.by_date.items():
             total_day = total_agg.day(d)
@@ -371,6 +401,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             total_day.orders_units_with_known_seller_price += day.orders_units_with_known_seller_price
             total_day.buyouts_units += day.buyouts_units
             total_day.buyouts_sum_rub += day.buyouts_sum_rub
+            total_day.commission_rub += day.commission_rub
             total_day.ad_spend_rub += day.ad_spend_rub
             total_day.ad_impressions += day.ad_impressions
             total_day.ad_clicks += day.ad_clicks
@@ -393,7 +424,9 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             # rounded to 2 decimals) — avoids compounding rounding error
             # across many products in the "Итого" row.
             any_cost_known = True
-            profit_before_ad = agg.buyouts_sum_rub - float(product.cost_price_rub) * agg.buyouts_units
+            profit_before_ad = (
+                agg.buyouts_sum_rub - float(product.cost_price_rub) * agg.buyouts_units + agg.commission_rub
+            )
             profit_after_ad = profit_before_ad - agg.ad_spend_rub
             total_cost_known_buyouts_sum += agg.buyouts_sum_rub
             total_cost_known_profit_before += profit_before_ad
