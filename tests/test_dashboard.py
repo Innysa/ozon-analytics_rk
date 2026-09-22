@@ -644,6 +644,152 @@ def test_logistics_block_zero_periods_when_range_has_no_overlap_at_all(client, d
     assert block["logistics_rub"] is None
 
 
+def test_logistics_block_prefers_accrual_report_over_cash_flow_when_both_present(client, db_session, two_stores_with_users):
+    """The accrual_report source (manual «Начисления» upload) must win over
+    the cash-flow-statement estimate whenever it has any data overlapping
+    the range — see LogisticsBlock.data_source's own docstring. Real per-
+    day dates, no prorating, and Ozon's own exact «Группа услуг»/«Тип
+    начисления» naming (Эквайринг is its own row here, not guessed out of
+    a mixed bucket)."""
+    from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    # Cash-flow data exists too — must be ignored once accrual_report covers the range.
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 9, 1), period_end=date(2026, 9, 7),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-999999, services_total=-999999, source="ozon_seller_api",
+    ))
+    rows = [
+        ("Услуги доставки", "Логистика", -765.80),
+        ("Услуги доставки", "Обратная логистика", -106.65),
+        ("Услуги партнёров", "Эквайринг", -172.33),
+        ("Услуги партнёров", "Доставка до места выдачи", -48.11),
+        ("Услуги FBO", "Кросс-докинг", -14.78),
+        ("Другие услуги и штрафы", "Утилизация товара", -0.97),
+    ]
+    for group, charge_type, amount in rows:
+        db_session.add(AccrualReportDailyStatistic(
+            store_id=store_id, accrual_date=date(2026, 9, 1), service_group=group, charge_type=charge_type,
+            amount_rub=amount, rows_count=1, source="manual_xlsx_upload",
+        ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-01"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["has_data"] is True
+    assert block["data_source"] == "accrual_report"
+    assert block["is_estimated"] is False
+    assert block["logistics_rub"] == pytest.approx(-765.80)
+    assert block["returns_logistics_rub"] == pytest.approx(-106.65)
+    assert block["acquiring_rub"] == pytest.approx(-172.33)
+    assert block["partner_services_rub"] == pytest.approx(-48.11)
+    assert block["fbo_services_rub"] == pytest.approx(-14.78)
+    assert block["other_services_rub"] == pytest.approx(-0.97)
+    assert block["fines_rub"] is None
+    assert block["storage_rub"] is None
+    assert block["accrual_report_days_covered"] == 1
+    assert block["accrual_report_days_total"] == 1
+
+
+def test_logistics_block_accrual_report_other_deductions_still_from_cash_flow(client, db_session, two_stores_with_users):
+    """other_deductions_rub («Прочие удержания») stays cash-flow-sourced
+    even on the accrual_report path — real decompensation events were
+    confirmed NOT present in a real «Начисления» export at all (see
+    _cash_flow_other_deductions's own docstring)."""
+    from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 9, 1), period_end=date(2026, 9, 7),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        others_total=-3020.95,
+        others_items_json='[{"name": "MarketplaceSellerDecompensationItemByTypeDocOperation", "price": -3020.95}]',
+        source="ozon_seller_api",
+    ))
+    db_session.add(AccrualReportDailyStatistic(
+        store_id=store_id, accrual_date=date(2026, 9, 1), service_group="Услуги доставки", charge_type="Логистика",
+        amount_rub=-100, rows_count=1, source="manual_xlsx_upload",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-07"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["data_source"] == "accrual_report"
+    assert block["other_deductions_rub"] == pytest.approx(-3020.95)
+
+
+def test_logistics_block_accrual_report_partial_coverage_reported(client, db_session, two_stores_with_users):
+    """A range wider than what's been uploaded still uses the exact
+    accrual_report source (no silent mixing with the cash-flow estimate)
+    but must surface that coverage is incomplete via accrual_report_days_
+    covered/_total, not present the sum as if it covered the whole range."""
+    from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(AccrualReportDailyStatistic(
+        store_id=store_id, accrual_date=date(2026, 9, 1), service_group="Услуги доставки", charge_type="Логистика",
+        amount_rub=-100, rows_count=1, source="manual_xlsx_upload",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-05"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["data_source"] == "accrual_report"
+    assert block["logistics_rub"] == pytest.approx(-100)
+    assert block["accrual_report_days_covered"] == 1
+    assert block["accrual_report_days_total"] == 5
+
+
+def test_logistics_block_falls_back_to_cash_flow_when_no_accrual_report_data(client, db_session, two_stores_with_users):
+    """A store that has never uploaded «Начисления» keeps getting the old
+    cash-flow-statement estimate — the new exact source is additive, not a
+    breaking change for stores that don't use it."""
+    from app.models.cash_flow_statement_period import CashFlowStatementPeriod
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(CashFlowStatementPeriod(
+        store_id=store_id, period_begin=date(2026, 9, 1), period_end=date(2026, 9, 7),
+        orders_amount=0, returns_amount=0, commission_amount=0, services_amount=0,
+        item_delivery_and_return_amount=0, currency_code="RUB",
+        delivery_services_total=-100, source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(
+        f"/api/stores/{store_id}/dashboard",
+        params={"date_from": "2026-09-01", "date_to": "2026-09-07"},
+    )
+    assert resp.status_code == 200
+    block = resp.json()["logistics"]
+    assert block["data_source"] == "cash_flow_estimate"
+    assert block["logistics_rub"] == -100
+
+
 def test_advertising_block_keeps_auto_and_manual_spend_separate(client, db_session, two_stores_with_users):
     from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
     from app.models.advertising_statistic import AdvertisingStatistic

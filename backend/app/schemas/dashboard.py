@@ -222,10 +222,13 @@ class LogisticsBlock(BaseModel):
 
     partner_services_rub ("Услуги партнёров" on Ozon's own "Начисления"
     report — CONFIRMED 2026-09-12 by matching item names AND rub amounts
-    against a manually exported copy of that report) SPANS TWO different
-    Ozon buckets: InsuranceServiceSellerItem ("Страхование товара от
-    массовых повреждений") and MarketplaceRedistributionOfAcquiringOperation
-    /...Item ("Эквайринг", the dominant real component) — but NEITHER lives
+    against a manually exported copy of that report) — on the cash_flow_
+    estimate path only (see acquiring_rub/data_source above for the
+    accrual_report path, where «Эквайринг» is pulled out into its own
+    field instead) SPANS TWO different Ozon buckets: InsuranceServiceSellerItem
+    ("Страхование товара от массовых повреждений") and
+    MarketplaceRedistributionOfAcquiringOperation/...Item ("Эквайринг", the
+    dominant real component) — but NEITHER lives
     in one fixed bucket. CONFIRMED 2026-09-12 (--find-key on two different
     weeks of the same real account): both items were found inside
     `details.services.items[]` for one week, but inside
@@ -287,13 +290,49 @@ class LogisticsBlock(BaseModel):
     own days that fall in range — a linear day-count ESTIMATE, since Ozon
     gives no way to get a genuine per-day split of a period's totals. True
     whenever at least one summed period was partial, so the frontend can
-    mark the numbers as approximate rather than presenting them as exact."""
+    mark the numbers as approximate rather than presenting them as exact.
+    Always False when data_source == "accrual_report" (see below) — that
+    source has a real per-day date on every row, so nothing is prorated.
+
+    data_source/acquiring_rub — ADDED 2026-09-22: a second, exact source
+    now exists alongside the cash-flow-statement estimate above —
+    AccrualReportDailyStatistic, built from a manual upload of Ozon's own
+    «Начисления» report (Финансы → Начисления → «Скачать отчёт»). See that
+    model's own docstring for the full reasoning: it carries a real
+    calendar date per row (so a dashboard range is summed exactly, no
+    prorating) and Ozon's own human-readable «Группа услуг»/«Тип
+    начисления» (so «Эквайринг» is its own confirmed row inside «Услуги
+    партнёров», not something guessed out of a mixed bucket by matching
+    internal item-name substrings). compute_dashboard() PREFERS this
+    source whenever the store has ANY uploaded accrual-report rows
+    overlapping the requested range, falling back to the cash-flow
+    estimate otherwise — data_source tells the frontend which one was
+    used ("accrual_report" | "cash_flow_estimate"). storage_rub/fines_rub
+    are None (not 0) on the accrual_report path — Ozon's own «Тип
+    начисления» taxonomy doesn't split "Хранение"/"Штрафы" out of the
+    catch-all «Другие услуги и штрафы» group by name the way the old
+    substring-matching guessed at, so other_services_rub on this path IS
+    that whole (now genuinely small — a few thousand rubles, not the
+    ~1.2M the estimate could show) Ozon group, exactly. other_deductions_rub
+    stays cash-flow-sourced even on the accrual_report path — real
+    decompensation events were NOT found in the «Начисления» export at
+    all (checked against a real file with a known decompensation line
+    that WAS present in cash-flow's own "others" bucket) — a different
+    Ozon accounting stream this report simply doesn't cover, not a bug.
+    accrual_report_days_covered/accrual_report_days_total: only set on the
+    accrual_report path — how many distinct calendar days inside the
+    requested range actually had uploaded data vs. how many days the range
+    spans; covered < total means the shown sum only reflects the covered
+    days (still exact for those, just not the FULL requested range),
+    surfaced via period_note so this isn't silent."""
 
     has_data: bool
+    data_source: str | None = None  # "accrual_report" | "cash_flow_estimate" | None (no data at all)
     logistics_rub: float | None = None
     returns_logistics_rub: float | None = None
     storage_rub: float | None = None
     fines_rub: float | None = None
+    acquiring_rub: float | None = None
     partner_services_rub: float | None = None
     fbo_services_rub: float | None = None
     other_deductions_rub: float | None = None
@@ -302,6 +341,8 @@ class LogisticsBlock(BaseModel):
     other_services_top_item_rub: float | None = None
     periods_summed: int = 0
     is_estimated: bool = False
+    accrual_report_days_covered: int | None = None
+    accrual_report_days_total: int | None = None
     period_note: str | None = None  # e.g. "2026-08-17 — 2026-09-06 (3 периода Ozon)"
 
 

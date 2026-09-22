@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
+from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.advertising_statistic import AdvertisingStatistic
 from app.models.cash_flow_statement_period import CashFlowStatementPeriod
@@ -436,8 +437,82 @@ def _cash_flow_matching_items_sum(
     return round(total, 2)
 
 
+def _cash_flow_other_deductions(db: Session, *, store_id: str, date_from: date, date_to: date) -> tuple[float | None, bool]:
+    """other_deductions_rub only, computed from cash-flow-statement's own
+    `others` bucket — reused on BOTH the accrual_report and cash_flow_
+    estimate LogisticsBlock paths (see LogisticsBlock.other_deductions_rub's
+    own docstring: real decompensation events were confirmed NOT present in
+    a real «Начисления» export at all, so this one field stays cash-flow-
+    sourced regardless of which source the rest of the block uses).
+    partner-hint items (Эквайринг/Страхование, if Ozon happened to place
+    either in `others` for a given week) are subtracted out first so this
+    never double-counts against partner_services_rub/acquiring_rub, which
+    already account for them via their own source. Returns (None, False)
+    when no cash-flow period overlaps [date_from, date_to] at all."""
+    periods_in_range = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=date_from, date_to=date_to)
+    if not periods_in_range:
+        return None, False
+    others_total_sum = partner_from_others_sum = 0.0
+    is_estimated = False
+    for p in periods_in_range:
+        fraction = _period_overlap_fraction(p.period_begin, p.period_end, date_from, date_to)
+        if fraction < 1.0:
+            is_estimated = True
+        others_total_sum += float(p.others_total or 0) * fraction
+        partner_from_others_sum += _sum_matching_items(p.others_items_json, _PARTNER_SERVICE_HINTS) * fraction
+    return round(others_total_sum - partner_from_others_sum, 2), is_estimated
+
+
 def _has_any_cash_flow_periods(db: Session, *, store_id: str) -> bool:
     return db.scalar(select(CashFlowStatementPeriod.id).where(CashFlowStatementPeriod.store_id == store_id).limit(1)) is not None
+
+
+def _has_any_accrual_report_rows(db: Session, *, store_id: str) -> bool:
+    return db.scalar(select(AccrualReportDailyStatistic.id).where(AccrualReportDailyStatistic.store_id == store_id).limit(1)) is not None
+
+
+def _accrual_report_group_type_sums(
+    db: Session, *, store_id: str, date_from: date, date_to: date
+) -> dict[tuple[str, str], float] | None:
+    """Exact sum of amount_rub by (service_group, charge_type) across every
+    AccrualReportDailyStatistic row whose accrual_date falls inside
+    [date_from, date_to] — a REAL per-day filter (this table stores one row
+    per actual calendar day already, unlike CashFlowStatementPeriod's own
+    ~weekly buckets that need _period_overlap_fraction's day-count
+    prorate). Returns None when the store has never uploaded any
+    «Начисления» report at all, so the caller can fall back to the
+    cash-flow-statement estimate; an empty dict means the store HAS
+    uploaded data but none of it falls in this specific range (still a
+    fallback case, distinguished from None only for future use)."""
+    if not _has_any_accrual_report_rows(db, store_id=store_id):
+        return None
+    rows = db.execute(
+        select(
+            AccrualReportDailyStatistic.service_group,
+            AccrualReportDailyStatistic.charge_type,
+            func.sum(AccrualReportDailyStatistic.amount_rub),
+        )
+        .where(
+            AccrualReportDailyStatistic.store_id == store_id,
+            AccrualReportDailyStatistic.accrual_date >= date_from,
+            AccrualReportDailyStatistic.accrual_date <= date_to,
+        )
+        .group_by(AccrualReportDailyStatistic.service_group, AccrualReportDailyStatistic.charge_type)
+    ).all()
+    return {(group, charge_type): float(total or 0) for group, charge_type, total in rows}
+
+
+def _accrual_report_days_covered(db: Session, *, store_id: str, date_from: date, date_to: date) -> int:
+    return (
+        db.scalar(
+            select(func.count(func.distinct(AccrualReportDailyStatistic.accrual_date))).where(
+                AccrualReportDailyStatistic.store_id == store_id,
+                AccrualReportDailyStatistic.accrual_date >= date_from,
+                AccrualReportDailyStatistic.accrual_date <= date_to,
+            )
+        )
+        or 0
+    )
 
 
 # Substrings CONFIRMED (2026-09-12, real account raw_payload — located via
@@ -828,7 +903,66 @@ def compute_dashboard(
     # postings use, so combining them into one "more precise" margin figure
     # risked silently mixing two different accounting windows) ---
     # has_cash_flow_data already computed above for the Advertising block.
-    if has_cash_flow_data:
+    #
+    # PREFER the accrual_report source (manual «Начисления» upload) over
+    # the cash-flow-statement estimate whenever the store has ANY uploaded
+    # rows overlapping the requested range — see LogisticsBlock's own
+    # docstring (data_source) for the full reasoning: real per-day dates
+    # (no prorating) and Ozon's own exact group/type naming (Эквайринг is
+    # its own row, «Другие услуги и штрафы» is Ozon's own small literal
+    # catch-all instead of a guessed-at "Прочие услуги").
+    accrual_sums = _accrual_report_group_type_sums(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+    if accrual_sums:
+        def _group_total(group: str, *, exclude_types: tuple[str, ...] = ()) -> float:
+            return sum(v for (g, t), v in accrual_sums.items() if g == group and t not in exclude_types)
+
+        def _type_total(group: str, charge_type: str) -> float:
+            return accrual_sums.get((group, charge_type), 0.0)
+
+        logistics_sum = _group_total("Услуги доставки", exclude_types=("Обратная логистика",))
+        returns_sum = _type_total("Услуги доставки", "Обратная логистика")
+        acquiring_sum = _type_total("Услуги партнёров", "Эквайринг")
+        partner_services_sum = _group_total("Услуги партнёров", exclude_types=("Эквайринг",))
+        fbo_services_sum = _group_total("Услуги FBO")
+        other_services_sum = _group_total("Другие услуги и штрафы")
+        storage_sum = _group_total("Хранение")
+
+        other_deductions_sum, other_deductions_is_estimated = _cash_flow_other_deductions(
+            db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to
+        )
+
+        days_total = (resolved_date_to - resolved_date_from).days + 1
+        days_covered = _accrual_report_days_covered(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
+        coverage_note = (
+            f"Точно, по вашему отчёту «Начисления» — покрыты все {days_total} дн. выбранного периода"
+            if days_covered >= days_total
+            else (
+                f"Точно, по вашему отчёту «Начисления» — покрыты {days_covered} из {days_total} дн. выбранного периода "
+                "(за остальные дни отчёт не загружен, суммы ниже неполные для всего периода)"
+            )
+        )
+        if other_deductions_is_estimated:
+            coverage_note += "; «Прочие удержания» — по-прежнему оценка из отчёта ДДС (см. подсказку ниже)"
+
+        logistics = LogisticsBlock(
+            has_data=True,
+            data_source="accrual_report",
+            logistics_rub=round(logistics_sum, 2),
+            returns_logistics_rub=round(returns_sum, 2),
+            storage_rub=round(storage_sum, 2) if storage_sum else None,
+            fines_rub=None,
+            acquiring_rub=round(acquiring_sum, 2),
+            partner_services_rub=round(partner_services_sum, 2),
+            fbo_services_rub=round(fbo_services_sum, 2),
+            other_deductions_rub=other_deductions_sum,
+            other_services_rub=round(other_services_sum, 2),
+            periods_summed=days_covered,
+            is_estimated=False,
+            accrual_report_days_covered=days_covered,
+            accrual_report_days_total=days_total,
+            period_note=coverage_note,
+        )
+    elif has_cash_flow_data:
         periods_in_range = _cash_flow_periods_overlapping(db, store_id=store_id, date_from=resolved_date_from, date_to=resolved_date_to)
         if periods_in_range:
             fines_sum = storage_sum = services_total_sum = 0.0
@@ -883,6 +1017,7 @@ def compute_dashboard(
             top_item = _largest_uncategorized_service_item(periods_in_range)
             logistics = LogisticsBlock(
                 has_data=True,
+                data_source="cash_flow_estimate",
                 logistics_rub=round(logistics_sum, 2),
                 returns_logistics_rub=round(returns_sum, 2),
                 storage_rub=round(storage_sum, 2),
@@ -908,7 +1043,10 @@ def compute_dashboard(
             # no Ozon activity at all) — has_data True with zero
             # periods_summed, not a false "no data at all" — the frontend
             # distinguishes these via periods_summed.
-            logistics = LogisticsBlock(has_data=True, periods_summed=0, period_note="Нет периодов Ozon, пересекающихся с выбранным диапазоном")
+            logistics = LogisticsBlock(
+                has_data=True, data_source="cash_flow_estimate", periods_summed=0,
+                period_note="Нет периодов Ozon, пересекающихся с выбранным диапазоном",
+            )
     else:
         logistics = LogisticsBlock(has_data=False)
 

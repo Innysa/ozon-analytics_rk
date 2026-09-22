@@ -723,10 +723,12 @@ export interface InventoryBlock {
 
 export interface LogisticsBlock {
   has_data: boolean;
+  data_source: "accrual_report" | "cash_flow_estimate" | null;
   logistics_rub: number | null;
   returns_logistics_rub: number | null;
   storage_rub: number | null;
   fines_rub: number | null;
+  acquiring_rub: number | null;
   partner_services_rub: number | null;
   fbo_services_rub: number | null;
   other_deductions_rub: number | null;
@@ -735,6 +737,8 @@ export interface LogisticsBlock {
   other_services_top_item_rub: number | null;
   periods_summed: number;
   is_estimated: boolean;
+  accrual_report_days_covered: number | null;
+  accrual_report_days_total: number | null;
   period_note: string | null;
 }
 

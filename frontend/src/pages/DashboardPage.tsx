@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { Dashboard, DashboardMetric, MarginBlock as MarginBlockType, SyncRun } from "../types";
+import type { Dashboard, DashboardMetric, ImportSummary, MarginBlock as MarginBlockType, SyncRun } from "../types";
 
 function fmtRub(v: number | null): string {
   if (v === null) return "Нет данных";
@@ -55,6 +55,7 @@ export function DashboardPage() {
   const [realizationNotice, setRealizationNotice] = useState<string | null>(null);
   const [syncingAccrual, setSyncingAccrual] = useState(false);
   const [accrualNotice, setAccrualNotice] = useState<string | null>(null);
+  const [accrualReportNotice, setAccrualReportNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -158,6 +159,30 @@ export function DashboardPage() {
     }
   };
 
+  // Единственный точный источник для «Логистика и услуги» — см.
+  // app.services.accrual_report_import: Ozon не даёт этот же (день × группа
+  // × тип) разрез ни через один подтверждённый метод API, только через
+  // ручную (пере)загрузку отчёта «Начисления» из кабинета (Финансы →
+  // Начисления → «Скачать отчёт», XLSX). Повторная загрузка перекрывающегося
+  // периода ничего не задваивает — данные обновляются по дню/группе/типу.
+  const uploadAccrualReport = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!currentStore) return;
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setAccrualReportNotice("Загрузка отчёта «Начисления»...");
+    try {
+      const result = await api.upload<ImportSummary>(`/stores/${currentStore.id}/dashboard/upload-accruals`, file);
+      setAccrualReportNotice(
+        `Загружено: записей (день×группа×тип) ${result.created}` +
+          (result.errors.length ? `. Примечания: ${result.errors.slice(0, 3).join("; ")}` : "")
+      );
+      load();
+    } catch (err) {
+      setAccrualReportNotice(err instanceof ApiError ? err.message : "Ошибка загрузки файла");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -213,7 +238,7 @@ export function DashboardPage() {
           >
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricCard label="Заказы, шт." metric={dashboard.orders_revenue.orders} format={fmtInt} />
-              <MetricCard label="Выручка" metric={dashboard.orders_revenue.revenue_rub} format={fmtRub} />
+              <MetricCard label="Выручка (по заказам)" metric={dashboard.orders_revenue.revenue_rub} format={fmtRub} />
               <Stat label="Средний чек" value={fmtRub(dashboard.orders_revenue.avg_order_value_rub)} />
               <Stat label="Процент выкупа" value={fmtPct(dashboard.orders_revenue.buyout_pct)} />
             </div>
@@ -222,10 +247,14 @@ export function DashboardPage() {
               {dashboard.orders_revenue.source === "ozon_seller_api"
                 ? "автоматически, Ozon Seller API (та же синхронизация, что и «РНП»/«Маржа»)."
                 : "отчёт «Аналитика → Товары» (CSV/XLSX), загруженный вручную."}{" "}
-              «Заказы», «Выручка» и «Средний чек» — это «заказано» (на момент заказа), а не «выкуплено»; «Процент
-              выкупа» — единственная цифра здесь, которая уже учитывает и то, и другое (доля заказанных штук,
-              реально дошедших до покупателя). Абсолютные суммы выкупа и маржу с учётом себестоимости смотрите в
-              блоке «Маржа» ниже — эти цифры не обязаны совпадать с «Выручкой» выше.
+              «Заказы», «Выручка (по заказам)» и «Средний чек» — это «заказано» (на момент заказа, полная сумма без
+              вычетов), а не «выкуплено»; «Процент выкупа» — единственная цифра здесь, которая уже учитывает и то, и
+              другое (доля заказанных штук, реально дошедших до покупателя). Эта «Выручка» НЕ совпадает ни с
+              «Выручка (выкуп)» в блоке «Маржа» ниже (та — только по факту доставки, за вычетом отмен/возвратов), ни
+              с «Выручкой» в кабинете Ozon (Финансы → Начисления) или в отчёте о реализации — там показывают уже
+              выкупленное и за вычетом баллов/скидок/комиссии. Три разных числа с одним и тем же словом «выручка» —
+              это не ошибка синхронизации, а три разных момента и метода подсчёта; абсолютные суммы выкупа и маржу
+              с учётом себестоимости смотрите в блоке «Маржа» ниже.
             </p>
           </DashboardSection>
 
@@ -351,24 +380,50 @@ export function DashboardPage() {
                   disabled={syncingLogistics}
                   className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
                 >
-                  {syncingLogistics ? "Синхронизация..." : "Обновить логистику/услуги (авто)"}
-                </button>
+                  {syncingLogistics ? "Синхронизация..." : "Обновить логистику/услуги (авто, оценка)"}
+                </button>{" "}
+                или{" "}
+                <label className="cursor-pointer underline">
+                  загрузите отчёт «Начисления» (точно, XLSX)
+                  <input type="file" accept=".xlsx" className="hidden" onChange={uploadAccrualReport} />
+                </label>
               </>
             }
           >
-            <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-slate-400">
-                Источник: автоматически, Ozon Seller API (отчёт ДДС, POST /v1/finance/cash-flow-statement/list) —
-                заменил отключённый Ozon метод для финансовых операций.
+                {dashboard.logistics.data_source === "accrual_report" ? (
+                  <>
+                    ✓ Точно, по вашему отчёту «Начисления» — тот же разбор по дням/группам/типам, что видно в
+                    кабинете Ozon (Финансы → Начисления). Чтобы обновить за новый период, загрузите свежий файл.
+                  </>
+                ) : (
+                  <>
+                    ≈ Оценка: автоматически, Ozon Seller API (отчёт ДДС, POST /v1/finance/cash-flow-statement/list).
+                    Для точных цифр (в том числе «Эквайринг» отдельной строкой) загрузите отчёт «Начисления» справа.
+                  </>
+                )}
               </p>
-              <button
-                onClick={syncLogistics}
-                disabled={syncingLogistics}
-                className="shrink-0 rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
-              >
-                {syncingLogistics ? "Синхронизация..." : "Обновить (авто)"}
-              </button>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  onClick={syncLogistics}
+                  disabled={syncingLogistics}
+                  className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                >
+                  {syncingLogistics ? "Синхронизация..." : "Обновить (авто, оценка)"}
+                </button>
+                <label
+                  className="cursor-pointer rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200"
+                  title="Кабинет Ozon → Финансы → Начисления → «Скачать отчёт» (XLSX)"
+                >
+                  Загрузить отчёт «Начисления» (точно, XLSX)
+                  <input type="file" accept=".xlsx" className="hidden" onChange={uploadAccrualReport} />
+                </label>
+              </div>
             </div>
+            {accrualReportNotice && (
+              <div className="mb-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{accrualReportNotice}</div>
+            )}
             {dashboard.logistics.periods_summed > 0 ? (
               <>
                 {dashboard.logistics.is_estimated && (
@@ -377,15 +432,35 @@ export function DashboardPage() {
                     пропорционально дням, а не взята из точного отчёта Ozon.
                   </p>
                 )}
+                {dashboard.logistics.data_source === "accrual_report" &&
+                  dashboard.logistics.accrual_report_days_covered !== null &&
+                  dashboard.logistics.accrual_report_days_total !== null &&
+                  dashboard.logistics.accrual_report_days_covered < dashboard.logistics.accrual_report_days_total && (
+                    <p className="mb-2 rounded-md bg-amber-50 p-2 text-xs text-amber-700">
+                      ⚠ Отчёт «Начисления» загружен только на {dashboard.logistics.accrual_report_days_covered} из{" "}
+                      {dashboard.logistics.accrual_report_days_total} дн. выбранного периода — суммы ниже точные, но
+                      неполные для всего периода. Загрузите отчёт за оставшиеся дни, чтобы покрыть весь период.
+                    </p>
+                  )}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                   <Stat label="Логистика" value={fmtRub(dashboard.logistics.logistics_rub)} />
                   <Stat label="Обработка возвратов" value={fmtRub(dashboard.logistics.returns_logistics_rub)} />
-                  <Stat label="Хранение" value={fmtRub(dashboard.logistics.storage_rub)} />
-                  <Stat label="Штрафы" value={fmtRub(dashboard.logistics.fines_rub)} />
+                  {dashboard.logistics.storage_rub !== null && (
+                    <Stat label="Хранение" value={fmtRub(dashboard.logistics.storage_rub)} />
+                  )}
+                  {dashboard.logistics.fines_rub !== null && (
+                    <Stat label="Штрафы" value={fmtRub(dashboard.logistics.fines_rub)} />
+                  )}
+                  {dashboard.logistics.acquiring_rub !== null && (
+                    <Stat label="Эквайринг" value={fmtRub(dashboard.logistics.acquiring_rub)} />
+                  )}
                   <Stat label="Услуги партнёров" value={fmtRub(dashboard.logistics.partner_services_rub)} />
                   <Stat label="Услуги FBO" value={fmtRub(dashboard.logistics.fbo_services_rub)} />
                   <Stat label="Прочие удержания" value={fmtRub(dashboard.logistics.other_deductions_rub)} />
-                  <Stat label="Прочие услуги" value={fmtRub(dashboard.logistics.other_services_rub)} />
+                  <Stat
+                    label={dashboard.logistics.data_source === "accrual_report" ? "Другие услуги и штрафы" : "Прочие услуги"}
+                    value={fmtRub(dashboard.logistics.other_services_rub)}
+                  />
                 </div>
                 {dashboard.logistics.other_services_top_item_name && (
                   <p className="mt-2 text-xs text-slate-500">
@@ -399,28 +474,42 @@ export function DashboardPage() {
                   </p>
                 )}
                 <p className="mt-2 text-xs text-slate-400">
-                  {dashboard.logistics.period_note}. «Логистика» — доставка (последняя миля, приём в пункте
-                  приёма, магистраль); «Обработка возвратов» — расходы на возврат товара: и обработка через пункт
-                  выдачи, и обратная логистика (доставка возвращённого товара обратно); «Хранение» и «Штрафы» —
-                  статьи услуг Ozon, распознанные по названию («MarketplaceServiceStorageItem», «Fines...»);
-                  «Услуги партнёров» — эквайринг, страхование, упаковка, временное размещение и обработка
-                  возвратов партнёрами (доставка до места выдачи партнёрами пока не найдена ни в одном
-                  доступном отчёте Ozon — деньги учтены в общей сумме, просто не в этой строке); «Услуги FBO» —
-                  кросс-докинг (складская приёмка/подготовка — статьи с ещё не подтверждённым названием — сюда
-                  пока не попадают); «Прочие удержания» — то, что осталось из отдельной статьи Ozon (например,
-                  компенсации продавца), не входящей в услуги; «Прочие услуги» — то, что осталось из услуг
-                  (реклама за клик и др.) — новое, ранее не встречавшееся название статьи попадёт именно сюда, а
-                  не будет угадано в одну из категорий выше. На реальном аккаунте (проверено 2026-09-20 по
-                  полному списку названий, не по частичному просмотру) в «Прочие услуги» попадает больше двух
-                  десятков разных статей — крупнейшая и самая заметная из них обычно
-                  «MarketplaceServiseItemAgencyFeeForSale» (агентская комиссия за продажу — волатильная, может
-                  быть и расходом, и доходом в разные недели) и «MarketplaceServiseItemPointsAwarded» (баллы,
-                  начисленные покупателям по программе лояльности — всегда положительная сумма, уменьшает
-                  «Прочие услуги» по модулю); остальное — по большей части мелкие, редко встречающиеся статьи, а
-                  не одна скрытая ошибка. У вашего магазина состав может отличаться. Ozon группирует эти цифры
-                  собственными периодами
-                  (обычно неделя), которые не всегда совпадают с выбранным периодом дашборда — период, попавший в
-                  диапазон лишь частично, всё равно учтён, но пропорционально дням (см. пометку «Оценка» выше).
+                  {dashboard.logistics.period_note}.{" "}
+                  {dashboard.logistics.data_source === "accrual_report" ? (
+                    <>
+                      Разбивка — точные группы/типы Ozon из вашего отчёта «Начисления», без каких-либо оценок:
+                      «Логистика» и «Обработка возвратов» — группа «Услуги доставки» (обратная логистика — отдельно);
+                      «Эквайринг» и «Услуги партнёров» — группа «Услуги партнёров» (эквайринг Ozon показывает как
+                      отдельный тип начисления внутри неё, здесь тоже вынесен отдельно); «Услуги FBO» — одноимённая
+                      группа Ozon; «Другие услуги и штрафы» — тоже одноимённая, ранее не встречавшаяся здесь
+                      небольшая группа Ozon (отгрузка в нерекомендованный слот, утилизация и т.п.) — раньше на её
+                      месте показывалась гораздо бо́льшая и не до конца понятная «Прочие услуги», посчитанная по
+                      отчёту ДДС; «Хранение»/«Штрафы» отдельными строками этот отчёт не показывает (спрятаны внутри
+                      группы выше), поэтому не отображаются. «Прочие удержания» — единственная строка здесь, которая
+                      всё ещё считается по отчёту ДДС (может быть оценкой): отчёт «Начисления» не содержит операций
+                      декомпенсации продавца, они видны только в ДДС.
+                    </>
+                  ) : (
+                    <>
+                      «Логистика» — доставка (последняя миля, приём в пункте приёма, магистраль); «Обработка
+                      возвратов» — расходы на возврат товара: и обработка через пункт выдачи, и обратная логистика
+                      (доставка возвращённого товара обратно); «Хранение» и «Штрафы» — статьи услуг Ozon,
+                      распознанные по названию («MarketplaceServiceStorageItem», «Fines...»); «Услуги партнёров» —
+                      эквайринг, страхование, упаковка, временное размещение и обработка возвратов партнёрами
+                      (доставка до места выдачи партнёрами пока не найдена ни в одном доступном отчёте Ozon — деньги
+                      учтены в общей сумме, просто не в этой строке); «Услуги FBO» — кросс-докинг (складская
+                      приёмка/подготовка — статьи с ещё не подтверждённым названием — сюда пока не попадают);
+                      «Прочие удержания» — то, что осталось из отдельной статьи Ozon (например, компенсации
+                      продавца), не входящей в услуги; «Прочие услуги» — то, что осталось из услуг (реклама за клик
+                      и др.) — новое, ранее не встречавшееся название статьи попадёт именно сюда, а не будет угадано
+                      в одну из категорий выше; на реальном аккаунте туда попадает больше двух десятков разных
+                      статей, а не одна скрытая ошибка. Ozon группирует эти цифры собственными периодами (обычно
+                      неделя), которые не всегда совпадают с выбранным периодом дашборда — период, попавший в
+                      диапазон лишь частично, всё равно учтён, но пропорционально дням (см. пометку «Оценка» выше).
+                      Загрузите отчёт «Начисления» (кнопка выше), чтобы увидеть точные цифры — в том числе
+                      «Эквайринг» отдельной строкой и настоящую, а не оценочную «Другие услуги и штрафы».
+                    </>
+                  )}
                 </p>
               </>
             ) : (
