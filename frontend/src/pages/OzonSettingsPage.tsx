@@ -8,7 +8,15 @@ const SOURCE_LABELS: Record<string, string> = {
   ozon_api: "Ozon Seller API (отзывы)",
   ozon_advertising_api: "Ozon Performance API (кампании)",
   ozon_advertising_statistics_api: "Ozon Performance API (статистика)",
+  ozon_advertising_ai_review: "Ozon Performance API (обзор от ИИ)",
   ozon_products_api: "Ozon Seller API (товары)",
+  ozon_search_query_statistics_api: "Ozon Seller API (поисковые запросы)",
+  ozon_orders_api: "Ozon Seller API (заказы/РНП)",
+  ozon_analytics_data_api: "Ozon Seller API (аналитика товаров)",
+  ozon_cash_flow_statement_api: "Ozon Seller API (логистика и услуги, ДДС)",
+  ozon_rating_summary_api: "Ozon Seller API (рейтинг/локализация)",
+  ozon_realization_report_api: "Ozon Seller API (реализация, месяц)",
+  ozon_accrual_daily_api: "Ozon Seller API (начисления по дням)",
   csv_import: "CSV",
   xlsx_import: "XLSX",
 };
@@ -225,6 +233,7 @@ export function OzonSettingsPage() {
                 <th>Получено</th>
                 <th>Создано</th>
                 <th>Дублей / обновлено</th>
+                <th>Примечание</th>
               </tr>
             </thead>
             <tbody>
@@ -236,6 +245,12 @@ export function OzonSettingsPage() {
                   <td>{r.items_fetched}</td>
                   <td>{r.items_created}</td>
                   <td>{r.items_skipped_duplicate}</td>
+                  <td
+                    className="max-w-xs truncate text-xs text-slate-500"
+                    title={r.error_message ?? undefined}
+                  >
+                    {r.error_message ?? "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>
