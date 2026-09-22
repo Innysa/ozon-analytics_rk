@@ -64,24 +64,6 @@ user (2026-09-11): "Планы ставим только по «Заказы» �
 therefore has no buyouts/profit columns at all (removed, not just hidden —
 see that model's own docstring); Выкупы/Прибыль still get real Прогноз/
 Факт here, just never a plan_month value.
-
-ADDED 2026-09-22: логистика/хранение/эквайринг/услуги FBO/прочие услуги
-costs — requested by the user after she showed a competing paid tool
-(«Система 10X») computing per-product margin/profit net of exactly these
-costs, not just cost price and ad spend. Sourced from
-ProductAccrualReportDailyStatistic — the per-SKU slice of the same manual
-«Начисления» upload used for the Дашборд's «Логистика и услуги» block (see
-that model's/app.services.accrual_report_import's own docstrings). Folded
-into profit_before_ad (NOT just profit_after_ad) since these are ordinary
-operating costs, not advertising spend — matches «Система 10X»'s own
-layout, where "Маржа до ДРР"/"Маржа с ДРР" both already net out logistics/
-services and differ from each other by ad spend alone. Additive only: a
-product/day with no accrual-report data subtracts 0 (unchanged from
-before this feature existed), never blocks profit on cost_price_rub being
-known the way cost_known does — logistics_costs_known instead flags
-whether ANY such data exists for the row, and logistics_costs_days_covered/
-_days_in_month say how much of the month it actually covers, so a partial
-upload doesn't get silently presented as the full picture.
 """
 from __future__ import annotations
 
@@ -94,7 +76,6 @@ from sqlalchemy.orm import Session
 
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.product import Product
-from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
 from app.models.product_monthly_plan import ProductMonthlyPlan
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.models.store_rating_summary import StoreRatingSummary
@@ -108,22 +89,6 @@ from app.schemas.product_planner import (
 
 HISTORY_MONTHS_FOR_SUGGESTION = 3
 
-# Ozon's own «Группа услуг» names from the «Начисления» report (see
-# ProductAccrualReportDailyStatistic's own docstring) — "Продажи",
-# "Возвраты", "Вознаграждение Ozon" and "Продвижение и реклама" are
-# deliberately EXCLUDED here: the first three are revenue/commission
-# figures already represented elsewhere (buyouts_sum_rub, and Ozon
-# commission isn't subtracted by this planner at all yet), and ad spend is
-# already subtracted separately from AdvertisingDailyStatistic
-# (ad_spend_rub) — summing "Продвижение и реклама" in here too would
-# double-count the same real money under a different name.
-_LOGISTICS_GROUP = "Услуги доставки"
-_STORAGE_GROUP = "Хранение"
-_FBO_GROUP = "Услуги FBO"
-_PARTNER_GROUP = "Услуги партнёров"
-_ACQUIRING_TYPE = "Эквайринг"
-_OTHER_SERVICES_GROUP = "Другие услуги и штрафы"
-
 
 @dataclass
 class _DailyAgg:
@@ -135,20 +100,6 @@ class _DailyAgg:
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
     ad_spend_rub: float = 0.0
-    logistics_rub: float = 0.0
-    storage_rub: float = 0.0
-    acquiring_rub: float = 0.0
-    partner_services_rub: float = 0.0
-    fbo_services_rub: float = 0.0
-    other_services_rub: float = 0.0
-    accrual_costs_known: bool = False
-
-    @property
-    def accrual_costs_rub(self) -> float:
-        return (
-            self.logistics_rub + self.storage_rub + self.acquiring_rub
-            + self.partner_services_rub + self.fbo_services_rub + self.other_services_rub
-        )
 
 
 @dataclass
@@ -158,19 +109,10 @@ class _ProductAgg:
     buyouts_units: int = 0
     buyouts_sum_rub: float = 0.0
     ad_spend_rub: float = 0.0
-    accrual_costs_days_covered: int = 0
     by_date: dict[date, _DailyAgg] = field(default_factory=dict)
 
     def day(self, d: date) -> _DailyAgg:
         return self.by_date.setdefault(d, _DailyAgg())
-
-    @property
-    def accrual_costs_rub(self) -> float:
-        return sum(day.accrual_costs_rub for day in self.by_date.values())
-
-    @property
-    def accrual_costs_known(self) -> bool:
-        return self.accrual_costs_days_covered > 0
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date, int]:
@@ -260,41 +202,6 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
         agg.ad_spend_rub += spend
         agg.day(d).ad_spend_rub += spend
 
-    accrual_rows = db.scalars(
-        select(ProductAccrualReportDailyStatistic).where(
-            ProductAccrualReportDailyStatistic.store_id == store_id,
-            ProductAccrualReportDailyStatistic.accrual_date >= date_from,
-            ProductAccrualReportDailyStatistic.accrual_date <= date_to,
-        )
-    ).all()
-    covered_days_by_sku: dict[str, set[date]] = {}
-    for r in accrual_rows:
-        amount = float(r.amount_rub or 0)
-        day = by_sku.setdefault(r.ozon_sku, _ProductAgg()).day(r.accrual_date)
-        if r.service_group == _LOGISTICS_GROUP:
-            day.logistics_rub += amount
-        elif r.service_group == _STORAGE_GROUP:
-            day.storage_rub += amount
-        elif r.service_group == _FBO_GROUP:
-            day.fbo_services_rub += amount
-        elif r.service_group == _PARTNER_GROUP:
-            if r.charge_type == _ACQUIRING_TYPE:
-                day.acquiring_rub += amount
-            else:
-                day.partner_services_rub += amount
-        elif r.service_group == _OTHER_SERVICES_GROUP:
-            day.other_services_rub += amount
-        else:
-            # Не отслеживаемая здесь группа (Продажи/Возвраты/Вознаграждение
-            # Ozon/Продвижение и реклама — см. докстринг констант выше) —
-            # не расход, который этот планировщик вычитает.
-            continue
-        day.accrual_costs_known = True
-        covered_days_by_sku.setdefault(r.ozon_sku, set()).add(r.accrual_date)
-
-    for sku, days in covered_days_by_sku.items():
-        by_sku[sku].accrual_costs_days_covered = len(days)
-
     return by_sku
 
 
@@ -307,10 +214,7 @@ def _row_for_product(
     cost_known = product is not None and product.cost_price_rub is not None
     if cost_known:
         cost_total = float(product.cost_price_rub) * agg.buyouts_units
-        # accrual_costs_rub is already NEGATIVE (Ozon's own deduction sign,
-        # same convention as LogisticsBlock on the Дашборд) — ADD it, don't
-        # subtract, or a negative cost would incorrectly INCREASE profit.
-        profit_before_ad = agg.buyouts_sum_rub - cost_total + agg.accrual_costs_rub
+        profit_before_ad = agg.buyouts_sum_rub - cost_total
         profit_after_ad = profit_before_ad - agg.ad_spend_rub
 
     krpp_pct = (
@@ -343,18 +247,8 @@ def _row_for_product(
             buyouts_sum_rub=round(day.buyouts_sum_rub, 2),
             buyouts_units=day.buyouts_units,
             ad_spend_rub=round(day.ad_spend_rub, 2),
-            logistics_rub=round(day.logistics_rub, 2),
-            storage_rub=round(day.storage_rub, 2),
-            acquiring_rub=round(day.acquiring_rub, 2),
-            partner_services_rub=round(day.partner_services_rub, 2),
-            fbo_services_rub=round(day.fbo_services_rub, 2),
-            other_services_rub=round(day.other_services_rub, 2),
-            accrual_costs_known=day.accrual_costs_known,
             profit_rub=(
-                round(
-                    day.buyouts_sum_rub - float(product.cost_price_rub) * day.buyouts_units
-                    + day.accrual_costs_rub - day.ad_spend_rub, 2,
-                )
+                round(day.buyouts_sum_rub - float(product.cost_price_rub) * day.buyouts_units - day.ad_spend_rub, 2)
                 if cost_known and product is not None
                 else None
             ),
@@ -408,9 +302,6 @@ def _row_for_product(
         margin_after_ad_pct=margin_after_pct,
         localization_pct=float(product.localization_pct) if product and product.localization_pct is not None else None,
         localization_calculation_date=product.localization_period_end if product else None,
-        logistics_costs_known=agg.accrual_costs_known,
-        logistics_costs_month_rub=round(agg.accrual_costs_rub, 2) if agg.accrual_costs_known else None,
-        logistics_costs_days_covered=agg.accrual_costs_days_covered,
         daily=daily,
     )
 
@@ -446,7 +337,6 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
     any_stock = False
     total_cost_known_buyouts_sum = total_cost_known_profit_before = total_cost_known_profit_after = 0.0
     any_cost_known = False
-    total_accrual_costs_days: set[date] = set()
 
     for product in products:
         agg = agg_by_sku.get(product.ozon_sku, _ProductAgg())
@@ -469,15 +359,6 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             total_day.buyouts_units += day.buyouts_units
             total_day.buyouts_sum_rub += day.buyouts_sum_rub
             total_day.ad_spend_rub += day.ad_spend_rub
-            total_day.logistics_rub += day.logistics_rub
-            total_day.storage_rub += day.storage_rub
-            total_day.acquiring_rub += day.acquiring_rub
-            total_day.partner_services_rub += day.partner_services_rub
-            total_day.fbo_services_rub += day.fbo_services_rub
-            total_day.other_services_rub += day.other_services_rub
-            if day.accrual_costs_known:
-                total_day.accrual_costs_known = True
-                total_accrual_costs_days.add(d)
 
         if plan:
             any_plan = True
@@ -497,7 +378,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             # rounded to 2 decimals) — avoids compounding rounding error
             # across many products in the "Итого" row.
             any_cost_known = True
-            profit_before_ad = agg.buyouts_sum_rub - float(product.cost_price_rub) * agg.buyouts_units + agg.accrual_costs_rub
+            profit_before_ad = agg.buyouts_sum_rub - float(product.cost_price_rub) * agg.buyouts_units
             profit_after_ad = profit_before_ad - agg.ad_spend_rub
             total_cost_known_buyouts_sum += agg.buyouts_sum_rub
             total_cost_known_profit_before += profit_before_ad
@@ -564,11 +445,6 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
             if rating_summary and rating_summary.localization_calculation_date
             else None
         ),
-        logistics_costs_known=bool(total_accrual_costs_days),
-        logistics_costs_month_rub=(
-            round(sum(day.accrual_costs_rub for day in total_agg.by_date.values()), 2) if total_accrual_costs_days else None
-        ),
-        logistics_costs_days_covered=len(total_accrual_costs_days),
         daily=[
             DailyBreakdownEntry(
                 date=d, orders_sum_rub=round(day.orders_sum_rub, 2), orders_units=day.orders_units,
@@ -576,12 +452,7 @@ def compute_product_planner(db: Session, *, store_id: str, year: int, month: int
                 orders_sum_discounted_for_known_seller_price_rub=round(day.orders_sum_discounted_for_known_seller_price_rub, 2),
                 orders_units_with_known_seller_price=day.orders_units_with_known_seller_price,
                 buyouts_sum_rub=round(day.buyouts_sum_rub, 2), buyouts_units=day.buyouts_units,
-                ad_spend_rub=round(day.ad_spend_rub, 2),
-                logistics_rub=round(day.logistics_rub, 2), storage_rub=round(day.storage_rub, 2),
-                acquiring_rub=round(day.acquiring_rub, 2), partner_services_rub=round(day.partner_services_rub, 2),
-                fbo_services_rub=round(day.fbo_services_rub, 2), other_services_rub=round(day.other_services_rub, 2),
-                accrual_costs_known=day.accrual_costs_known,
-                profit_rub=None,
+                ad_spend_rub=round(day.ad_spend_rub, 2), profit_rub=None,
             )
             for d, day in sorted(total_agg.by_date.items())
         ],

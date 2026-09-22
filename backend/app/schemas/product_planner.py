@@ -47,19 +47,6 @@ class DailyBreakdownEntry(BaseModel):
     buyouts_sum_rub: float
     buyouts_units: int
     ad_spend_rub: float
-    # Логистика/хранение/эквайринг/услуги FBO/услуги партнёров/другие услуги
-    # за этот день по этому товару — из ProductAccrualReportDailyStatistic
-    # (ручная загрузка отчёта «Начисления», см. ProductPlannerRow.
-    # logistics_costs_known ниже). Все 0.0, если для этого дня/товара
-    # ничего не загружено — не блокирует profit_rub, просто ничего не
-    # вычитает сверху себестоимости/рекламы.
-    logistics_rub: float = 0.0
-    storage_rub: float = 0.0
-    acquiring_rub: float = 0.0
-    partner_services_rub: float = 0.0
-    fbo_services_rub: float = 0.0
-    other_services_rub: float = 0.0
-    accrual_costs_known: bool = False  # был ли загружен отчёт «Начисления» для этого дня/товара
     profit_rub: float | None = None  # None when the product's cost price isn't set
 
 
@@ -99,18 +86,6 @@ class ProductPlannerRow(BaseModel):
     # источники, поэтому числа не обязаны совпадать день-в-день (см. README).
     localization_pct: float | None = None
     localization_calculation_date: date | None = None  # дата, на которую посчитан localization_pct — из соответствующего источника выше
-
-    # Логистика/хранение/эквайринг/услуги FBO/услуги партнёров/другие
-    # услуги за месяц по этому товару — сумма по всем дням, уже вычтенная
-    # из profit/margin/КРПП выше (см. app.services.product_planner_service
-    # module docstring). logistics_costs_known — был ли загружен отчёт
-    # «Начисления» хотя бы за один день этого месяца для этого товара (или
-    # для магазина в целом — на строке «Итого»); logistics_costs_days_
-    # covered — за сколько дней месяца ИЗ days_in_month он реально покрыт
-    # (частичное покрытие не блокирует расчёт — просто отражает неполноту).
-    logistics_costs_known: bool = False
-    logistics_costs_month_rub: float | None = None
-    logistics_costs_days_covered: int = 0
 
     daily: list[DailyBreakdownEntry] = []
 
