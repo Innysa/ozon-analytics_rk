@@ -1,7 +1,44 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useStore } from "../store/StoreContext";
-import type { NamedCount, ReviewAnalytics } from "../types";
+import type { NamedCount, RatingBucket, ReviewAnalytics } from "../types";
+
+const CHART_HEIGHT_PX = 140;
+
+function RatingDistributionChart({ distribution }: { distribution: RatingBucket[] }) {
+  // ИСПРАВЛЕНО 2026-09-22: раньше высота столбца была count*8+4px без
+  // ограничения сверху — при ~1000 отзывах, почти все на 5★, это давало
+  // столбец высотой в тысячи пикселей, уходящий далеко за пределы экрана.
+  // Теперь высота — доля от максимального столбца в пределах фиксированной
+  // высоты графика, а не сырой пиксель на отзыв.
+  const maxCount = Math.max(...distribution.map((b) => b.count), 1);
+  return (
+    <div>
+      {/* Fixed-height bar row — labels live in a separate row below, so a
+          bar can never push the layout taller than CHART_HEIGHT_PX. */}
+      <div className="flex items-end gap-3" style={{ height: CHART_HEIGHT_PX }}>
+        {distribution.map((b) => {
+          const barHeight = b.count > 0 ? Math.max((b.count / maxCount) * CHART_HEIGHT_PX, 4) : 2;
+          return (
+            <div
+              key={b.rating}
+              className="w-8 rounded-t bg-indigo-500"
+              style={{ height: barHeight }}
+              title={`${b.rating}★ — ${b.count} отзыв(ов)`}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-1 flex gap-3">
+        {distribution.map((b) => (
+          <span key={b.rating} className="w-8 text-center text-xs text-slate-500">
+            {b.rating}★ ({b.count})
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function EvidenceList({ items, title }: { items: NamedCount[]; title: string }) {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
@@ -66,14 +103,7 @@ export function AnalyticsPage() {
 
       <div className="rounded-md border border-slate-200 bg-white p-4">
         <h3 className="mb-2 text-sm font-semibold text-slate-700">Распределение оценок (факт)</h3>
-        <div className="flex items-end gap-3">
-          {data.rating_distribution.map((b) => (
-            <div key={b.rating} className="flex flex-col items-center">
-              <div className="w-8 bg-indigo-500" style={{ height: `${b.count * 8 + 4}px` }} />
-              <span className="mt-1 text-xs text-slate-500">{b.rating}★ ({b.count})</span>
-            </div>
-          ))}
-        </div>
+        <RatingDistributionChart distribution={data.rating_distribution} />
       </div>
 
       {data.products_with_rising_negativity.length > 0 && (
