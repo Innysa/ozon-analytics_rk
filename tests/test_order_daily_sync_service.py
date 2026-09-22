@@ -21,9 +21,12 @@ from app.services.order_daily_sync_service import (
 )
 
 
-def _posting(*, status: str, in_process_at: str, sku: int, price: str, old_price: float, commission: float, quantity: int = 1) -> OzonPostingItem:
+def _posting(
+    *, status: str, in_process_at: str, sku: int, price: str, old_price: float, commission: float,
+    quantity: int = 1, posting_number: str = "123-0001-1",
+) -> OzonPostingItem:
     return OzonPostingItem(
-        posting_number="123-0001-1",
+        posting_number=posting_number,
         status=status,
         in_process_at=in_process_at,
         products=[OzonPostingProductItem(sku=sku, offer_id="art", name="Товар", quantity=quantity, price=price)],
@@ -377,8 +380,13 @@ class _FakePaginatedFetch:
     account's transaction list came back with exactly page_size rows for a
     7-day window, meaning more existed beyond that page."""
 
-    def __init__(self, pages: list[list[OzonPostingItem]]):
+    def __init__(self, pages: list[list[OzonPostingItem]], *, has_next_overrides: dict[int, bool] | None = None):
         self._pages = pages
+        # Lets a test simulate Ozon's own has_next being WRONG for a given
+        # page index — see test_fetch_all_postings_flags_truncation_when_
+        # ozon_has_next_lies below, matching the real 2026-09-22 incident
+        # (has_next=False even though more/duplicate data was reachable).
+        self._has_next_overrides = has_next_overrides or {}
         self.calls: list[dict] = []
 
     def __call__(self, *, date_from, date_to, offset, limit):
@@ -387,18 +395,22 @@ class _FakePaginatedFetch:
         self.calls.append({"date_from": date_from, "date_to": date_to, "offset": offset, "limit": limit})
         page_index = offset // limit
         postings = self._pages[page_index] if page_index < len(self._pages) else []
-        has_next = page_index < len(self._pages) - 1
+        if page_index in self._has_next_overrides:
+            has_next = self._has_next_overrides[page_index]
+        else:
+            has_next = page_index < len(self._pages) - 1
         return OzonPostingListResponse(result=OzonPostingListResult(postings=postings, has_next=has_next))
 
 
 def test_fetch_all_postings_follows_has_next_pagination():
-    page1 = [_posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=1, price="1", old_price=1, commission=0)]
-    page2 = [_posting(status="delivered", in_process_at="2026-09-03T00:00:00Z", sku=2, price="1", old_price=1, commission=0)]
+    page1 = [_posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=1, price="1", old_price=1, commission=0, posting_number="p1")]
+    page2 = [_posting(status="delivered", in_process_at="2026-09-03T00:00:00Z", sku=2, price="1", old_price=1, commission=0, posting_number="p2")]
     fetch = _FakePaginatedFetch([page1, page2])
 
-    result = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
+    postings, truncated = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
 
-    assert len(result) == 2
+    assert len(postings) == 2
+    assert truncated is False
     assert len(fetch.calls) == 2
     assert fetch.calls[0]["offset"] == 0
     assert fetch.calls[1]["offset"] == fetch.calls[0]["limit"]
@@ -408,10 +420,78 @@ def test_fetch_all_postings_stops_when_has_next_is_false():
     page1 = [_posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=1, price="1", old_price=1, commission=0)]
     fetch = _FakePaginatedFetch([page1])
 
-    result = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
+    postings, truncated = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
 
-    assert len(result) == 1
+    assert len(postings) == 1
+    assert truncated is False
     assert len(fetch.calls) == 1
+
+
+def test_fetch_all_postings_flags_truncation_when_ozon_has_next_lies():
+    """CONFIRMED 2026-09-22 on a real account (store "Комфорт дом"): FBO's
+    own fetched-per-run count was EXACTLY PAGE_LIMIT × chunk-count on FOUR
+    SEPARATE nightly runs covering DIFFERENT rolling windows — has_next was
+    apparently never true for this store's FBO postings even though the
+    true volume exceeded PAGE_LIMIT per chunk, silently losing everything
+    past page 1. The old code trusted has_next=False outright; this probes
+    one page further whenever the page it just got was FULL, and treats a
+    repeated leading posting_number at that next offset as confirmation
+    more data existed but couldn't actually be reached (offset not really
+    advancing the window) — not a genuinely complete fetch."""
+    from app.services.order_daily_sync_service import PAGE_LIMIT
+
+    full_page = [
+        _posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=n, price="1", old_price=1, commission=0, posting_number=f"p{n}")
+        for n in range(PAGE_LIMIT)
+    ]
+    # Ozon reports has_next=False on the very first (full) page — exactly
+    # the real incident — but probing the next offset anyway reveals the
+    # SAME data again (offset didn't move the window).
+    fetch = _FakePaginatedFetch([full_page, full_page], has_next_overrides={0: False})
+
+    postings, truncated = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
+
+    assert len(postings) == PAGE_LIMIT  # the repeated page is NOT double-counted
+    assert truncated is True
+    assert len(fetch.calls) == 2  # the probe past has_next=False actually happened
+
+
+def test_fetch_all_postings_not_truncated_when_full_page_is_genuinely_the_whole_dataset():
+    """A full page whose true size just happens to equal PAGE_LIMIT exactly
+    must NOT be flagged — probing past it and getting a genuinely EMPTY
+    page (not a repeat) confirms there really was nothing more to fetch."""
+    from app.services.order_daily_sync_service import PAGE_LIMIT
+
+    full_page = [
+        _posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=n, price="1", old_price=1, commission=0, posting_number=f"p{n}")
+        for n in range(PAGE_LIMIT)
+    ]
+    fetch = _FakePaginatedFetch([full_page], has_next_overrides={0: False})  # only one page exists — the next probe returns []
+
+    postings, truncated = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
+
+    assert len(postings) == PAGE_LIMIT
+    assert truncated is False
+    assert len(fetch.calls) == 2  # still probed once past the full page, found it genuinely empty
+
+
+def test_fetch_all_postings_not_truncated_when_full_page_is_followed_by_new_data():
+    """A full first page is NOT itself truncation — only failing to reach a
+    genuinely shorter/empty page (or looping) is. Continuing past a full
+    page even though Ozon said has_next=False is what recovers this case."""
+    from app.services.order_daily_sync_service import PAGE_LIMIT
+
+    page1 = [
+        _posting(status="delivered", in_process_at="2026-09-02T00:00:00Z", sku=n, price="1", old_price=1, commission=0, posting_number=f"p{n}")
+        for n in range(PAGE_LIMIT)
+    ]
+    page2 = [_posting(status="delivered", in_process_at="2026-09-03T00:00:00Z", sku=99999, price="1", old_price=1, commission=0, posting_number="p_last")]
+    fetch = _FakePaginatedFetch([page1, page2])
+
+    postings, truncated = _fetch_all_postings(fetch, date_from="2026-09-01T00:00:00Z", date_to="2026-09-07T23:59:59Z")
+
+    assert len(postings) == PAGE_LIMIT + 1
+    assert truncated is False
 
 
 def test_date_chunks_splits_exact_multiple():
@@ -462,6 +542,7 @@ def test_sync_pauses_between_chunk_requests(db_session, monkeypatch):
     from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
 
     monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "2")
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_DAYS", "5")  # pinned so this test doesn't depend on the ambient default
     config_module.get_settings.cache_clear()
 
     sleep_calls: list[float] = []
@@ -541,6 +622,7 @@ def test_sync_pause_doubles_on_rate_limit_and_caps_at_max(db_session, monkeypatc
 
     monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_SECONDS", "1")
     monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_PAUSE_MAX_SECONDS", "4")
+    monkeypatch.setenv("ORDER_STATS_SYNC_CHUNK_DAYS", "5")  # pinned so this test doesn't depend on the ambient default
     config_module.get_settings.cache_clear()
 
     sleep_calls: list[float] = []

@@ -26,6 +26,7 @@ from app.services.order_daily_sync_service import (
     find_blocking_running_sync,
     skipped_no_process_date_note,
     sync_order_daily_statistics,
+    truncated_pagination_note,
 )
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
@@ -601,8 +602,12 @@ def _run_order_daily_statistics_sync(
             schema_note = fetched_by_schema_note(outcome)
             if schema_note:
                 notes.append(schema_note)
+            truncation_note = truncated_pagination_note(outcome)
+            if truncation_note:
+                notes.append(truncation_note)
             error_message = "; ".join(notes) if notes else None
-            run.status = SyncStatus.SUCCESS if not outcome.errors else (
+            has_data_loss_risk = bool(outcome.errors) or bool(outcome.truncated_chunks)
+            run.status = SyncStatus.SUCCESS if not has_data_loss_risk else (
                 SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
             )
         except OzonAuthError as exc:

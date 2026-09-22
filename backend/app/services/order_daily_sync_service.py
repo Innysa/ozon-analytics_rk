@@ -166,6 +166,12 @@ class SyncOutcome:
     # the 1 update) and FBS genuinely fetched 0" — indistinguishable
     # without this breakdown. See fetched_by_schema_note below.
     fetched_by_schema: dict[str, int] = field(default_factory=dict)
+    # Chunks (schema + date range) where _fetch_all_postings() had to stop
+    # without ever confirming an empty/short final page — see that
+    # function's own docstring for the real account (2026-09-22) this was
+    # confirmed on: postings beyond page 1 silently lost for a high-volume
+    # chunk, previously indistinguishable from a genuinely complete fetch.
+    truncated_chunks: list[str] = field(default_factory=list)
 
 
 def _to_float(value: object) -> float:
@@ -476,9 +482,64 @@ def fetched_by_schema_note(outcome: SyncOutcome) -> str | None:
     return f"Получено по схемам: {parts}"
 
 
-def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonPostingItem]:
+def truncated_pagination_note(outcome: SyncOutcome) -> str | None:
+    """A one-line, human-readable note for SyncRun.error_message when
+    _fetch_all_postings() had to stop without ever confirming a genuinely
+    empty/short final page for one or more chunks — surfaced on EVERY run
+    (success included), same convention as the notes above. See that
+    function's own docstring for the real account this was confirmed on:
+    a chunk whose true posting count exceeds PAGE_LIMIT can silently lose
+    everything past page 1 — this makes that loss visible and NAMES the
+    affected chunk instead of leaving a quietly wrong "success"."""
+    if not outcome.truncated_chunks:
+        return None
+    return (
+        f"Возможна потеря данных — пагинация не подтвердила конец списка для "
+        f"{len(outcome.truncated_chunks)} куска(ов): {'; '.join(outcome.truncated_chunks)}"
+    )
+
+
+def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> tuple[list[OzonPostingItem], bool]:
+    """Returns (postings, truncated). truncated=True means a page came back
+    FULL (exactly PAGE_LIMIT rows) but pagination had to stop anyway — either
+    MAX_PAGES was hit, or Ozon's own `offset` param turned out not to be
+    advancing the result set (see below) — so more postings likely exist for
+    this chunk that were never fetched.
+
+    CONFIRMED 2026-09-22 on a real account (store "Комфорт дом"): FBO's own
+    fetched-per-run count was EXACTLY 6000 (= PAGE_LIMIT × 6 date-chunks) on
+    FOUR SEPARATE nightly runs in a row, each covering a DIFFERENT rolling
+    30-day window — a real, growing FBO volume landing on the exact same
+    round multiple of PAGE_LIMIT every single night is not plausible
+    coincidence. This means every 5-day chunk's real FBO volume already
+    exceeded PAGE_LIMIT=1000, and the FIRST page was the only one ever
+    fetched — `has_next` was apparently never true for this store's FBO
+    postings, unlike FBS which paginated normally on the same code path
+    (its own fetched counts varied day to day, not a fixed round number).
+    Silently losing postings beyond page 1 for a high-volume chunk explains
+    a REAL per-SKU symptom the owner reported: daily "Заказано" counts on
+    «РНП Товары» that didn't match her own real per-line Ozon export, off by
+    a lot on some days and not others (whichever postings survived past the
+    truncation, essentially at random with respect to any one SKU) — not
+    explained by the already-documented in_process_at-lag or sync-race
+    causes, both of which only ever affect the MOST RECENT day or two, not
+    arbitrary already-settled days throughout the month.
+
+    Whether Ozon's `offset` genuinely doesn't work for /v2/posting/fbo/list
+    at this account's volume, or `has_next` itself is simply wrong, isn't
+    separately confirmed — either way, trusting `has_next` alone as the ONLY
+    stop condition was the bug: a full page is now ALSO followed up with one
+    more request at the next offset, and if that comes back with the exact
+    same leading posting_number as the page before it (offset didn't
+    actually move the window), that's treated as definitive proof no more
+    data is reachable this way — the difference between "genuinely no more
+    data" (short final page) and "stuck, can't tell" (full page, stuck) is
+    now surfaced as `truncated`, not silently swallowed as a false success.
+    """
     all_postings: list[OzonPostingItem] = []
+    prev_page_first_posting: str | None = None
     offset = 0
+    truncated = False
     for _ in range(MAX_PAGES):
         response = fetch_fn(date_from=date_from, date_to=date_to, offset=offset, limit=PAGE_LIMIT)
         result = response.result
@@ -486,13 +547,25 @@ def _fetch_all_postings(fetch_fn, *, date_from: str, date_to: str) -> list[OzonP
             break
         postings = result if isinstance(result, list) else result.postings
         if not postings:
+            break  # a genuinely empty page is the one reliable "no more data" signal
+        # A page starting with the SAME posting as the previous page means
+        # `offset` did not actually move the result window — continuing
+        # would just loop the same page forever (see this function's own
+        # docstring). Not appended: it's the prior page's own data again,
+        # not new postings.
+        if postings[0].posting_number is not None and postings[0].posting_number == prev_page_first_posting:
+            truncated = True
             break
         all_postings.extend(postings)
+        prev_page_first_posting = postings[0].posting_number
         has_next = False if isinstance(result, list) else bool(result.has_next)
-        if not has_next:
-            break
+        full_page = len(postings) >= PAGE_LIMIT
+        if not has_next and not full_page:
+            break  # a short final page, whatever has_next claims — genuinely done
         offset += PAGE_LIMIT
-    return all_postings
+    else:
+        truncated = True  # MAX_PAGES exhausted without ever seeing a short/empty page
+    return all_postings, truncated
 
 
 def _date_chunks(date_from: date, date_to: date, chunk_days: int) -> list[tuple[date, date]]:
@@ -597,7 +670,10 @@ def sync_order_daily_statistics(
             chunk_from_ts = f"{chunk_from.isoformat()}T00:00:00Z"
             chunk_to_ts = f"{chunk_to.isoformat()}T23:59:59Z"
             try:
-                postings.extend(_fetch_all_postings(fetch_fn, date_from=chunk_from_ts, date_to=chunk_to_ts))
+                chunk_postings, chunk_truncated = _fetch_all_postings(fetch_fn, date_from=chunk_from_ts, date_to=chunk_to_ts)
+                postings.extend(chunk_postings)
+                if chunk_truncated:
+                    outcome.truncated_chunks.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}")
             except OzonRateLimited as exc:
                 outcome.errors.append(f"{schema_label} {chunk_from.isoformat()}—{chunk_to.isoformat()}: {exc}")
                 if chunk_pause_s > 0:

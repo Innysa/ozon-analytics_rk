@@ -21,7 +21,7 @@ TWO jobs, not one, as of 2026-09-22:
      against Ozon's own cabinet — she wants everything to catch up on its
      own, same as every other sync in this app already does. A few-day
      window is a handful of requests (one chunk each for FBO/FBS at the
-     default ORDER_STATS_SYNC_CHUNK_DAYS=5), so running it every couple of
+     default ORDER_STATS_SYNC_CHUNK_DAYS=3), so running it every couple of
      hours doesn't reproduce the sustained-429 problem the once-daily FULL
      sync's own chunking/backoff was built to survive (see
      sync_order_daily_statistics's own docstring) — it's a small fraction of
@@ -54,6 +54,7 @@ from app.services.order_daily_sync_service import (
     find_blocking_running_sync,
     skipped_no_process_date_note,
     sync_order_daily_statistics,
+    truncated_pagination_note,
 )
 from app.services.ozon.client import OzonCredentials as OzonClientCredentials
 from app.services.ozon.client import OzonSellerClient
@@ -115,10 +116,14 @@ def _run_one_store(db: Session, creds: OzonCredentials, *, date_from=None, date_
         schema_note = fetched_by_schema_note(outcome)
         if schema_note:
             notes.append(schema_note)
+        truncation_note = truncated_pagination_note(outcome)
+        if truncation_note:
+            notes.append(truncation_note)
         if date_from is not None or date_to is not None:
             notes.append(f"Быстрое обновление последних дней ({date_from}—{date_to})")
         error_message = "; ".join(notes) if notes else None
-        run.status = SyncStatus.SUCCESS if not outcome.errors else (
+        has_data_loss_risk = bool(outcome.errors) or bool(outcome.truncated_chunks)
+        run.status = SyncStatus.SUCCESS if not has_data_loss_risk else (
             SyncStatus.PARTIAL if (outcome.created or outcome.updated) else SyncStatus.FAILED
         )
     except OzonAuthError as exc:

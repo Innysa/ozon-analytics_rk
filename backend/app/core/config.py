@@ -164,7 +164,22 @@ class Settings(BaseSettings):
     # (MAX_PAGES/PAGE_LIMIT) same as before; one chunk failing after
     # retries is recorded in SyncOutcome.errors and does NOT abort the
     # other chunks (each chunk's postings that DID fetch are still used).
-    ORDER_STATS_SYNC_CHUNK_DAYS: int = 5
+    #
+    # LOWERED 5 -> 3 (2026-09-22): CONFIRMED on a real account ("Комфорт
+    # дом") that a 5-day chunk's true FBO volume had already grown past
+    # PAGE_LIMIT=1000 (see _fetch_all_postings's own docstring for the
+    # exact evidence) — every 5-day chunk silently lost postings beyond
+    # page 1, for weeks, with no error shown (has_next simply never came
+    # back true for this store's FBO at that volume). 3 days gives a real
+    # margin (this store's own FBO rate was ~225/day at the time =~675 per
+    # chunk, ~1/3 headroom below the 1000 cap) while keeping the total
+    # chunk count (and therefore 429 exposure) well short of doubling.
+    # _fetch_all_postings() now also detects and flags this specific
+    # failure mode directly (truncated_chunks/truncated_pagination_note) —
+    # this smaller default is a defense-in-depth mitigation on top of
+    # that, not a substitute for it; a store growing past even this
+    # margin gets a loud, per-chunk error instead of a silent undercount.
+    ORDER_STATS_SYNC_CHUNK_DAYS: int = 3
     # Deliberate, ADAPTIVE pause between consecutive chunk requests (2026-09-11,
     # revised same day after a fixed 3s pause still 429'd — on yet another
     # random subset of chunks than either prior run, on the same store with
