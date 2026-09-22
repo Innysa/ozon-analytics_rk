@@ -379,7 +379,7 @@ export function AdvertisingPage() {
       {campaigns === null ? (
         <div className="text-slate-500">Загрузка кампаний...</div>
       ) : (
-        <CampaignsSection storeId={currentStore.id} campaigns={campaigns} />
+        <CampaignsSection storeId={currentStore.id} campaigns={campaigns} dateFrom={statsDateFrom} dateTo={statsDateTo} />
       )}
     </div>
   );
@@ -489,7 +489,17 @@ function AdvertisingAiReviewSection({ reviews }: { reviews: AdvertisingAiReview[
   );
 }
 
-function CampaignsSection({ storeId, campaigns }: { storeId: string; campaigns: AdvertisingCampaign[] }) {
+function CampaignsSection({
+  storeId,
+  campaigns,
+  dateFrom,
+  dateTo,
+}: {
+  storeId: string;
+  campaigns: AdvertisingCampaign[];
+  dateFrom: string;
+  dateTo: string;
+}) {
   const [tab, setTab] = useState<"active" | "paused" | "referral" | "archived" | "other">("active");
 
   const isReferral = (c: AdvertisingCampaign) => !!c.campaign_type && REFERRAL_CAMPAIGN_TYPES.has(c.campaign_type);
@@ -549,7 +559,7 @@ function CampaignsSection({ storeId, campaigns }: { storeId: string; campaigns: 
           </thead>
           <tbody>
             {shown.map((c) => (
-              <CampaignRow key={c.id} storeId={storeId} campaign={c} />
+              <CampaignRow key={c.id} storeId={storeId} campaign={c} dateFrom={dateFrom} dateTo={dateTo} />
             ))}
           </tbody>
         </table>
@@ -714,27 +724,48 @@ function AnomalyCell({ value, deviation, goodDirection }: { value: string; devia
   );
 }
 
-function CampaignRow({ storeId, campaign }: { storeId: string; campaign: AdvertisingCampaign }) {
+function CampaignRow({
+  storeId,
+  campaign,
+  dateFrom,
+  dateTo,
+}: {
+  storeId: string;
+  campaign: AdvertisingCampaign;
+  dateFrom: string;
+  dateTo: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
   const [autoDailyRows, setAutoDailyRows] = useState<AdvertisingDailyStatistic[] | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const loadAutoDaily = () => {
+    api
+      .get<{ items: AdvertisingDailyStatistic[]; total: number }>(
+        `/stores/${storeId}/advertising/daily-statistics?campaign_id=${campaign.id}&date_from=${dateFrom}&date_to=${dateTo}`
+      )
+      .then((dailyResult) => setAutoDailyRows(dailyResult.items));
+  };
+
+  // ИСПРАВЛЕНО 2026-09-22: таблица «по дням» раньше всегда грузилась один
+  // раз без учёта date_from/date_to, поэтому показывала ВСЮ собранную
+  // историю кампании, а не выбранный вверху страницы период — теперь
+  // перезагружается и при первом открытии, и при смене периода, пока
+  // строка развёрнута.
+  useEffect(() => {
+    if (expanded) loadAutoDaily();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, dateFrom, dateTo]);
 
   const toggle = () => {
     const next = !expanded;
     setExpanded(next);
     if (next && detail === null && !loading) {
       setLoading(true);
-      Promise.all([
-        api.get<CampaignDetail>(`/stores/${storeId}/advertising/campaigns/${campaign.id}/detail`),
-        api.get<{ items: AdvertisingDailyStatistic[]; total: number }>(
-          `/stores/${storeId}/advertising/daily-statistics?campaign_id=${campaign.id}`
-        ),
-      ])
-        .then(([detailResult, dailyResult]) => {
-          setDetail(detailResult);
-          setAutoDailyRows(dailyResult.items);
-        })
+      api
+        .get<CampaignDetail>(`/stores/${storeId}/advertising/campaigns/${campaign.id}/detail`)
+        .then(setDetail)
         .finally(() => setLoading(false));
     }
   };
@@ -810,7 +841,8 @@ function CampaignRow({ storeId, campaign }: { storeId: string; campaign: Adverti
                       Автоматически собрано (Ozon Performance API, по дням)
                     </h4>
                     <div className="text-xs text-slate-500">
-                      Период автосбора: {detail.auto_daily.period_start} — {detail.auto_daily.period_end}
+                      Показан выбранный вверху период: {dateFrom} — {dateTo} (всего собрано за{" "}
+                      {detail.auto_daily.period_start} — {detail.auto_daily.period_end})
                     </div>
 
                     <CampaignAutoDailyTable rows={autoDailyRows ?? []} />
