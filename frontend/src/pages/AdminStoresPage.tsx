@@ -56,6 +56,10 @@ export function AdminStoresPage() {
             <th className="py-1">Название</th>
             <th>Юр. название</th>
             <th>Последняя синхронизация</th>
+            <th>
+              ID магазина
+              <div className="font-normal normal-case text-slate-400">для диагностических команд на сервере</div>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -64,6 +68,7 @@ export function AdminStoresPage() {
               <td className="py-1">{s.name}</td>
               <td>{s.legal_name ?? "—"}</td>
               <td>{s.last_sync_at ? new Date(s.last_sync_at).toLocaleString("ru-RU") : "ещё не выполнялась"}</td>
+              <td className="select-all font-mono text-xs text-slate-500">{s.id}</td>
             </tr>
           ))}
         </tbody>

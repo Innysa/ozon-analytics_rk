@@ -13,9 +13,13 @@ Usage (inside the running container):
     docker compose exec app python backend/scripts/show_product_order_daily.py \\
         --store-id <id> --sku 3249061904
 
+    # or by name instead of the UUID:
+    docker compose exec app python backend/scripts/show_product_order_daily.py \\
+        --store-name "Комфорт дом" --sku 3249061904
+
     # narrow the date range (default: last 20 days):
     docker compose exec app python backend/scripts/show_product_order_daily.py \\
-        --store-id <id> --sku 3249061904 --date-from 2026-08-28 --date-to 2026-09-11
+        --store-name "Комфорт дом" --sku 3249061904 --date-from 2026-08-28 --date-to 2026-09-11
 """
 from __future__ import annotations
 
@@ -28,25 +32,54 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.session import SessionLocal  # noqa: E402
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic  # noqa: E402
+from app.models.store import Store  # noqa: E402
+
+
+def _resolve_store_id(db, *, store_id: str | None, store_name: str | None) -> str | None:
+    """--store-id is the internal UUID (Store.id) — NOT Ozon's own numeric
+    Seller ID. --store-name sidesteps needing that UUID at all: a
+    case-insensitive substring match against Store.name."""
+    if store_id:
+        return store_id
+    matches = db.query(Store).filter(Store.name.ilike(f"%{store_name}%")).all()
+    if len(matches) == 1:
+        print(f"Найден магазин: {matches[0].id} — {matches[0].name}")
+        return matches[0].id
+    if not matches:
+        print(f"Магазин с именем, похожим на «{store_name}», не найден.")
+        return None
+    print(f"Найдено несколько магазинов, подходящих под «{store_name}» — уточните --store-id:")
+    for m in matches:
+        print(f"    {m.id}  —  {m.name}")
+    return None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--store-id", required=True)
+    parser.add_argument("--store-id", default=None, help="внутренний UUID магазина")
+    parser.add_argument("--store-name", default=None, help="имя магазина — альтернатива --store-id")
     parser.add_argument("--sku", required=True)
     parser.add_argument("--date-from", default=None, help="ГГГГ-ММ-ДД, по умолчанию — 20 дней назад от --date-to")
     parser.add_argument("--date-to", default=None, help="ГГГГ-ММ-ДД, по умолчанию — сегодня")
     args = parser.parse_args()
+
+    if not args.store_id and not args.store_name:
+        print("Укажите --store-id или --store-name.")
+        return
 
     date_to = date.fromisoformat(args.date_to) if args.date_to else date.today()
     date_from = date.fromisoformat(args.date_from) if args.date_from else date_to - timedelta(days=20)
 
     db = SessionLocal()
     try:
+        store_id = _resolve_store_id(db, store_id=args.store_id, store_name=args.store_name)
+        if not store_id:
+            return
+
         rows = (
             db.query(ProductOrderDailyStatistic)
             .filter(
-                ProductOrderDailyStatistic.store_id == args.store_id,
+                ProductOrderDailyStatistic.store_id == store_id,
                 ProductOrderDailyStatistic.ozon_sku == args.sku,
                 ProductOrderDailyStatistic.date >= date_from,
                 ProductOrderDailyStatistic.date <= date_to,
