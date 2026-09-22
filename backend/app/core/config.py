@@ -208,6 +208,20 @@ class Settings(BaseSettings):
     ORDER_STATS_SCHEDULER_HOUR_UTC: int = 0
     ORDER_STATS_SCHEDULER_MINUTE_UTC: int = 0
 
+    # ADDED 2026-09-22 — a SEPARATE, more frequent, NARROW-window sync on top
+    # of the full nightly one above (see order_daily_scheduler's own module
+    # docstring for the full reasoning): the owner pushed back on "the last
+    # day or two catches up eventually" requiring her to wait until the next
+    # night or click the manual button herself — she wants it to keep
+    # catching up on its own throughout the day, same as everything else in
+    # this app. A 3-day window is small enough (one chunk each for FBO/FBS
+    # at ORDER_STATS_SYNC_CHUNK_DAYS=5) that running it every 2 hours is a
+    # small fraction of the full sync's own request volume, not a repeat of
+    # the sustained-429 incident that job's chunking/backoff exists for.
+    ORDER_STATS_RECENT_SYNC_ENABLED: bool = True
+    ORDER_STATS_RECENT_SYNC_INTERVAL_HOURS: int = 2
+    ORDER_STATS_RECENT_SYNC_LOOKBACK_DAYS: int = 3
+
     # Automatic per-product funnel sync (app.services.product_analytics_daily_
     # sync_service) — Ozon Seller API POST /v1/analytics/data, Premium Plus/Pro
     # only (see that module's own docstring). 30 days is the same editorial

@@ -191,6 +191,110 @@ def test_find_blocking_running_sync_ignores_finished_runs(db_session, two_stores
     assert find_blocking_running_sync(db_session, store_id=store_id) is None
 
 
+def test_scheduler_also_registers_the_recent_interval_job(monkeypatch):
+    """ADDED 2026-09-22 — see order_daily_scheduler's own module docstring:
+    a SEPARATE, more frequent, narrow-window job on top of the original
+    full nightly one, so the last few days keep catching up throughout the
+    day without waiting for tomorrow night or a manual click."""
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("ORDER_STATS_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("ORDER_STATS_RECENT_SYNC_ENABLED", "true")
+    monkeypatch.setenv("ORDER_STATS_RECENT_SYNC_INTERVAL_HOURS", "2")
+    config_module.get_settings.cache_clear()
+    import app.services.order_daily_scheduler as scheduler_module
+
+    try:
+        scheduler = scheduler_module.start_order_daily_statistics_scheduler()
+        assert scheduler is not None
+
+        job = scheduler.get_job("order_daily_statistics_recent_sync")
+        assert job is not None
+        assert job.trigger.interval == timedelta(hours=2)
+    finally:
+        scheduler_module.stop_order_daily_statistics_scheduler()
+        config_module.get_settings.cache_clear()
+
+
+def test_recent_sync_disabled_via_setting_registers_only_the_full_job(monkeypatch):
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("ORDER_STATS_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("ORDER_STATS_RECENT_SYNC_ENABLED", "false")
+    config_module.get_settings.cache_clear()
+    import app.services.order_daily_scheduler as scheduler_module
+
+    try:
+        scheduler = scheduler_module.start_order_daily_statistics_scheduler()
+        assert scheduler is not None
+        assert scheduler.get_job("order_daily_statistics_sync") is not None
+        assert scheduler.get_job("order_daily_statistics_recent_sync") is None
+    finally:
+        scheduler_module.stop_order_daily_statistics_scheduler()
+        config_module.get_settings.cache_clear()
+
+
+def test_run_one_store_passes_narrow_window_through_and_notes_it(db_session, two_stores_with_users, monkeypatch):
+    import app.services.order_daily_scheduler as scheduler_module
+
+    d = two_stores_with_users
+    creds = OzonCredentials(
+        store_id=d["store_a"].id, client_id_encrypted=encrypt_secret("cid"), api_key_encrypted=encrypt_secret("key"),
+    )
+    db_session.add(creds)
+    db_session.commit()
+
+    received = {}
+
+    def _fake_sync(db, *, store_id, client, date_from=None, date_to=None):
+        received["date_from"] = date_from
+        received["date_to"] = date_to
+        return SyncOutcome(fetched=9, created=1, updated=2, errors=[])
+
+    monkeypatch.setattr(scheduler_module, "sync_order_daily_statistics", _fake_sync)
+
+    today = datetime.now(timezone.utc).date()
+    from_day = today - timedelta(days=2)
+    scheduler_module._run_one_store(db_session, creds, date_from=from_day, date_to=today)
+
+    assert received["date_from"] == from_day
+    assert received["date_to"] == today
+
+    run = (
+        db_session.query(SyncRun)
+        .filter(SyncRun.store_id == d["store_a"].id, SyncRun.source_type == SyncSourceType.OZON_ORDERS_API)
+        .one()
+    )
+    assert run.status.value == "success"
+    assert "Быстрое обновление" in run.error_message
+
+
+def test_run_recent_for_all_stores_only_processes_stores_with_seller_credentials(db_session, two_stores_with_users, monkeypatch):
+    import app.services.order_daily_scheduler as scheduler_module
+
+    d = two_stores_with_users
+    db_session.add(
+        OzonCredentials(store_id=d["store_a"].id, client_id_encrypted=encrypt_secret("cid"), api_key_encrypted=encrypt_secret("key"))
+    )
+    db_session.add(OzonCredentials(store_id=d["store_b"].id))  # no Seller API creds
+    db_session.commit()
+
+    monkeypatch.setattr(scheduler_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    processed: list[tuple[str, object, object]] = []
+    monkeypatch.setattr(
+        scheduler_module, "_run_one_store",
+        lambda db, creds, *, date_from=None, date_to=None: processed.append((creds.store_id, date_from, date_to)),
+    )
+
+    scheduler_module.run_recent_order_daily_statistics_for_all_stores()
+
+    assert len(processed) == 1
+    store_id, date_from, date_to = processed[0]
+    assert store_id == d["store_a"].id
+    assert date_to == datetime.now(timezone.utc).date()
+    assert date_from == date_to - timedelta(days=2)  # ORDER_STATS_RECENT_SYNC_LOOKBACK_DAYS default (3) - 1
+
+
 def test_run_one_store_skips_when_a_sync_is_already_running(db_session, two_stores_with_users, monkeypatch):
     import app.services.order_daily_scheduler as scheduler_module
 
