@@ -52,6 +52,10 @@ from app.services.product_analytics_daily_scheduler import (
     start_product_analytics_daily_statistics_scheduler,
     stop_product_analytics_daily_statistics_scheduler,
 )
+from app.services.product_catalog_scheduler import (
+    start_product_catalog_scheduler,
+    stop_product_catalog_scheduler,
+)
 from app.services.realization_report_scheduler import (
     start_realization_report_scheduler,
     stop_realization_report_scheduler,
@@ -72,6 +76,7 @@ async def _lifespan(app: FastAPI):
     start_advertising_ai_review_scheduler()
     start_order_daily_statistics_scheduler()
     start_product_analytics_daily_statistics_scheduler()
+    start_product_catalog_scheduler()
     start_cash_flow_statement_scheduler()
     start_realization_report_scheduler()
     start_accrual_daily_scheduler()
@@ -81,6 +86,7 @@ async def _lifespan(app: FastAPI):
     stop_advertising_ai_review_scheduler()
     stop_order_daily_statistics_scheduler()
     stop_product_analytics_daily_statistics_scheduler()
+    stop_product_catalog_scheduler()
     stop_cash_flow_statement_scheduler()
     stop_realization_report_scheduler()
     stop_accrual_daily_scheduler()

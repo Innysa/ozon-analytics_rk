@@ -279,6 +279,21 @@ class Settings(BaseSettings):
     ACCRUAL_DAILY_SCHEDULER_MINUTE_UTC: int = 30
     ACCRUAL_DAILY_TRAILING_DAYS: int = 5
 
+    # Automatic product catalog sync (app.services.product_catalog_sync_
+    # service) — offer_id/sku/price/stocks + ProductPriceDailySnapshot, via
+    # Ozon Seller API /v3/product/list + /v3/product/info/list. Added
+    # 2026-09-22: previously only ran from the manual "Синхронизировать с
+    # Ozon" button — every other sync in this app already runs automatically,
+    # and the store owner expected this one to as well. Scheduled at 23:30
+    # UTC, just before ORDER_STATS_SCHEDULER_HOUR_UTC (00:00 UTC), so that
+    # day's ProductPriceDailySnapshot already exists by the time the order
+    # sync looks up that day's own seller price (falls back to the flat
+    # current price otherwise — see order_daily_sync_service's own docstring
+    # — so this ordering is a freshness nicety, not a hard dependency).
+    PRODUCT_CATALOG_SCHEDULER_ENABLED: bool = True
+    PRODUCT_CATALOG_SCHEDULER_HOUR_UTC: int = 23
+    PRODUCT_CATALOG_SCHEDULER_MINUTE_UTC: int = 30
+
     # Store-wide daily dashboard (app.services.dashboard_service) — how many
     # days back the default period covers, compared against the preceding
     # period of the same length. An editorial choice (a month is the usual
