@@ -11,6 +11,7 @@ import openpyxl
 import pytest
 
 from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
 from app.services.accrual_report_import import import_accrual_report_from_file
 from tests.conftest import login
 
@@ -116,6 +117,87 @@ def test_reupload_overlapping_range_replaces_not_duplicates(db_session, two_stor
     assert len(rows) == 1
     assert float(rows[0].amount_rub) == pytest.approx(-80.0)
     assert rows[0].rows_count == 2
+
+
+def test_per_sku_aggregation_alongside_store_level(db_session, two_stores_with_users):
+    """The SAME rows must ALSO be aggregated per SKU into
+    ProductAccrualReportDailyStatistic (requested 2026-09-22 so «РНП
+    Товары» can show per-product logistics costs) — without changing the
+    store-level totals at all."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+
+    content = _build_xlsx([
+        {"date": dt.datetime(2026, 9, 1), "group": "Услуги партнёров", "type": "Эквайринг", "sku": "111", "amount": -30.0},
+        {"date": dt.datetime(2026, 9, 1), "group": "Услуги партнёров", "type": "Эквайринг", "sku": "222", "amount": -20.0},
+        {"date": dt.datetime(2026, 9, 2), "group": "Услуги доставки", "type": "Логистика", "sku": "111", "amount": -100.0},
+    ])
+
+    result = import_accrual_report_from_file(db_session, store_id=store_id, filename="acc.xlsx", content=content)
+    db_session.commit()
+
+    assert result.created == 2  # store-level: (09-01, Услуги партнёров, Эквайринг) + (09-02, Услуги доставки, Логистика)
+    store_rows = db_session.query(AccrualReportDailyStatistic).filter(AccrualReportDailyStatistic.store_id == store_id).all()
+    assert len(store_rows) == 2
+    acquiring_row = next(r for r in store_rows if r.charge_type == "Эквайринг")
+    assert float(acquiring_row.amount_rub) == pytest.approx(-50.0)  # 111 + 222 combined, unchanged by the per-SKU split
+
+    sku_rows = {
+        (r.ozon_sku, r.accrual_date, r.charge_type): float(r.amount_rub)
+        for r in db_session.query(ProductAccrualReportDailyStatistic).filter(ProductAccrualReportDailyStatistic.store_id == store_id).all()
+    }
+    assert sku_rows == {
+        ("111", dt.date(2026, 9, 1), "Эквайринг"): -30.0,
+        ("222", dt.date(2026, 9, 1), "Эквайринг"): -20.0,
+        ("111", dt.date(2026, 9, 2), "Логистика"): -100.0,
+    }
+
+
+def test_per_sku_reupload_overlapping_replaces_not_duplicates(db_session, two_stores_with_users):
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+
+    first = _build_xlsx([
+        {"date": dt.datetime(2026, 9, 1), "group": "Услуги партнёров", "type": "Эквайринг", "sku": "111", "amount": -30.0},
+    ])
+    import_accrual_report_from_file(db_session, store_id=store_id, filename="acc1.xlsx", content=first)
+    db_session.commit()
+
+    second = _build_xlsx([
+        {"date": dt.datetime(2026, 9, 1), "group": "Услуги партнёров", "type": "Эквайринг", "sku": "111", "amount": -45.0},
+    ])
+    import_accrual_report_from_file(db_session, store_id=store_id, filename="acc2.xlsx", content=second)
+    db_session.commit()
+
+    rows = db_session.query(ProductAccrualReportDailyStatistic).filter(ProductAccrualReportDailyStatistic.store_id == store_id).all()
+    assert len(rows) == 1
+    assert float(rows[0].amount_rub) == pytest.approx(-45.0)
+
+
+def test_missing_sku_column_still_imports_store_level_only(db_session, two_stores_with_users):
+    """A file without a SKU column (optional, unlike Группа услуг/Тип
+    начисления) still imports the store-level totals — only the per-product
+    table stays empty for that upload, see the module's own docstring."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Период: 01.09.2026-21.09.2026"])
+    ws.append(["Дата начисления", "Группа услуг", "Тип начисления", "Сумма итого, руб."])
+    ws.append([dt.datetime(2026, 9, 1), "Услуги партнёров", "Эквайринг", -30.0])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    result = import_accrual_report_from_file(db_session, store_id=store_id, filename="acc.xlsx", content=buf.getvalue())
+    db_session.commit()
+
+    assert result.created == 1
+    assert not result.errors
+    store_rows = db_session.query(AccrualReportDailyStatistic).filter(AccrualReportDailyStatistic.store_id == store_id).all()
+    assert len(store_rows) == 1
+    sku_rows = db_session.query(ProductAccrualReportDailyStatistic).filter(ProductAccrualReportDailyStatistic.store_id == store_id).all()
+    assert sku_rows == []
 
 
 def test_missing_required_columns_reports_error(db_session, two_stores_with_users):

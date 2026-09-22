@@ -784,6 +784,17 @@ export interface DailyBreakdownEntry {
   buyouts_sum_rub: number;
   buyouts_units: number;
   ad_spend_rub: number;
+  // Логистика/хранение/эквайринг/услуги FBO/услуги партнёров/другие
+  // услуги за этот день — из отчёта «Начисления» (ручная загрузка на
+  // Дашборде), 0 если ничего не загружено для этого дня/товара. Уже
+  // вычтены из profit_rub ниже.
+  logistics_rub: number;
+  storage_rub: number;
+  acquiring_rub: number;
+  partner_services_rub: number;
+  fbo_services_rub: number;
+  other_services_rub: number;
+  accrual_costs_known: boolean;
   profit_rub: number | null;
 }
 
@@ -813,6 +824,12 @@ export interface ProductPlannerRow {
 
   localization_pct: number | null; // только для «Итого» — Ozon отдаёт одно число на весь магазин, без разбивки по товарам
   localization_calculation_date: string | null; // дата расчёта Ozon (YYYY-MM-DD), только для «Итого»
+
+  // Логистика/хранение/эквайринг/услуги FBO/услуги партнёров/другие услуги
+  // за месяц — сумма по дням, уже вычтена из profit/margin/КРПП выше.
+  logistics_costs_known: boolean;
+  logistics_costs_month_rub: number | null;
+  logistics_costs_days_covered: number;
 
   daily: DailyBreakdownEntry[];
 }

@@ -15,11 +15,22 @@ only — NOT used to decide which days are covered; each row's own «Дата
 operation (roughly one per SKU per order per charge type).
 
 Aggregates at import time down to one row per (accrual_date, service_group,
-charge_type) — the dashboard only ever needs a per-day/per-category sum,
-never the per-SKU/per-order detail this file actually carries (see the
-model's own docstring for why this keeps the table small). A cell with an
-unparseable date or amount is skipped and counted as an error rather than
-silently dropped into an "unknown day" bucket."""
+charge_type) at the STORE level — the Дашборд only ever needs a per-day/
+per-category sum, never the per-SKU/per-order detail this file actually
+carries (see the model's own docstring for why this keeps the table small).
+A cell with an unparseable date or amount is skipped and counted as an
+error rather than silently dropped into an "unknown day" bucket.
+
+ADDED 2026-09-22: also aggregates the SAME rows down to one row per
+(ozon_sku, accrual_date, service_group, charge_type) into
+ProductAccrualReportDailyStatistic — requested by the user so «РНП Товары»
+can show logistics/storage/acquiring costs PER PRODUCT (like the competing
+tool she showed, «Система 10X»), not just the store-wide total. `SKU` is a
+real column on every row of the confirmed real export (see that model's
+own docstring) — kept OPTIONAL here (not in _REQUIRED_COLUMNS) so a file
+missing it (e.g. an older export format, or a test fixture) still imports
+the store-level totals; only the per-product table then stays empty for
+that upload."""
 from __future__ import annotations
 
 import io
@@ -30,6 +41,7 @@ from datetime import date, datetime
 import pandas as pd
 
 from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
 from app.services.import_common import ImportResult, clean_number, clean_str
 from app.services.xlsx_compat import tolerant_xlsx_bytes
 
@@ -40,6 +52,9 @@ _REQUIRED_COLUMNS = {
     "group": "Группа услуг",
     "type": "Тип начисления",
     "amount": "Сумма итого, руб.",
+}
+_OPTIONAL_COLUMNS = {
+    "sku": "SKU",
 }
 
 
@@ -110,6 +125,9 @@ def import_accrual_report_from_file(
         for key, expected in _REQUIRED_COLUMNS.items():
             if text == expected:
                 columns[key] = idx
+        for key, expected in _OPTIONAL_COLUMNS.items():
+            if text == expected:
+                columns[key] = idx
 
     missing = set(_REQUIRED_COLUMNS) - columns.keys()
     if missing:
@@ -119,6 +137,8 @@ def import_accrual_report_from_file(
 
     sums: dict[tuple[date, str, str], float] = defaultdict(float)
     counts: dict[tuple[date, str, str], int] = defaultdict(int)
+    sku_sums: dict[tuple[str, date, str, str], float] = defaultdict(float)
+    sku_counts: dict[tuple[str, date, str, str], int] = defaultdict(int)
     unparseable_dates = 0
 
     for _, row in raw.iloc[header_idx + 1 :].iterrows():
@@ -137,6 +157,13 @@ def import_accrual_report_from_file(
         key = (accrual_date, group, charge_type)
         sums[key] += amount
         counts[key] += 1
+
+        if "sku" in columns:
+            sku = clean_str(row[columns["sku"]])
+            if sku:
+                sku_key = (sku, accrual_date, group, charge_type)
+                sku_sums[sku_key] += amount
+                sku_counts[sku_key] += 1
 
     if unparseable_dates:
         result.errors.append(f"Пропущено строк с нераспознанной датой начисления: {unparseable_dates}")
@@ -161,5 +188,25 @@ def import_accrual_report_from_file(
         row_obj.rows_count = rows_count
         row_obj.source = "manual_xlsx_upload"
         result.created += 1
+
+    if sku_sums:
+        existing_sku = {
+            (r.ozon_sku, r.accrual_date, r.service_group, r.charge_type): r
+            for r in db_session.query(ProductAccrualReportDailyStatistic)
+            .filter(ProductAccrualReportDailyStatistic.store_id == store_id)
+            .all()
+        }
+        for (sku, accrual_date, group, charge_type), amount in sku_sums.items():
+            rows_count = sku_counts[(sku, accrual_date, group, charge_type)]
+            row_obj = existing_sku.get((sku, accrual_date, group, charge_type))
+            if row_obj is None:
+                row_obj = ProductAccrualReportDailyStatistic(
+                    store_id=store_id, ozon_sku=sku, accrual_date=accrual_date,
+                    service_group=group, charge_type=charge_type,
+                )
+                db_session.add(row_obj)
+            row_obj.amount_rub = round(amount, 2)
+            row_obj.rows_count = rows_count
+            row_obj.source = "manual_xlsx_upload"
 
     return result

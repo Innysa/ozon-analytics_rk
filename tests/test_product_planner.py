@@ -52,6 +52,15 @@ def _seed_ad_spend(db_session, store_id, sku, day, *, campaign_id="camp-1", spen
     ))
 
 
+def _seed_accrual_cost(db_session, store_id, sku, day, *, group, charge_type, amount_rub):
+    from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
+
+    db_session.add(ProductAccrualReportDailyStatistic(
+        store_id=store_id, ozon_sku=sku, accrual_date=day, service_group=group, charge_type=charge_type,
+        amount_rub=amount_rub, rows_count=1, source="manual_xlsx_upload",
+    ))
+
+
 def test_no_products_returns_has_data_false(client, db_session, two_stores_with_users):
     d = two_stores_with_users
     login(client, "owner_a@example.com", "password123")
@@ -87,6 +96,78 @@ def test_past_month_forecast_equals_actual(client, db_session, two_stores_with_u
     assert row["margin_after_ad_pct"] == round(700 / 1600 * 100, 2)
     # КРПП = Прибыль_с_ДРР / Прибыль_до_ДРР
     assert row["krpp_pct"] == round(700 / 800 * 100, 2)
+
+
+def test_profit_subtracts_accrual_report_logistics_costs(client, db_session, two_stores_with_users):
+    """Requested 2026-09-22 after the user showed a competing tool («Система
+    10X») computing per-product margin/profit net of logistics/storage/
+    acquiring/etc. costs, not just cost price and ad spend — see
+    product_planner_service's own module docstring. Логистика/Эквайринг/
+    Другие услуги must all be subtracted from profit_before_ad (so it
+    changes «Маржа до ДРР» too, not just «Маржа с ДРР»)."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    _seed_order_stat(
+        db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1),
+        ordered_units=10, ordered_sum_rub=2000, delivered_units=8, delivered_sum_rub=1600,
+    )
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), spend_rub=100)
+    _seed_accrual_cost(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), group="Услуги доставки", charge_type="Логистика", amount_rub=-50)
+    _seed_accrual_cost(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), group="Услуги партнёров", charge_type="Эквайринг", amount_rub=-20)
+    _seed_accrual_cost(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), group="Другие услуги и штрафы", charge_type="Утилизация товара", amount_rub=-5)
+    # Excluded from the deduction — already represented by ad_spend_rub via AdvertisingDailyStatistic.
+    _seed_accrual_cost(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), group="Продвижение и реклама", charge_type="Оплата за клик", amount_rub=-9999)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    assert resp.status_code == 200
+    row = resp.json()["rows"][0]
+
+    # Прибыль до ДРР = 1600 - 100*8 - (50+20+5) = 725; Прибыль с ДРР = 725 - 100 = 625
+    assert row["profit"]["actual_month_rub"] == 625
+    assert row["margin_before_ad_pct"] == round(725 / 1600 * 100, 2)
+    assert row["margin_after_ad_pct"] == round(625 / 1600 * 100, 2)
+    assert row["krpp_pct"] == round(625 / 725 * 100, 2)
+    assert row["logistics_costs_known"] is True
+    assert row["logistics_costs_month_rub"] == -75
+    assert row["logistics_costs_days_covered"] == 1
+
+    day = row["daily"][0]
+    assert day["logistics_rub"] == -50
+    assert day["acquiring_rub"] == -20
+    assert day["other_services_rub"] == -5
+    assert day["accrual_costs_known"] is True
+    assert day["profit_rub"] == 625
+
+    total = resp.json()["total"]
+    assert total["profit"]["actual_month_rub"] == 625
+    assert total["logistics_costs_known"] is True
+    assert total["logistics_costs_month_rub"] == -75
+
+
+def test_no_accrual_report_data_leaves_profit_unchanged(client, db_session, two_stores_with_users):
+    """No «Начисления» uploaded at all → subtracts 0, same profit as before
+    this feature existed — additive, never a regression for a store that
+    hasn't uploaded anything."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    _seed_order_stat(
+        db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1),
+        ordered_units=10, ordered_sum_rub=2000, delivered_units=8, delivered_sum_rub=1600,
+    )
+    _seed_ad_spend(db_session, store_id, "SKU-PLAN-1", date(PAST_YEAR, PAST_MONTH, 1), spend_rub=100)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": PAST_YEAR, "month": PAST_MONTH})
+    row = resp.json()["rows"][0]
+    assert row["profit"]["actual_month_rub"] == 700
+    assert row["logistics_costs_known"] is False
+    assert row["logistics_costs_month_rub"] is None
+    assert row["logistics_costs_days_covered"] == 0
 
 
 def test_daily_breakdown_carries_seller_price_spp_base(client, db_session, two_stores_with_users):

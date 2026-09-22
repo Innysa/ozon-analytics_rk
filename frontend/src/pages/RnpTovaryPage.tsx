@@ -411,6 +411,16 @@ function ProductPlannerCard({
             />
             <IndicatorTile label="КРПП" value={fmtPct(row.krpp_pct)} sub="Прибыль с ДРР / Прибыль до ДРР" />
             <IndicatorTile label="Маржа до/с ДРР" value={`${fmtPct(row.margin_before_ad_pct)} / ${fmtPct(row.margin_after_ad_pct)}`} />
+            <IndicatorTile
+              label="Логистика и услуги"
+              value={row.logistics_costs_known ? fmtRub(row.logistics_costs_month_rub) : "нет данных"}
+              sub={
+                row.logistics_costs_known
+                  ? `покрыто ${row.logistics_costs_days_covered} дн. — уже вычтено из Прибыли`
+                  : "загрузите отчёт «Начисления» на Дашборде"
+              }
+              muted={!row.logistics_costs_known}
+            />
           </div>
 
           {!row.cost_known && !isTotal && (
@@ -574,6 +584,25 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
                 {fmtPct(d.buyouts_sum_rub > 0 ? (d.ad_spend_rub / d.buyouts_sum_rub) * 100 : null)}
               </td>
             ))}
+          </tr>
+          <tr className="border-b border-slate-100">
+            <td className="py-1 pr-3 font-medium text-slate-600">Логистика и услуги</td>
+            {row.daily.map((d) => {
+              const total = d.logistics_rub + d.storage_rub + d.acquiring_rub + d.partner_services_rub + d.fbo_services_rub + d.other_services_rub;
+              const parts = [
+                d.logistics_rub && `Логистика: ${fmtRub(d.logistics_rub)}`,
+                d.storage_rub && `Хранение: ${fmtRub(d.storage_rub)}`,
+                d.acquiring_rub && `Эквайринг: ${fmtRub(d.acquiring_rub)}`,
+                d.partner_services_rub && `Услуги партнёров: ${fmtRub(d.partner_services_rub)}`,
+                d.fbo_services_rub && `Услуги FBO: ${fmtRub(d.fbo_services_rub)}`,
+                d.other_services_rub && `Другие услуги: ${fmtRub(d.other_services_rub)}`,
+              ].filter(Boolean) as string[];
+              return (
+                <td key={d.date} className="whitespace-nowrap px-2 text-center" title={parts.length ? parts.join(" · ") : undefined}>
+                  {d.accrual_costs_known ? fmtRub(total) : "—"}
+                </td>
+              );
+            })}
           </tr>
           <tr>
             <td className="py-1 pr-3 font-medium text-slate-600">Прибыль</td>

@@ -27,6 +27,7 @@ from app.models.store_rating_summary import StoreRatingSummary
 from app.models.realization_report_month import RealizationReportMonth
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.models.accrual_report_daily_statistic import AccrualReportDailyStatistic
+from app.models.product_accrual_report_daily_statistic import ProductAccrualReportDailyStatistic
 
 __all__ = [
     "User",
@@ -58,4 +59,5 @@ __all__ = [
     "RealizationReportMonth",
     "AccrualDailyStatistic",
     "AccrualReportDailyStatistic",
+    "ProductAccrualReportDailyStatistic",
 ]
