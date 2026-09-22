@@ -101,3 +101,19 @@ def test_demo_provider_advertising_analysis_with_no_campaigns_reports_that_plain
     assert outcome.success
     assert outcome.result.insights == []
     assert "Нет кампаний" in outcome.result.overview
+
+
+def test_demo_provider_product_card_analysis_never_calls_network_and_labels_output():
+    provider = DemoProvider()
+    outcome = provider.analyze_product_card(
+        product_name="Стеллаж для игрушек",
+        period_start=date(2026, 8, 1),
+        period_end=date(2026, 8, 14),
+        ad_daily=[{"date": "2026-08-01", "impressions": 1000, "clicks": 50, "spend_rub": 100.0}],
+        order_daily=[{"date": "2026-08-01", "ordered_units": 5, "buyouts_units": 3}],
+        review_summary={"total_reviews": 10, "average_rating": 4.5, "low_rating_share": 0.1, "top_advantages": [], "top_complaints": [], "product_improvement_ideas": [], "card_improvement_ideas": []},
+    )
+    assert outcome.success
+    assert "ДЕМО" in outcome.result.overview
+    assert "Стеллаж для игрушек" in outcome.result.overview
+    assert outcome.result.hypotheses  # DemoProvider always labels its hypothesis as unverified

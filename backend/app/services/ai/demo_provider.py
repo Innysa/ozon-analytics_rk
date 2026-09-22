@@ -12,9 +12,11 @@ from app.services.ai.schemas import (
     AdvertisingCampaignInsight,
     AIUsage,
     AnalyzeAdvertisingOutcome,
+    AnalyzeProductCardOutcome,
     AnalyzeReviewOutcome,
     ConnectionCheckResult,
     GenerateReplyOutcome,
+    ProductCardAnalysisResult,
     ReviewAnalysisResult,
 )
 
@@ -107,3 +109,26 @@ class DemoProvider(AIProvider):
             recommendations=["[демо-пример] проверить ставки у слабой кампании"],
         )
         return AnalyzeAdvertisingOutcome(result=result, usage=_DEMO_USAGE, success=True)
+
+    def analyze_product_card(
+        self,
+        *,
+        product_name: str | None,
+        period_start: date,
+        period_end: date,
+        ad_daily: list[dict],
+        order_daily: list[dict],
+        review_summary: dict,
+    ) -> AnalyzeProductCardOutcome:
+        total_reviews = review_summary.get("total_reviews", 0)
+        result = ProductCardAnalysisResult(
+            overview=(
+                f"[ДЕМО] Товар «{product_name or 'без названия'}»: {len(ad_daily)} дн. с данными по рекламе, "
+                f"{len(order_daily)} дн. с данными по заказам, {total_reviews} отзыв(ов) за период "
+                f"{period_start.isoformat()}—{period_end.isoformat()}."
+            ),
+            trend_observations=["[демо-пример] показы и заказы за период без резких отклонений"],
+            hypotheses=["[демо-пример] требует проверки человеком — связь отзывов с продажами не подтверждена цифрами"],
+            recommendations=["[демо-пример] проверить карточку по рекомендациям из отзывов"],
+        )
+        return AnalyzeProductCardOutcome(result=result, usage=_DEMO_USAGE, success=True)

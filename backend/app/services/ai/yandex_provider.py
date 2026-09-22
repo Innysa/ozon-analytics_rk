@@ -33,6 +33,8 @@ from app.services.ai.prompts import (
     build_advertising_analysis_prompt,
     build_advertising_repair_prompt,
     build_analyze_prompt,
+    build_product_card_analysis_prompt,
+    build_product_card_repair_prompt,
     build_repair_prompt,
     build_rewrite_prompt,
 )
@@ -40,9 +42,11 @@ from app.services.ai.schemas import (
     AdvertisingAnalysisResult,
     AIUsage,
     AnalyzeAdvertisingOutcome,
+    AnalyzeProductCardOutcome,
     AnalyzeReviewOutcome,
     ConnectionCheckResult,
     GenerateReplyOutcome,
+    ProductCardAnalysisResult,
     ReviewAnalysisResult,
 )
 
@@ -233,6 +237,41 @@ class YandexAIProvider(AIProvider):
             return AnalyzeAdvertisingOutcome(result=result, usage=usage, success=True)
         except Exception as exc:
             return AnalyzeAdvertisingOutcome(
+                result=None, usage=AIUsage(model=self._model), success=False, error_message=str(exc)
+            )
+
+    def analyze_product_card(
+        self,
+        *,
+        product_name: str | None,
+        period_start: date,
+        period_end: date,
+        ad_daily: list[dict],
+        order_daily: list[dict],
+        review_summary: dict,
+    ) -> AnalyzeProductCardOutcome:
+        prompt = build_product_card_analysis_prompt(
+            product_name=product_name, period_start=period_start, period_end=period_end,
+            ad_daily=ad_daily, order_daily=order_daily, review_summary=review_summary,
+        )
+        try:
+            raw_text, usage = self._call(prompt, max_output_tokens=1500)
+            try:
+                parsed = self._parse_json_result(raw_text)
+                result = ProductCardAnalysisResult.model_validate(parsed)
+            except Exception:
+                repair_text, repair_usage = self._call(build_product_card_repair_prompt(raw_text), max_output_tokens=1500)
+                usage = AIUsage(
+                    model=usage.model,
+                    prompt_tokens=(usage.prompt_tokens or 0) + (repair_usage.prompt_tokens or 0),
+                    completion_tokens=(usage.completion_tokens or 0) + (repair_usage.completion_tokens or 0),
+                    latency_ms=(usage.latency_ms or 0) + (repair_usage.latency_ms or 0),
+                )
+                parsed = self._parse_json_result(repair_text)
+                result = ProductCardAnalysisResult.model_validate(parsed)
+            return AnalyzeProductCardOutcome(result=result, usage=usage, success=True)
+        except Exception as exc:
+            return AnalyzeProductCardOutcome(
                 result=None, usage=AIUsage(model=self._model), success=False, error_message=str(exc)
             )
 

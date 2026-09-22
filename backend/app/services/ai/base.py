@@ -14,6 +14,7 @@ from datetime import date
 from app.models.store_ai_settings import StoreAISettings
 from app.services.ai.schemas import (
     AnalyzeAdvertisingOutcome,
+    AnalyzeProductCardOutcome,
     AnalyzeReviewOutcome,
     ConnectionCheckResult,
     GenerateReplyOutcome,
@@ -109,4 +110,39 @@ class AIProvider(ABC):
         Orders, ДРР and ROAS are deliberately NOT part of the input (see the
         service module's own docstring for why) — must not be asked about
         or fabricated in the output."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def analyze_product_card(
+        self,
+        *,
+        product_name: str | None,
+        period_start: date,
+        period_end: date,
+        ad_daily: list[dict],
+        order_daily: list[dict],
+        review_summary: dict,
+    ) -> AnalyzeProductCardOutcome:
+        """Holistic analysis of ONE product's card — combines already-
+        computed review findings with the product's own advertising and
+        order trend over the period, produced by
+        app.services.product_card_ai_review_service (see that module's own
+        docstring for why this exists separately from analyze_review /
+        analyze_advertising_campaigns).
+
+        ad_daily: list of {date, impressions, clicks, spend_rub} — same
+        shape/source as analyze_advertising_campaigns' own `daily`, but
+        already filtered to this product's SKU across all its campaigns.
+        order_daily: list of {date, ordered_units, buyouts_units} — from
+        ProductOrderDailyStatistic, summed across FBO+FBS for this SKU.
+        review_summary: {total_reviews, average_rating, low_rating_share,
+        top_advantages, top_complaints, product_improvement_ideas,
+        card_improvement_ideas} — the SAME aggregates already shown on this
+        product's "Рекомендации ИИ"/"Аналитика отзывов" tabs (see
+        app.services.analytics_service.compute_review_analytics), not
+        recomputed here.
+
+        Cost price, margin, ДРР and ROAS are deliberately NOT part of the
+        input (same reasoning as analyze_advertising_campaigns) — must not
+        be asked about or fabricated in the output."""
         raise NotImplementedError

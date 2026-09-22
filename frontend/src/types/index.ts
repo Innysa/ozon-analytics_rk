@@ -381,6 +381,29 @@ export interface AdvertisingAiReviewListResponse {
   items: AdvertisingAiReview[];
 }
 
+// Full-card AI analysis for ONE product — combines review findings with
+// that product's own advertising/order trend (see
+// app.services.product_card_ai_review_service). Manual-trigger only, no
+// automatic daily scheduler. trend_observations is what the DATA shows;
+// hypotheses is anything LINKING that to a review finding — always a
+// hypothesis, never a stated fact.
+export interface ProductCardAiReview {
+  id: string;
+  period_start: string;
+  period_end: string;
+  overview: string;
+  trend_observations: string[];
+  hypotheses: string[];
+  recommendations: string[];
+  reviews_considered: number;
+  model_used: string | null;
+  created_at: string;
+}
+
+export interface ProductCardAiReviewListResponse {
+  items: ProductCardAiReview[];
+}
+
 export interface CampaignDetail {
   campaign_id: string;
   has_data: boolean;

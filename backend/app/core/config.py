@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     # fixed daily slot rather than a literal "run right after" trigger.
     ADVERTISING_AI_REVIEW_SCHEDULER_HOUR_UTC: int = 4
 
+    # Full-card AI analysis for ONE product (see app.services.product_card_
+    # ai_review_service) — reviews + advertising + order trend together,
+    # manual-trigger only (no scheduler — see that module's own docstring
+    # for why). LOOKBACK_DAYS is the same kind of editorial choice as
+    # ADVERTISING_AI_REVIEW_LOOKBACK_DAYS above, not an Ozon-side limit.
+    PRODUCT_CARD_AI_REVIEW_LOOKBACK_DAYS: int = 14
+
     # Automatic orders sync (app.services.order_daily_sync_service) — Ozon
     # Seller API postings (FBO/FBS), see that module's own docstring for the
     # confirmed contract and its limits. 30 days is an editorial choice (a

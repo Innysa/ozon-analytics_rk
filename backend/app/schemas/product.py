@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -26,3 +26,20 @@ class ProductOut(BaseModel):
 
 class ProductCostPriceIn(BaseModel):
     cost_price_rub: Decimal | None = Field(default=None, ge=0)
+
+
+class ProductCardAiReviewOut(BaseModel):
+    id: str
+    period_start: date
+    period_end: date
+    overview: str
+    trend_observations: list[str]
+    hypotheses: list[str]
+    recommendations: list[str]
+    reviews_considered: int
+    model_used: str | None
+    created_at: datetime
+
+
+class ProductCardAiReviewListResponse(BaseModel):
+    items: list[ProductCardAiReviewOut]

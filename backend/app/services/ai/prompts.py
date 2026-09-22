@@ -210,6 +210,90 @@ def build_advertising_repair_prompt(broken_output: str) -> str:
 """
 
 
+PRODUCT_CARD_JSON_CONTRACT = """\
+Верни ТОЛЬКО валидный JSON без markdown-разметки, без пояснений вне JSON, строго такой формы:
+{
+  "overview": "2-4 предложения — общая картина по товару за период: реклама, заказы, отзывы вместе",
+  "trend_observations": ["конкретное наблюдение по цифрам, например «показы выросли на 20%, а клики почти не изменились — CTR падает»"],
+  "hypotheses": ["гипотеза, СВЯЗЫВАЮЩАЯ разные данные, например отзывы с трендом продаж — явно как предположение, не как факт"],
+  "recommendations": ["конкретная рекомендация по действию"]
+}
+"trend_observations" — только то, что прямо следует из цифр (реклама/заказы), без домыслов.
+"hypotheses" — то, что НЕ доказано напрямую цифрами (например связь жалобы из отзыва с падением заказов) —
+формулируй как предположение, требующее проверки человеком, а не как установленный факт.
+Себестоимость, маржа, ДРР и ROAS в данных ниже отсутствуют — не упоминай их и не пытайся оценить рентабельность.
+"""
+
+
+def _format_daily_series(rows: list[dict], fields: list[str], labels: list[str]) -> str:
+    if not rows:
+        return "    нет данных по дням"
+    lines = []
+    for r in rows:
+        parts = ", ".join(f"{label} {r.get(field, 0)}" for field, label in zip(fields, labels))
+        lines.append(f"    {r['date']}: {parts}")
+    return "\n".join(lines)
+
+
+def _format_review_summary(review_summary: dict) -> str:
+    def _list_or_none(key: str) -> str:
+        items = review_summary.get(key) or []
+        return "; ".join(items[:10]) if items else "нет данных"
+
+    return f"""\
+Отзывов: {review_summary.get('total_reviews', 0)}, средняя оценка: {review_summary.get('average_rating') if review_summary.get('average_rating') is not None else 'нет данных'}, \
+доля оценок 1-3: {f"{round(review_summary['low_rating_share'] * 100)}%" if review_summary.get('low_rating_share') is not None else 'нет данных'}
+Частые преимущества (по отзывам): {_list_or_none('top_advantages')}
+Частые жалобы (по отзывам): {_list_or_none('top_complaints')}
+Рекомендации по товару (уже выявленные ИИ из отзывов): {_list_or_none('product_improvement_ideas')}
+Рекомендации по карточке (уже выявленные ИИ из отзывов): {_list_or_none('card_improvement_ideas')}"""
+
+
+def build_product_card_analysis_prompt(
+    *,
+    product_name: str | None,
+    period_start: date,
+    period_end: date,
+    ad_daily: list[dict],
+    order_daily: list[dict],
+    review_summary: dict,
+) -> str:
+    ad_text = _format_daily_series(ad_daily, ["impressions", "clicks", "spend_rub"], ["показы", "клики", "расход ₽"])
+    orders_text = _format_daily_series(order_daily, ["ordered_units", "buyouts_units"], ["заказано шт", "выкуплено шт"])
+    reviews_text = _format_review_summary(review_summary)
+    return f"""\
+Ты — аналитик карточки товара на маркетплейсе Ozon. Товар: {product_name or "не указан"}.
+Проанализируй товар за период {period_start.isoformat()} — {period_end.isoformat()} по ТРЁМ уже собранным источникам вместе:
+реклама (показы/клики/расход по дням), заказы (по дням) и отзывы (уже посчитанная сводка).
+
+Реклама по дням (Ozon Performance API, по всем кампаниям, где участвовал этот товар):
+{ad_text}
+
+Заказы по дням (Ozon Seller API, FBO+FBS):
+{orders_text}
+
+Отзывы (сводка):
+{reviews_text}
+
+Задача: дай общую картину по товару, отметь тренды в рекламе и заказах (растут/падают, есть ли рассинхрон —
+например показы растут, а заказы нет), и, если уместно, свяжи это гипотезой с тем, что пишут в отзывах —
+явно пометив это как гипотезу, а не факт. Не оценивай рентабельность, себестоимость, ДРР, ROAS — этих данных нет.
+
+{PRODUCT_CARD_JSON_CONTRACT}
+"""
+
+
+def build_product_card_repair_prompt(broken_output: str) -> str:
+    return f"""\
+Предыдущий ответ не является валидным JSON нужного формата. Вот он:
+---
+{broken_output}
+---
+Верни ИСПРАВЛЕННЫЙ ответ, СТРОГО в виде валидного JSON того же формата, без какого-либо текста вне JSON.
+{PRODUCT_CARD_JSON_CONTRACT}
+"""
+
+
 def build_rewrite_prompt(existing_reply: str, instruction: str, store_settings: StoreAISettings | None) -> str:
     instruction_text = {
         "shorter": "Сделай ответ короче, сохранив смысл и вежливость.",

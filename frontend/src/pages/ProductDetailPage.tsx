@@ -11,6 +11,8 @@ import type {
   ProductAnalyticsDailyStatisticListResponse,
   ProductCampaignDailyListResponse,
   ProductCampaignDailyRow,
+  ProductCardAiReview,
+  ProductCardAiReviewListResponse,
   ProductCardAnalytics,
   ProductCardStatisticListResponse,
   ProductOrderDailyStatistic,
@@ -129,7 +131,12 @@ export function ProductDetailPage() {
         {tab === "sales" && <ProductSalesTab storeId={currentStore.id} productId={productId} dateFrom={dateFrom} dateTo={dateTo} />}
         {tab === "search" && <ProductSearchQueriesTab storeId={currentStore.id} productId={productId} dateFrom={dateFrom} dateTo={dateTo} />}
         {tab === "history" && <ChangeHistoryPanel storeId={currentStore.id} productId={productId} />}
-        {tab === "recommendations" && <ProductAnalyticsTab storeId={currentStore.id} productId={productId} recommendationsOnly />}
+        {tab === "recommendations" && (
+          <div className="space-y-4">
+            <ProductCardAiReviewSection storeId={currentStore.id} productId={productId} />
+            <ProductAnalyticsTab storeId={currentStore.id} productId={productId} recommendationsOnly />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -317,6 +324,135 @@ function ProductReviewsTab({ storeId, productId }: { storeId: string; productId:
       {reviews.map((r) => (
         <ReviewCard key={r.id} review={r} storeId={storeId} onChanged={load} />
       ))}
+    </div>
+  );
+}
+
+function ProductCardAiReviewSection({ storeId, productId }: { storeId: string; productId: string }) {
+  const [reviews, setReviews] = useState<ProductCardAiReview[] | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = () => {
+    api
+      .get<ProductCardAiReviewListResponse>(`/stores/${storeId}/products/${productId}/ai-review`)
+      .then((d) => setReviews(d.items));
+  };
+
+  useEffect(load, [storeId, productId]);
+
+  const generate = async () => {
+    setGenerating(true);
+    setNotice("Анализ карточки товара через ИИ...");
+    try {
+      await api.post<ProductCardAiReview>(`/stores/${storeId}/products/${productId}/ai-review/generate`);
+      setNotice("Анализ сформирован.");
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка анализа карточки товара");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-md border border-violet-200 bg-violet-50/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-violet-800">Полный анализ карточки (ИИ)</h3>
+          <p className="text-xs italic text-slate-500">
+            Реклама, заказы и отзывы вместе — гипотезы ИИ на основе цифр, требующие проверки человеком, не доказанные
+            факты.
+          </p>
+        </div>
+        <button
+          onClick={generate}
+          disabled={generating}
+          className="shrink-0 rounded-md bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-200 disabled:opacity-50"
+          title="Анализирует уже собранные показы/клики/расход по рекламе, заказы по дням и сводку по отзывам — новых обращений к Ozon не требует"
+        >
+          {generating ? "Анализ..." : "Проанализировать карточку (ИИ)"}
+        </button>
+      </div>
+
+      {notice && <p className="text-xs text-slate-500">{notice}</p>}
+
+      {reviews === null ? (
+        <div className="text-sm text-slate-500">Загрузка...</div>
+      ) : reviews.length === 0 ? (
+        <div className="rounded-md border border-dashed border-violet-300 bg-white p-3 text-sm text-violet-800">
+          Полный анализ карточки ещё не сформирован — нажмите «Проанализировать карточку (ИИ)» выше.
+        </div>
+      ) : (
+        (() => {
+          const [latest, ...history] = reviews;
+          return (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-slate-500">
+                  Период: {latest.period_start} — {latest.period_end}
+                  {latest.model_used ? ` · модель: ${latest.model_used}` : ""} · отзывов учтено: {latest.reviews_considered}
+                </span>
+              </div>
+              <p className="text-sm text-slate-700">{latest.overview}</p>
+
+              {latest.trend_observations.length > 0 && (
+                <div>
+                  <h4 className="mb-1 text-xs font-semibold text-slate-600">Тренды (реклама/заказы)</h4>
+                  <ul className="list-disc space-y-0.5 pl-4 text-sm text-slate-700">
+                    {latest.trend_observations.map((t, idx) => (
+                      <li key={idx}>{t}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {latest.hypotheses.length > 0 && (
+                <div>
+                  <h4 className="mb-1 text-xs font-semibold text-slate-600">Гипотезы (требуют проверки)</h4>
+                  <ul className="list-disc space-y-0.5 pl-4 text-sm text-slate-700">
+                    {latest.hypotheses.map((h, idx) => (
+                      <li key={idx}>{h}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {latest.recommendations.length > 0 && (
+                <div>
+                  <h4 className="mb-1 text-xs font-semibold text-slate-600">Рекомендации</h4>
+                  <ul className="list-disc space-y-0.5 pl-4 text-sm text-slate-700">
+                    {latest.recommendations.map((r, idx) => (
+                      <li key={idx}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {history.length > 0 && (
+                <div className="pt-1">
+                  <button onClick={() => setShowHistory((v) => !v)} className="text-xs font-medium text-violet-700 underline">
+                    {showHistory ? "Скрыть историю анализов" : `Показать историю анализов (${history.length})`}
+                  </button>
+                  {showHistory && (
+                    <ul className="mt-2 space-y-2 border-t border-violet-200 pt-2">
+                      {history.map((r) => (
+                        <li key={r.id} className="text-xs text-slate-600">
+                          <span className="font-medium text-slate-700">
+                            {r.period_start} — {r.period_end}:
+                          </span>{" "}
+                          {r.overview}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </>
+          );
+        })()
+      )}
     </div>
   );
 }

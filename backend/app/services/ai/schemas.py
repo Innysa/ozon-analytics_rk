@@ -77,3 +77,28 @@ class AnalyzeAdvertisingOutcome(BaseModel):
     usage: AIUsage
     success: bool
     error_message: str | None = None
+
+
+class ProductCardAnalysisResult(BaseModel):
+    """The structured JSON contract every AIProvider must return for
+    analyze_product_card() — a holistic view of ONE product combining
+    review findings with its advertising and order trends over the period.
+    trend_observations describes what the DATA shows (e.g. "показы выросли
+    на 20%, заказы упали на 15%") — hypotheses is for anything that LINKS
+    that trend to a review finding or another data point without being
+    directly provable from the numbers alone (e.g. "падение заказов может
+    быть связано с жалобами на упаковку в отзывах") and must read as a
+    hypothesis, not a fact (same discipline as ReviewAnalysisResult.
+    hypotheses)."""
+
+    overview: str
+    trend_observations: list[str] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class AnalyzeProductCardOutcome(BaseModel):
+    result: ProductCardAnalysisResult | None
+    usage: AIUsage
+    success: bool
+    error_message: str | None = None
