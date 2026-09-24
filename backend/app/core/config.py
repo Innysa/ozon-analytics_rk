@@ -246,26 +246,45 @@ class Settings(BaseSettings):
 
     # Automatic per-product funnel sync (app.services.product_analytics_daily_
     # sync_service) — Ozon Seller API POST /v1/analytics/data, Premium Plus/Pro
-    # only (see that module's own docstring). 30 days is the same editorial
-    # choice as ORDER_STATS_DEFAULT_LOOKBACK_DAYS above; unlike orders, this
-    # method has NO confirmed pagination-volume cushion — a 30-day window
-    # times a store's SKU count can exceed the 1000-row page size, so the
-    # sync now pages through offset when needed (see
-    # PRODUCT_ANALYTICS_STATS_MAX_PAGES/_RATE_LIMIT_SLEEP_SECONDS below).
-    # Every run re-fetches the FULL rolling window from scratch, same as
-    # orders — raising this value backfills the whole new window on the very
-    # next run, not gradually.
-    PRODUCT_ANALYTICS_STATS_DEFAULT_LOOKBACK_DAYS: int = 30
+    # only (see that module's own docstring). Unlike orders, this method has
+    # NO confirmed pagination-volume cushion — a lookback window times a
+    # store's SKU count can exceed the 1000-row page size, so the sync pages
+    # through offset when needed (see PRODUCT_ANALYTICS_STATS_MAX_PAGES/
+    # _RATE_LIMIT_SLEEP_SECONDS below). Every run re-fetches the FULL rolling
+    # window from scratch, same as orders — raising this value backfills the
+    # whole new window on the very next run, not gradually.
+    # ИЗМЕНЕНО 2026-09-24: было 30 — CONFIRMED as the real cause of a real
+    # complaint: the user found «Заказано» on «РНП Товары» simply not
+    # updated at all for a specific SKU on several days, and separately
+    # asked "нормально получается первые товары обновляются, а которые
+    # дальше по списку нет что-ли?" — exactly the symptom of MAX_PAGES
+    # truncation (see below): a big-catalog store's (sku, day) row count for
+    # a 30-day window can run well past MAX_PAGES*1000, and whichever SKUs
+    # Ozon returns LATER in the page order simply never get reached. Lowered
+    # to 21 days (three weeks — still covers "this month" for most of it,
+    # per «РНП Товары»'s own monthly-planner framing) so a store needs 3x
+    # fewer SKUs before hitting the same per-run row cap.
+    PRODUCT_ANALYTICS_STATS_DEFAULT_LOOKBACK_DAYS: int = 21
     # Ozon allows at most 1 request/minute to this specific method (confirmed
     # in the official docs — see get_analytics_data()'s own docstring). A
     # window needing more than one page (>1000 sku×day rows) must wait this
     # long between pages, not just retry-on-429. MAX_PAGES bounds how many
-    # such 60s waits one store's sync can rack up in a single run (9 waits =
-    # 9 minutes for the worst case at the default) — a store whose real
-    # (sku, day) count exceeds MAX_PAGES * 1000 for its lookback window gets
-    # a documented, non-silent partial result (outcome.errors names how many
-    # rows were left unfetched) rather than an unbounded background job.
-    PRODUCT_ANALYTICS_STATS_MAX_PAGES: int = 10
+    # such 60s waits one store's sync can rack up in a single run — a store
+    # whose real (sku, day) count exceeds MAX_PAGES * 1000 for its lookback
+    # window gets a documented, non-silent partial result (outcome.errors
+    # names how many rows were left unfetched) rather than an unbounded
+    # background job.
+    # ИЗМЕНЕНО 2026-09-24: было 10 (9 waits = 9 min worst case) — raised
+    # alongside the lookback cut above, same real truncation finding. 16
+    # pages = 15 waits = ~15 minutes worst case, which still comfortably
+    # fits inside the ~20-minute gap between this app's own scheduled nightly
+    # attempts (see PRODUCT_ANALYTICS_STATS_SCHEDULER_TIMES_UTC below) without
+    # two attempts for the same store overlapping. Combined with the shorter
+    # lookback: full per-run coverage now reaches roughly 750 SKUs
+    # (16 000 rows / 21 days) instead of ~330 (10 000 / 30) before — a store
+    # still past that many active SKUs gets the same documented partial
+    # result as before, just at a meaningfully higher ceiling.
+    PRODUCT_ANALYTICS_STATS_MAX_PAGES: int = 16
     PRODUCT_ANALYTICS_STATS_RATE_LIMIT_SLEEP_SECONDS: int = 60
     PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED: bool = True
     # ИЗМЕНЕНО 2026-09-24: было ОДНО плановое обращение в сутки (03:45 UTC =
