@@ -268,8 +268,22 @@ class Settings(BaseSettings):
     PRODUCT_ANALYTICS_STATS_MAX_PAGES: int = 10
     PRODUCT_ANALYTICS_STATS_RATE_LIMIT_SLEEP_SECONDS: int = 60
     PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED: bool = True
-    PRODUCT_ANALYTICS_STATS_SCHEDULER_HOUR_UTC: int = 3
-    PRODUCT_ANALYTICS_STATS_SCHEDULER_MINUTE_UTC: int = 45
+    # ИЗМЕНЕНО 2026-09-24: было ОДНО плановое обращение в сутки (03:45 UTC =
+    # 06:45 МСК) — пользователь пожаловалась, что «Заказано» на РНП всё
+    # ещё было неверным вечером того же дня, и явно попросила: "сделай
+    # значить чтобы раза 2-3 обращался к озон запрос для верных данных...
+    # надо чтобы примерно в 4 по мск все данные былы подтянуты за вчерашний
+    # день". 06:45 МСК — это И позже её дедлайна в ~4 утра, И это было
+    # единственной попыткой: если Ozon в этот момент ещё не досчитал
+    # вчерашний день (когда именно Ozon завершает расчёт "воронки" за
+    # прошедшие сутки — НЕ подтверждено официально), синка просто получала
+    # неполные/старые данные и ждала следующих суток. Теперь — несколько
+    # плановых попыток подряд рано утром по МСК, все до ~4 утра МСК; каждая
+    # повторно перезаписывает (upsert, не добавляет дубли) тем же диапазоном
+    # дат, так что более поздняя попытка с более полными данными от Ozon
+    # просто перекрывает более раннюю. Формат — "ЧЧ:ММ" по UTC через запятую;
+    # 00:15,00:35,00:55 UTC = 03:15,03:35,03:55 МСК.
+    PRODUCT_ANALYTICS_STATS_SCHEDULER_TIMES_UTC: str = "00:15,00:35,00:55"
 
     # Automatic cash-flow-statement sync (app.services.cash_flow_statement_
     # sync_service) — Ozon Seller API POST /v1/finance/cash-flow-statement/

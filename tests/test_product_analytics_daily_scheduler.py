@@ -27,11 +27,13 @@ def test_scheduler_disabled_via_setting_is_a_noop(monkeypatch):
         config_module.get_settings.cache_clear()
 
 
-def test_scheduler_registers_daily_job_at_the_configured_hour_and_stops_cleanly(monkeypatch):
+def test_scheduler_registers_one_job_per_configured_time_and_stops_cleanly(monkeypatch):
+    """ИЗМЕНЕНО 2026-09-24: несколько попыток за ночь, не одна — пользователь
+    попросила 2-3 обращения к Ozon, чтобы данные точно подтянулись к ~4 утра
+    МСК (см. этого модуля докстринг)."""
     monkeypatch.setenv("ENV", "production")
     monkeypatch.setenv("PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED", "true")
-    monkeypatch.setenv("PRODUCT_ANALYTICS_STATS_SCHEDULER_HOUR_UTC", "5")
-    monkeypatch.setenv("PRODUCT_ANALYTICS_STATS_SCHEDULER_MINUTE_UTC", "50")
+    monkeypatch.setenv("PRODUCT_ANALYTICS_STATS_SCHEDULER_TIMES_UTC", "00:15,00:35,05:50")
     config_module.get_settings.cache_clear()
     import app.services.product_analytics_daily_scheduler as scheduler_module
 
@@ -39,17 +41,49 @@ def test_scheduler_registers_daily_job_at_the_configured_hour_and_stops_cleanly(
         scheduler = scheduler_module.start_product_analytics_daily_statistics_scheduler()
         assert scheduler is not None
 
-        job = scheduler.get_job("product_analytics_daily_statistics_sync")
-        assert job is not None
-        hour_field = next(f for f in job.trigger.fields if f.name == "hour")
-        minute_field = next(f for f in job.trigger.fields if f.name == "minute")
-        assert str(hour_field) == "5"
-        assert str(minute_field) == "50"
+        expected = [(0, 15), (0, 35), (5, 50)]
+        for i, (hour, minute) in enumerate(expected):
+            job = scheduler.get_job(f"product_analytics_daily_statistics_sync_{i}")
+            assert job is not None
+            hour_field = next(f for f in job.trigger.fields if f.name == "hour")
+            minute_field = next(f for f in job.trigger.fields if f.name == "minute")
+            assert str(hour_field) == str(hour)
+            assert str(minute_field) == str(minute)
 
         assert scheduler_module.start_product_analytics_daily_statistics_scheduler() is scheduler
     finally:
         scheduler_module.stop_product_analytics_daily_statistics_scheduler()
         config_module.get_settings.cache_clear()
+
+
+def test_scheduler_defaults_to_three_attempts_before_4am_moscow(monkeypatch):
+    """Default PRODUCT_ANALYTICS_STATS_SCHEDULER_TIMES_UTC must land all
+    attempts before ~04:00 МСК (UTC+3) — the user's explicit deadline."""
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("PRODUCT_ANALYTICS_STATS_SCHEDULER_ENABLED", "true")
+    config_module.get_settings.cache_clear()
+    import app.services.product_analytics_daily_scheduler as scheduler_module
+
+    try:
+        scheduler = scheduler_module.start_product_analytics_daily_statistics_scheduler()
+        assert scheduler is not None
+        assert len(scheduler.get_jobs()) == 3
+        for job in scheduler.get_jobs():
+            hour_field = next(f for f in job.trigger.fields if f.name == "hour")
+            minute_field = next(f for f in job.trigger.fields if f.name == "minute")
+            hour_utc, minute_utc = int(str(hour_field)), int(str(minute_field))
+            moscow_minutes = ((hour_utc + 3) * 60 + minute_utc) % (24 * 60)
+            assert moscow_minutes <= 4 * 60
+    finally:
+        scheduler_module.stop_product_analytics_daily_statistics_scheduler()
+        config_module.get_settings.cache_clear()
+
+
+def test_parse_scheduler_times_skips_blank_and_malformed_entries():
+    from app.services.product_analytics_daily_scheduler import _parse_scheduler_times
+
+    assert _parse_scheduler_times("00:15, ,00:35,garbage,01:05") == [(0, 15), (0, 35), (1, 5)]
+    assert _parse_scheduler_times("") == []
 
 
 def test_run_one_store_records_a_sync_run_reflecting_the_outcome(db_session, two_stores_with_users, monkeypatch):
