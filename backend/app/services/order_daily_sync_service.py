@@ -77,6 +77,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -282,7 +283,23 @@ def aggregate_postings_by_day(
     falls back to the flat seller_price_by_sku (today's snapshot) only for
     a (sku, day) this history doesn't cover yet (e.g. before daily
     snapshotting started, or a gap in syncing), never silently drops to
-    "unknown" just because the day-aware map exists at all."""
+    "unknown" just because the day-aware map exists at all.
+
+    ИЗМЕНЕНО 2026-09-24: both maps' VALUES now come from Product/
+    ProductPriceDailySnapshot's marketing_seller_price_rub, preferred over
+    price_rub — see the query building these two dicts (in
+    sync_order_daily_statistics below) for the full trail. Found via a real
+    account: the user reported «СПП (расчёт)» reading implausibly low
+    (~5%) against her own external tool (10-42%); tracing the numbers back
+    showed price_rub (from /v3/product/info/list alone) is actually the
+    no-promo CEILING price ("Предельная цена без акций" in Ozon's own
+    cabinet, CONFIRMED via backend/scripts/probe_product_prices.py), not
+    the seller's active listing price — comparing an order's paid price
+    against that ceiling overstates the "before" side whenever the item is
+    actually enrolled in a promotion (the normal case, not the exception).
+    marketing_seller_price_rub (POST /v5/product/info/prices) is the
+    seller's price INCLUDING their own promo participation — the correct
+    "before Ozon's own algorithmic SPP" reference."""
     seller_price_by_sku = seller_price_by_sku or {}
     seller_price_by_sku_and_date = seller_price_by_sku_and_date or {}
     daily: dict[date, dict] = {}
@@ -627,24 +644,40 @@ def sync_order_daily_statistics(
     # docstring) — a CURRENT catalog-price snapshot, kept as the FALLBACK
     # for any (sku, day) not covered by seller_price_by_sku_and_date below
     # (e.g. a day before daily snapshotting started, or a gap in syncing).
+    # ИЗМЕНЕНО 2026-09-24: prefers marketing_seller_price_rub (Ozon's
+    # "price WITH the seller's own promo participation" — CONFIRMED against
+    # a real cabinet screenshot, see Product.marketing_seller_price_rub's
+    # own comment) over price_rub (the no-promo CEILING price — "Предельная
+    # цена без акций" — which overstated the СПП gap whenever the item is
+    # actually running a promotion, the normal case). Falls back to
+    # price_rub only where marketing_seller_price_rub is NULL (a product
+    # synced before this column existed, or genuinely never enrolled in any
+    # promo).
     seller_price_by_sku = {
         sku: float(price)
-        for sku, price in db.query(Product.ozon_sku, Product.price_rub)
-        .filter(Product.store_id == store_id, Product.price_rub.isnot(None))
+        for sku, price in db.query(
+            Product.ozon_sku, func.coalesce(Product.marketing_seller_price_rub, Product.price_rub),
+        )
+        .filter(
+            Product.store_id == store_id,
+            func.coalesce(Product.marketing_seller_price_rub, Product.price_rub).isnot(None),
+        )
         .all()
     }
     # PREFERRED source, checked first — see ProductPriceDailySnapshot's own
     # docstring: a SKU's real seller price moves day to day (Ozon's own
     # algorithmic pricing), so this gives each order's own historical day
-    # its OWN price instead of always today's snapshot above.
+    # its OWN price instead of always today's snapshot above. Same
+    # marketing_seller_price_rub-over-price_rub preference as above.
     seller_price_by_sku_and_date = {
         (sku, snap_date): float(price)
         for sku, snap_date, price in db.query(
-            ProductPriceDailySnapshot.ozon_sku, ProductPriceDailySnapshot.date, ProductPriceDailySnapshot.price_rub,
+            ProductPriceDailySnapshot.ozon_sku, ProductPriceDailySnapshot.date,
+            func.coalesce(ProductPriceDailySnapshot.marketing_seller_price_rub, ProductPriceDailySnapshot.price_rub),
         )
         .filter(
             ProductPriceDailySnapshot.store_id == store_id,
-            ProductPriceDailySnapshot.price_rub.isnot(None),
+            func.coalesce(ProductPriceDailySnapshot.marketing_seller_price_rub, ProductPriceDailySnapshot.price_rub).isnot(None),
             ProductPriceDailySnapshot.date >= resolved_date_from,
             ProductPriceDailySnapshot.date <= resolved_date_to,
         )

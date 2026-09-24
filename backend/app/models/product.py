@@ -22,6 +22,17 @@ class Product(TimestampMixin, Base):
 
     price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     old_price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # ДОБАВЛЕНО 2026-09-24 — Ozon's own POST /v5/product/info/prices,
+    # "marketing_seller_price": the seller's price INCLUDING their own
+    # promo participation — CONFIRMED against a real cabinet screenshot to
+    # be the correct «Ваша цена» base for «СПП (расчёт)» (price_rub above,
+    # from the OLDER /v3/product/info/list "price" field, turned out to be
+    # the no-promo CEILING — "Предельная цена без акций" — not the active
+    # listing price; using it overstated the discount whenever the item is
+    # actually running a promotion, see order_daily_sync_service.py's own
+    # docstring for the full real-account trail). None until the next
+    # catalog sync after this column existed.
+    marketing_seller_price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     # Purchase/production cost per unit — Ozon's API never exposes this (it's
     # the seller's own private data), so it's entered here manually, once per
     # product, rather than re-uploaded on every report like the other CSV

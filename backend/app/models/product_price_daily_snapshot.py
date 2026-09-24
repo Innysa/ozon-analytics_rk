@@ -1,7 +1,8 @@
-"""Daily snapshot of Product.price_rub/old_price_rub/fbo_stock/fbs_stock —
-one row per (store, SKU, calendar day), captured every time the catalog
-syncs (`POST /v3/product/info/list`, same call that already updates
-`Product` itself — see app.api.routes.sync's `_upsert()`).
+"""Daily snapshot of Product.price_rub/marketing_seller_price_rub/
+old_price_rub/fbo_stock/fbs_stock — one row per (store, SKU, calendar day),
+captured every time the catalog syncs (`POST /v3/product/info/list` +,
+ДОБАВЛЕНО 2026-09-24, `POST /v5/product/info/prices` for marketing_seller_
+price — see app.services.product_catalog_sync_service.sync_product_catalog).
 
 CONFIRMED 2026-09-22 (via real Ozon Seller cabinet screenshots + the
 user's own reference tool showing the same product's price moving from
@@ -47,6 +48,14 @@ class ProductPriceDailySnapshot(TimestampMixin, Base):
 
     price_rub: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     old_price_rub: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # ДОБАВЛЕНО 2026-09-24 — см. Product.marketing_seller_price_rub's own
+    # comment: POST /v5/product/info/prices' "marketing_seller_price", the
+    # confirmed correct «Ваша цена» base for «СПП (расчёт)» per-day
+    # (price_rub above is the no-promo ceiling, not the active listing
+    # price). Rows written before this column existed simply have it NULL
+    # — the reader falls back the same way it already does for a day with
+    # no snapshot row at all.
+    marketing_seller_price_rub: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     fbo_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fbs_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

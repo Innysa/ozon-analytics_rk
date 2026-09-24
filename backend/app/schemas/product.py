@@ -14,6 +14,7 @@ class ProductOut(BaseModel):
     image_url: str | None
     price_rub: Decimal | None
     old_price_rub: Decimal | None
+    marketing_seller_price_rub: Decimal | None
     cost_price_rub: Decimal | None
     fbo_stock: int | None
     fbs_stock: int | None

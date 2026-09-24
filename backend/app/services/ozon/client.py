@@ -11,6 +11,9 @@ Endpoints implemented here (Ozon Seller API, base https://api-seller.ozon.ru):
   POST /v1/review/comment/create - post a reply/comment to a review
   POST /v3/product/list          - paginated list of product ids/skus
   POST /v3/product/info/list     - product details (name, price, stocks) by id
+  POST /v5/product/info/prices   - richer per-product pricing (marketing_
+                                    seller_price, min_price, retail_price,
+                                    net_price) — see get_product_prices()
 
 These are documented as *beta* methods that require an Ozon Premium Plus
 subscription (https://docs.ozon.ru/api/seller/). Field names were verified
@@ -161,6 +164,7 @@ from app.services.ozon.schemas import (
     OzonPostingListResponse,
     OzonProductInfoListResponse,
     OzonProductListResponse,
+    OzonProductPricesResponse,
     OzonReviewCommentItem,
     OzonReviewListResponse,
 )
@@ -422,6 +426,24 @@ class OzonSellerClient:
         app.api.routes.sync's sync_ozon_products for where this is used."""
         data = self._post("/v3/product/info/list", {"offer_id": offer_ids})
         return OzonProductInfoListResponse.model_validate(data)
+
+    def get_product_prices(self, offer_ids: list[str]) -> OzonProductPricesResponse:
+        """POST /v5/product/info/prices — CONFIRMED 2026-09-24 (see
+        backend/scripts/probe_product_prices.py and OzonProductPriceDetail's
+        own docstring in schemas.py for the full real-account trail). A
+        SEPARATE, richer pricing endpoint from /v3/product/info/list's own
+        bare "price"/"old_price" — this one also exposes
+        marketing_seller_price (the seller's price WITH their own promo
+        participation, confirmed against a real cabinet screenshot to be
+        the correct «Ваша цена» base for «СПП (расчёт)», see
+        order_daily_sync_service.py), min_price, retail_price, net_price.
+        Request body/filter key confirmed working: {"cursor": "", "filter":
+        {"offer_id": [...], "visibility": "ALL"}, "limit": N}."""
+        data = self._post(
+            "/v5/product/info/prices",
+            {"cursor": "", "filter": {"offer_id": offer_ids, "visibility": "ALL"}, "limit": len(offer_ids)},
+        )
+        return OzonProductPricesResponse.model_validate(data)
 
     def get_product_queries(
         self,

@@ -700,3 +700,100 @@ def test_full_sync_prefers_price_snapshot_of_the_orders_own_day(db_session, monk
     assert stat is not None
     # 2400 (that day's real snapshot), NOT 6000 (Product's current price_rub).
     assert float(stat.ordered_sum_seller_price_rub) == 2400.0
+
+
+def test_full_sync_prefers_marketing_seller_price_over_no_promo_ceiling(db_session, monkeypatch):
+    """ИЗМЕНЕНО 2026-09-24: marketing_seller_price_rub (the seller's price
+    WITH their own promo participation — CONFIRMED against a real cabinet
+    screenshot, see Product.marketing_seller_price_rub's own comment) must
+    be preferred over price_rub (the no-promo ceiling) whenever both are
+    present, for both the flat Product snapshot AND the day-aware
+    ProductPriceDailySnapshot."""
+    import app.services.order_daily_sync_service as svc
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product import Product
+    from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
+    from app.models.store import Store
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+    db_session.add(Product(store_id=store.id, ozon_sku="1", name="Товар", price_rub=2200.0, marketing_seller_price_rub=2131.0))
+    db_session.add(ProductPriceDailySnapshot(
+        store_id=store.id, ozon_sku="1", date=date(2026, 9, 1), price_rub=2200.0, marketing_seller_price_rub=2100.0,
+    ))
+    db_session.commit()
+
+    historical_posting = _posting(
+        status="delivered", in_process_at="2026-09-01T10:00:00.000000Z", sku=1, price="1200.00", old_price=8000.0, commission=-100,
+    )
+
+    class _FakeClient:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            if offset == 0:
+                return OzonPostingListResponse(result=OzonPostingListResult(postings=[historical_posting], has_next=False))
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+        def list_fbs_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+    svc.sync_order_daily_statistics(
+        db_session, store_id=store.id, client=_FakeClient(),
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 1),
+    )
+    db_session.commit()
+
+    stat = (
+        db_session.query(OrderDailyStatistic)
+        .filter(OrderDailyStatistic.store_id == store.id, OrderDailyStatistic.date == date(2026, 9, 1))
+        .first()
+    )
+    assert stat is not None
+    # 2100 (that day's marketing_seller_price snapshot), NOT 2200 (price_rub, the no-promo ceiling).
+    assert float(stat.ordered_sum_seller_price_rub) == 2100.0
+
+
+def test_full_sync_falls_back_to_price_rub_when_marketing_seller_price_is_null(db_session, monkeypatch):
+    """A product synced before marketing_seller_price_rub existed (or one
+    genuinely never enrolled in a promo) must still fall back to price_rub
+    — never treated as "unknown" just because the preferred field is
+    NULL."""
+    import app.services.order_daily_sync_service as svc
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product import Product
+    from app.models.store import Store
+    from app.services.ozon.schemas import OzonPostingListResponse, OzonPostingListResult
+
+    store = Store(name="Test")
+    db_session.add(store)
+    db_session.flush()
+    db_session.add(Product(store_id=store.id, ozon_sku="1", name="Товар", price_rub=2200.0, marketing_seller_price_rub=None))
+    db_session.commit()
+
+    posting = _posting(
+        status="delivered", in_process_at="2026-09-01T10:00:00.000000Z", sku=1, price="1200.00", old_price=8000.0, commission=-100,
+    )
+
+    class _FakeClient:
+        def list_fbo_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            if offset == 0:
+                return OzonPostingListResponse(result=OzonPostingListResult(postings=[posting], has_next=False))
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+        def list_fbs_postings(self, *, date_from, date_to, offset=0, limit=1000):
+            return OzonPostingListResponse(result=OzonPostingListResult(postings=[], has_next=False))
+
+    svc.sync_order_daily_statistics(
+        db_session, store_id=store.id, client=_FakeClient(),
+        date_from=date(2026, 9, 1), date_to=date(2026, 9, 1),
+    )
+    db_session.commit()
+
+    stat = (
+        db_session.query(OrderDailyStatistic)
+        .filter(OrderDailyStatistic.store_id == store.id, OrderDailyStatistic.date == date(2026, 9, 1))
+        .first()
+    )
+    assert stat is not None
+    assert float(stat.ordered_sum_seller_price_rub) == 2200.0

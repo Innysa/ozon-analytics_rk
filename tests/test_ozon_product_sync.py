@@ -9,7 +9,9 @@ from unittest.mock import MagicMock
 from tests.conftest import login
 
 from app.services.ozon.client import OzonCredentials, OzonSellerClient
-from app.services.ozon.schemas import OzonProductInfoListResponse, OzonProductListResponse
+from app.services.ozon.schemas import OzonProductInfoListResponse, OzonProductListResponse, OzonProductPricesResponse
+
+_EMPTY_PRICES_RESPONSE = OzonProductPricesResponse(items=[])
 
 PRODUCT_LIST_PAYLOAD = {
     "result": {
@@ -124,6 +126,55 @@ def test_get_products_info_sends_requested_ids():
     assert info.items[0].name == "деталь чемодана"
 
 
+PRODUCT_PRICES_PAYLOAD = {
+    "items": [
+        {
+            "product_id": 3178077356,
+            "offer_id": "шкат/ювел/3блока/бел/2",
+            "price": {
+                "auto_action_enabled": False,
+                "currency_code": "RUB",
+                "marketing_seller_price": 2131,
+                "min_price": 2000,
+                "old_price": 8000,
+                "price": 2200,
+                "retail_price": 0,
+                "vat": 0.05,
+                "auto_add_to_ozon_actions_list_enabled": False,
+                "net_price": 0,
+                "declared_price": {"amount": "0", "currency": "RUB"},
+            },
+            "price_indexes": {"color_index": "WITHOUT_INDEX"},
+        }
+    ],
+    "cursor": "WzMxNzgwNzczNTYsMzE3ODA3NzM1Nl0=",
+    "total": 1,
+    "total_items": 1,
+}
+
+
+def test_get_product_prices_parses_marketing_seller_price():
+    """CONFIRMED 2026-09-24 against a real account (backend/scripts/
+    probe_product_prices.py) — see OzonProductPriceDetail's own docstring
+    in schemas.py for the full field-mapping trail against the seller's
+    own cabinet screenshot."""
+    client = OzonSellerClient(OzonCredentials(client_id="cid", api_key="key"))
+    client._client.post = MagicMock(return_value=_mock_post(PRODUCT_PRICES_PAYLOAD))
+
+    prices = client.get_product_prices(["шкат/ювел/3блока/бел/2"])
+
+    sent_path, sent_kwargs = client._client.post.call_args
+    assert sent_path[0] == "/v5/product/info/prices"
+    assert sent_kwargs["json"]["filter"]["offer_id"] == ["шкат/ювел/3блока/бел/2"]
+    assert len(prices.items) == 1
+    item = prices.items[0]
+    assert item.offer_id == "шкат/ювел/3блока/бел/2"
+    assert item.price.price == 2200
+    assert item.price.old_price == 8000
+    assert item.price.marketing_seller_price == 2131
+    assert item.price.min_price == 2000
+
+
 def test_get_products_info_by_offer_id_sends_requested_offer_ids():
     """Same endpoint as get_products_info(), filtered by offer_id — used as
     a fallback for products Ozon reports as sku=0 when queried by
@@ -164,6 +215,7 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
 
         def _list_products(*, last_id=""):
             calls["list_products"] += 1
@@ -207,6 +259,57 @@ def test_sync_ozon_products_paginates_and_upserts_from_info(client, two_stores_w
     assert len(products_resp2.json()) == 1
 
 
+def test_sync_ozon_products_captures_marketing_seller_price(client, two_stores_with_users, monkeypatch, db_session):
+    """ДОБАВЛЕНО 2026-09-24: the catalog sync must also call POST /v5/
+    product/info/prices per batch and store marketing_seller_price_rub on
+    both Product and that day's ProductPriceDailySnapshot — see
+    Product.marketing_seller_price_rub's own comment for why (price_rub
+    alone turned out to be the no-promo ceiling, not the seller's active
+    listing price)."""
+    from datetime import datetime, timezone
+
+    from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
+
+    d = two_stores_with_users
+    login(client, "admin@example.com", "adminpass123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)
+    prices_payload = {
+        "items": [{"offer_id": "чем27", "product_id": 5330508572, "price": {"price": 200, "old_price": 400, "marketing_seller_price": 150}}],
+    }
+    prices_response = OzonProductPricesResponse.model_validate(prices_payload)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.side_effect = lambda *, last_id="": (empty_response if last_id else list_response)
+        fake.get_products_info.return_value = info_response
+        fake.get_product_prices.return_value = prices_response
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 1
+    assert float(products[0]["marketing_seller_price_rub"]) == 150.0
+
+    today = datetime.now(timezone.utc).date()
+    snap = (
+        db_session.query(ProductPriceDailySnapshot)
+        .filter(ProductPriceDailySnapshot.store_id == d["store_a"].id, ProductPriceDailySnapshot.date == today)
+        .one()
+    )
+    assert float(snap.marketing_seller_price_rub) == 150.0
+
+
 def test_sync_ozon_products_captures_daily_price_snapshot(client, two_stores_with_users, monkeypatch, db_session):
     """ADDED 2026-09-22 — see ProductPriceDailySnapshot's own docstring: each
     catalog sync must also record today's price/stock as a dated row, not
@@ -228,6 +331,7 @@ def test_sync_ozon_products_captures_daily_price_snapshot(client, two_stores_wit
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.side_effect = lambda *, last_id="": (empty_response if last_id else list_response)
         fake.get_products_info.return_value = info_response
         yield fake
@@ -303,6 +407,7 @@ def test_stale_sku_zero_row_is_corrected_in_place_not_duplicated(client, two_sto
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.return_value = list_response
         fake.get_products_info.return_value = info_response
         yield fake
@@ -380,6 +485,7 @@ def test_sku_zero_by_product_id_is_resolved_via_offer_id_fallback(client, two_st
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.return_value = list_response
 
         def _get_products_info(product_ids):
@@ -451,6 +557,7 @@ def test_sku_still_zero_after_offer_id_fallback_is_skipped(client, two_stores_wi
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.return_value = list_response
         fake.get_products_info.return_value = zero_info_response
         fake.get_products_info_by_offer_id.return_value = zero_info_response  # still sku=0
@@ -541,6 +648,7 @@ def test_duplicate_rows_for_same_product_are_merged_on_conflict(client, two_stor
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.return_value = list_response
         fake.get_products_info.return_value = info_response
         yield fake
@@ -583,6 +691,7 @@ def test_final_commit_failure_leaves_run_failed_not_stuck_running(client, two_st
     @contextmanager
     def fake_client_cm(*_args, **_kwargs):
         fake = MagicMock()
+        fake.get_product_prices.return_value = _EMPTY_PRICES_RESPONSE
         fake.list_products.return_value = empty_list_response
         yield fake
 

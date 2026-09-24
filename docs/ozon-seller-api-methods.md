@@ -21,6 +21,14 @@
 - `/v1/analytics/product-queries/details` — позиции в поиске, см. README
 - `/v2/posting/fbo/list`, `/v3/posting/fbs/list` — заказы (РНП/Маржа), см. README
 - `/v3/product/list`, `/v3/product/info/list` — каталог/остатки/цены
+- `/v5/product/info/prices` — **ПОДТВЕРЖДЕНО 2026-09-24**
+  (`backend/scripts/probe_product_prices.py` на реальном магазине):
+  `marketing_seller_price` (цена продавца с учётом акций продавца) —
+  правильная база «Ваша цена» для «СПП (расчёт)», см.
+  `order_daily_sync_service.py`'s own докстринг. `price` в этом методе —
+  цена БЕЗ акций (потолок, «Предельная цена без акций» в кабинете), не
+  то же самое, что нужно для СПП, хотя название совпадает с
+  `/v3/product/info/list`'s "price".
 - `/v1/review/list`, `/v1/review/info`, `/v1/review/comment/list`, `/v1/review/comment/create` — отзывы
 
 ## Финансы (finance) — актуально на 2026-09-10

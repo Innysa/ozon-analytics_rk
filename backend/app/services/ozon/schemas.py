@@ -117,6 +117,58 @@ class OzonProductInfoListResponse(BaseModel):
     items: list[OzonProductInfoItem] = []
 
 
+# --- Product prices (/v5/product/info/prices) -----------------------------
+#
+# CONFIRMED against a real account (backend/scripts/probe_product_prices.py,
+# 2026-09-24) — a real item's "price" object came back:
+# {"auto_action_enabled": false, "currency_code": "RUB",
+#  "marketing_seller_price": 2131, "min_price": 2000, "old_price": 8000,
+#  "price": 2200, "retail_price": 0, "vat": 0.05,
+#  "auto_add_to_ozon_actions_list_enabled": false, "net_price": 0,
+#  "declared_price": {"amount": "0", "currency": "RUB"}}
+# — matched field-by-field against that SAME item's own seller-cabinet
+# «Управление ценами» screenshot: price=2200 == «Предельная цена без
+# акций», old_price=8000 == «Зачёркнутая цена», min_price=2000 ==
+# «Ограничение для акций и стратегий», marketing_seller_price=2131 ==
+# the "товар участвует в акциях: предельная цена" banner shown while the
+# item is actively enrolled in a promotion — i.e. marketing_seller_price is
+# the seller's OWN price INCLUDING their own promo participation, the
+# closest available analog to "Ваша цена" for «СПП (расчёт)»: Ozon's own
+# further algorithmic discount is layered on TOP of this number, not on
+# top of the no-promo ceiling ("price" field) — using the ceiling as the
+# base overstates the gap whenever the item is actually running a promo
+# (which "auto_action_enabled"/"товар участвует в нескольких акциях"
+# confirms this one is). See order_daily_sync_service.py's own docstring
+# for where this replaces the old /v3/product/info/list "price" field as
+# the «Ваша цена» source.
+class OzonProductPriceDetail(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    price: str | float | None = None
+    old_price: str | float | None = None
+    marketing_seller_price: str | float | None = None
+    min_price: str | float | None = None
+    retail_price: str | float | None = None
+    net_price: str | float | None = None
+    currency_code: str | None = None
+
+
+class OzonProductPriceItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    product_id: int | None = None
+    offer_id: str | None = None
+    price: OzonProductPriceDetail | None = None
+
+
+class OzonProductPricesResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    items: list[OzonProductPriceItem] = []
+    cursor: str | None = None
+    total: int | None = None
+
+
 # --- Postings / orders (/v2/posting/fbo/list, /v3/posting/fbs/list) -----
 #
 # CONFIRMED against a real account (backend/scripts/debug_orders_finance_

@@ -18,7 +18,16 @@ of the same endpoint by offer_id instead, which resolves the real sku.
 Only ever applied to the zero-sku subset, not every product.
 
 Also captures ProductPriceDailySnapshot — see that model's own docstring —
-in the SAME upsert loop, no extra Ozon call.
+in the SAME upsert loop.
+
+**ДОБАВЛЕНО 2026-09-24**: also calls POST /v5/product/info/prices per batch
+(one extra Ozon call per PRODUCT_INFO_BATCH_SIZE products — see
+OzonSellerClient.get_product_prices()'s own docstring for the confirmed
+contract) to capture marketing_seller_price_rub, the correct «Ваша цена»
+base for «СПП (расчёт)» — price_rub (from /v3/product/info/list alone)
+turned out to be the no-promo ceiling price, not the seller's active
+listing price. See order_daily_sync_service.py's own docstring for the
+full real-account trail that found this.
 
 hard_failure on the returned outcome distinguishes an auth/feature-tier
 failure (OzonAuthError/OzonFeatureUnavailable, or an unhandled internal
@@ -109,7 +118,21 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
                 break
             last_id = page.result.last_id
 
-        def _upsert(item, sku: str) -> None:
+        def _fetch_marketing_seller_prices(offer_ids: list[str]) -> dict[str, Decimal | None]:
+            """One batch, one call — offer_ids is already <= PRODUCT_INFO_
+            BATCH_SIZE (100) here, so no further chunking is needed. Returns
+            {} (not raises) on an empty input rather than making a
+            pointless call."""
+            if not offer_ids:
+                return {}
+            prices = client.get_product_prices(offer_ids)
+            return {
+                item.offer_id: _to_decimal(str(item.price.marketing_seller_price))
+                for item in prices.items
+                if item.offer_id and item.price is not None and item.price.marketing_seller_price is not None
+            }
+
+        def _upsert(item, sku: str, marketing_seller_price: Decimal | None) -> None:
             fbo_stock = fbs_stock = 0
             if item.stocks:
                 for stock in item.stocks.stocks:
@@ -149,6 +172,7 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
                 product.image_url = image_url or product.image_url
                 product.price_rub = price
                 product.old_price_rub = old_price
+                product.marketing_seller_price_rub = marketing_seller_price
                 product.fbo_stock = fbo_stock
                 product.fbs_stock = fbs_stock
                 product.is_archived = bool(item.is_archived)
@@ -163,6 +187,7 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
                     image_url=image_url,
                     price_rub=price,
                     old_price_rub=old_price,
+                    marketing_seller_price_rub=marketing_seller_price,
                     fbo_stock=fbo_stock,
                     fbs_stock=fbs_stock,
                     is_archived=bool(item.is_archived),
@@ -179,6 +204,7 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
                 existing_snapshots_today[sku] = snapshot
             snapshot.price_rub = price
             snapshot.old_price_rub = old_price
+            snapshot.marketing_seller_price_rub = marketing_seller_price
             snapshot.fbo_stock = fbo_stock
             snapshot.fbs_stock = fbs_stock
             snapshot.source = "ozon_seller_api"
@@ -197,10 +223,11 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
         for batch_start in range(0, len(product_ids), PRODUCT_INFO_BATCH_SIZE):
             batch = product_ids[batch_start : batch_start + PRODUCT_INFO_BATCH_SIZE]
             info = client.get_products_info(batch)
+            prices_by_offer_id = _fetch_marketing_seller_prices([item.offer_id for item in info.items if item.offer_id])
             for item in info.items:
                 outcome.fetched += 1
                 if item.sku:
-                    _upsert(item, str(item.sku))
+                    _upsert(item, str(item.sku), prices_by_offer_id.get(item.offer_id))
                 elif item.offer_id:
                     zero_sku_items.append(item)
                 # else: sku=0 AND no offer_id to retry with — nothing more to try.
@@ -219,10 +246,13 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
                     if retry_item.offer_id:
                         resolved_by_offer_id[retry_item.offer_id] = retry_item
 
+            zero_sku_prices_by_offer_id = _fetch_marketing_seller_prices(
+                [item.offer_id for item in zero_sku_items if item.offer_id]
+            )
             for item in zero_sku_items:
                 resolved = resolved_by_offer_id.get(item.offer_id)
                 if resolved and resolved.sku:
-                    _upsert(resolved, str(resolved.sku))
+                    _upsert(resolved, str(resolved.sku), zero_sku_prices_by_offer_id.get(item.offer_id))
                 # else: still sku=0/missing even by offer_id — genuinely
                 # unresolved for now; left for search_query_details_sync
                 # _service's own named diagnostic to surface if this row
