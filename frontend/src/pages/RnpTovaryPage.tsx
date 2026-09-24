@@ -580,12 +580,18 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
     return <div className="mt-3 rounded-md border border-dashed border-slate-200 p-3 text-center text-xs text-slate-400">Нет данных за этот месяц.</div>;
   }
   const planOrdersPerDay = row.orders.plan_day_units;
+  // «Показатель» (первый столбец) — ЗАКРЕПЛЁН при горизонтальной прокрутке
+  // (position: sticky), добавлено 2026-09-24 по просьбе пользователя: при
+  // прокрутке вправо было не видно, какая строка какому показателю
+  // соответствует. Непрозрачный фон (bg-white) обязателен — иначе
+  // прокручиваемые ячейки просвечивали бы сквозь закреплённую колонку.
+  const stickyLabelCellClass = "sticky left-0 z-10 bg-white py-1 pr-3 font-medium text-slate-600";
   return (
     <div className="mt-3 overflow-x-auto">
       <table className="text-left text-xs">
         <thead>
           <tr className="border-b border-slate-200 text-slate-500">
-            <th className="py-1 pr-3">Показатель</th>
+            <th className="sticky left-0 z-10 bg-white py-1 pr-3">Показатель</th>
             {row.daily.map((d) => (
               <th key={d.date} className="whitespace-nowrap px-2 text-center">
                 {d.date}
@@ -595,7 +601,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
         </thead>
         <tbody>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, шт</td>
+            <td className={stickyLabelCellClass}>Заказы, шт</td>
             {row.daily.map((d) => (
               <td key={d.date} className={`whitespace-nowrap px-2 text-center ${dailyComparisonClass(d.orders_units, planOrdersPerDay)}`}>
                 {d.orders_units}
@@ -603,7 +609,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Заказы, ₽</td>
+            <td className={stickyLabelCellClass}>Заказы, ₽</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.orders_sum_rub)}
@@ -611,7 +617,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">СПП (расчёт)</td>
+            <td className={stickyLabelCellClass}>СПП (расчёт)</td>
             {row.daily.map((d) => {
               // База «Ваша цена» (см. DailyBreakdownEntry-докстринг в
               // frontend/src/types/index.ts) — НЕ orders_sum_rub (Цена до
@@ -636,7 +642,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             })}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, шт</td>
+            <td className={stickyLabelCellClass}>Выкупы, шт</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {d.buyouts_units}
@@ -644,7 +650,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Выкупы, ₽</td>
+            <td className={stickyLabelCellClass}>Выкупы, ₽</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.buyouts_sum_rub)}
@@ -652,7 +658,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">CTR</td>
+            <td className={stickyLabelCellClass}>CTR</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtPct(d.ad_impressions > 0 ? (d.ad_clicks / d.ad_impressions) * 100 : null)}
@@ -660,7 +666,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr className="border-b border-slate-100">
-            <td className="py-1 pr-3 font-medium text-slate-600">Рекламный бюджет, ДРР %</td>
+            <td className={stickyLabelCellClass}>Рекламный бюджет, ДРР %</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtPct(d.buyouts_sum_rub > 0 ? (d.ad_spend_rub / d.buyouts_sum_rub) * 100 : null)}
@@ -668,7 +674,7 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
             ))}
           </tr>
           <tr>
-            <td className="py-1 pr-3 font-medium text-slate-600">Прибыль</td>
+            <td className={stickyLabelCellClass}>Прибыль</td>
             {row.daily.map((d) => (
               <td key={d.date} className="whitespace-nowrap px-2 text-center">
                 {fmtRub(d.profit_rub)}
