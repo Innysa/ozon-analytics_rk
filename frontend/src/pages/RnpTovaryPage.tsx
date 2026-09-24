@@ -168,6 +168,30 @@ export function RnpTovaryPage() {
     }
   };
 
+  // Себестоимость — Ozon никогда не отдаёт её через API (это приватная
+  // закупочная/производственная цена продавца), поэтому массовая загрузка
+  // — единственная альтернатива ручному вводу по одному товару. Совпадение
+  // строится по «Артикул продавца» (offer_id), а не по SKU/«Арт МП»: на
+  // реальном файле пользователя (2026-09-24) он был заполнен у каждой
+  // строки, а SKU — примерно у половины.
+  const uploadCostPrice = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (!currentStore) return;
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setNotice("Загрузка себестоимости...");
+    try {
+      const result = await api.upload<ImportSummary>(`/stores/${currentStore.id}/products/upload-cost-price`, file);
+      setNotice(
+        `Загружено: обновлено товаров ${result.created}` +
+          (result.errors.length ? `. Примечания: ${result.errors.slice(0, 3).join("; ")}` : "")
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка загрузки файла");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -220,6 +244,13 @@ export function RnpTovaryPage() {
           >
             Загрузить локализацию по товарам (XLSX)
             <input type="file" accept=".xlsx" className="hidden" onChange={uploadLocalization} />
+          </label>
+          <label
+            className="cursor-pointer rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200"
+            title="Файл с колонками «Артикул продавца» и «Себ-ть для UNIT» — совпадение по артикулу продавца"
+          >
+            Загрузить себестоимость (XLSX)
+            <input type="file" accept=".xlsx" className="hidden" onChange={uploadCostPrice} />
           </label>
         </div>
       </div>

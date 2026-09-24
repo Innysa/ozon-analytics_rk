@@ -22,6 +22,7 @@ from app.schemas.product import (
 from app.services.ai.factory import get_ai_provider
 from app.services.audit import record_audit
 from app.services.product_card_ai_review_service import generate_product_card_ai_review
+from app.services.product_cost_price_import import import_product_cost_price_from_file
 from app.services.product_localization_import import import_product_localization_from_file
 
 router = APIRouter(prefix="/api/stores/{store_id}/products", tags=["products"])
@@ -109,6 +110,51 @@ async def upload_product_localization(
         db, action="product_localization_imported", user_id=user.id, store_id=ctx.store_id,
         target_type="sync_run", target_id=run.id,
         message=f"Импортирована локализация: {result.created} товаров",
+    )
+
+    return ImportSummary(fetched=result.fetched, created=result.created, skipped_duplicate=result.skipped_duplicate, errors=result.errors)
+
+
+@router.post("/upload-cost-price", response_model=ImportSummary)
+async def upload_product_cost_price(
+    file: UploadFile,
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ImportSummary:
+    """Bulk-imports себестоимость from the seller's own XLSX spreadsheet,
+    matched by "Артикул продавца" (offer_id) — see
+    app.services.product_cost_price_import's own docstring for why offer_id
+    rather than SKU, and which column is read."""
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Поддерживается только файл .xlsx")
+
+    content = await file.read()
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.XLSX_IMPORT,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+
+    result = import_product_cost_price_from_file(db, store_id=ctx.store_id, filename=file.filename, content=content)
+
+    run.finished_at = datetime.now(timezone.utc)
+    run.items_fetched = result.fetched
+    run.items_created = result.created
+    run.items_skipped_duplicate = result.skipped_duplicate
+    run.error_message = "; ".join(result.errors[:20]) if result.errors else None
+    run.status = SyncStatus.SUCCESS if not result.errors else (SyncStatus.PARTIAL if result.created else SyncStatus.FAILED)
+    db.commit()
+
+    record_audit(
+        db, action="product_cost_price_imported", user_id=user.id, store_id=ctx.store_id,
+        target_type="sync_run", target_id=run.id,
+        message=f"Импортирована себестоимость: {result.created} товаров",
     )
 
     return ImportSummary(fetched=result.fetched, created=result.created, skipped_duplicate=result.skipped_duplicate, errors=result.errors)
