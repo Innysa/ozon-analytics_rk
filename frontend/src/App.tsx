@@ -39,7 +39,15 @@ function Shell() {
       <TopBar />
       <div className="flex flex-1">
         <Sidebar />
-        <main className="flex-1 p-4">
+        {/* min-w-0 is load-bearing: a flex item defaults to min-width: auto,
+            so without it a wide table anywhere on the page (e.g. РНП
+            Товары's daily breakdown, many date columns) refuses to shrink
+            below its own intrinsic width and blows out this WHOLE flex
+            row — the page scrolls horizontally instead of the table's own
+            overflow-x-auto div clipping it internally, which is also why
+            a sticky first column inside that div doesn't visually stick
+            (it's sticky within an element that itself scrolled away). */}
+        <main className="min-w-0 flex-1 p-4">
           <Outlet />
         </main>
       </div>

@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { useStore } from "../store/StoreContext";
 import type { BulkPlanEntry as BulkPlanEntryType, ImportSummary, ProductPlannerOut, ProductPlannerRow, SuggestedPlan, SyncRun } from "../types";
@@ -36,6 +36,7 @@ export function RnpTovaryPage() {
   const [view, setView] = useState<ViewMode>("cards");
   const [syncingLocalization, setSyncingLocalization] = useState(false);
   const [syncingOrders, setSyncingOrders] = useState(false);
+  const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     if (!currentStore) return;
@@ -50,6 +51,19 @@ export function RnpTovaryPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Клиентский фильтр — по SKU, артикулу и названию. Все товары магазина
+  // уже загружены одним запросом (product-planner отдаёт их разом, без
+  // постраничной подгрузки), поэтому отдельный запрос на сервер для
+  // поиска не нужен.
+  const filteredRows = useMemo(() => {
+    if (!data) return [];
+    const q = search.trim().toLowerCase();
+    if (!q) return data.rows;
+    return data.rows.filter((row) =>
+      [row.product_name, row.product_sku, row.product_offer_id].some((field) => field?.toLowerCase().includes(q))
+    );
+  }, [data, search]);
 
   if (!currentStore) return null;
 
@@ -210,6 +224,14 @@ export function RnpTovaryPage() {
         </div>
       </div>
 
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Поиск по SKU, артикулу или названию"
+        className="w-full max-w-md rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+      />
+
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
@@ -234,12 +256,16 @@ export function RnpTovaryPage() {
         <div className="rounded-md border border-slate-200 bg-white p-6 text-center text-slate-500">
           В магазине нет товаров.
         </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-md border border-slate-200 bg-white p-6 text-center text-slate-500">
+          Ничего не найдено по запросу «{search}».
+        </div>
       ) : view === "bulk" ? (
-        <BulkPlanTable rows={data.rows} storeId={currentStore.id} year={year} month={month} onSaved={load} />
+        <BulkPlanTable rows={filteredRows} storeId={currentStore.id} year={year} month={month} onSaved={load} />
       ) : (
         <div className="space-y-3">
           {data.total && <ProductPlannerCard row={data.total} isTotal />}
-          {data.rows.map((row) => (
+          {filteredRows.map((row) => (
             <ProductPlannerCard
               key={row.product_id}
               row={row}
