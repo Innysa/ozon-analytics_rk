@@ -395,6 +395,40 @@ def test_listing_prefers_funnel_ordered_units_over_postings_for_a_synced_date(cl
     assert items[0]["ordered_sum_rub"] == 2000  # untouched — postings, not funnel revenue
 
 
+def test_listing_never_uses_funnel_units_for_todays_still_forming_day(client, db_session, two_stores_with_users):
+    """ИСПРАВЛЕНО 2026-09-24 — same real-account finding as
+    product_planner_service's own test: a funnel row for TODAY, even when
+    it already exists, must never override postings — see
+    app.core.moscow_time.moscow_today's own docstring."""
+    from app.core.moscow_time import moscow_today
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    today = moscow_today()
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=today, delivery_schema="FBO",
+        ordered_units=9, ordered_sum_rub=1800, ordered_sum_discounted_rub=1800,
+        delivered_units=1, delivered_sum_rub=200, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-10,
+        source="ozon_seller_api",
+    ))
+    db_session.add(ProductAnalyticsDailyStatistic(
+        store_id=store_id, ozon_sku="SKU-1", date=today,
+        revenue_rub=200, ordered_units=1, views_pdp=0, cart_adds_pdp=0, sessions_pdp=0,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["ordered_units"] == 9  # postings, NOT the funnel's 1
+
+
 def test_listing_falls_back_to_postings_units_on_a_date_the_funnel_has_not_synced(client, db_session, two_stores_with_users):
     from datetime import date
 

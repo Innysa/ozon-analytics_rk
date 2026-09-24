@@ -199,6 +199,31 @@ def test_orders_fall_back_to_postings_on_days_the_funnel_has_not_synced(client, 
     assert row["orders"]["actual_month_units"] == 19  # 15 + 4
 
 
+def test_orders_never_use_funnel_for_todays_still_forming_day(client, db_session, two_stores_with_users):
+    """ИСПРАВЛЕНО 2026-09-24: a real account's diagnostic dump
+    (show_product_analytics_daily.py) showed the funnel row for the
+    CURRENT day at 1 unit while postings for the same still-forming day
+    already had 9 — the funnel doesn't keep updating across an in-progress
+    day the way postings does. Today must always show the postings figure,
+    even when a funnel row already exists for it."""
+    from app.core.moscow_time import moscow_today
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    _seed_product(db_session, store_id, cost_price_rub=100)
+    today = moscow_today()
+    _seed_order_stat(db_session, store_id, "SKU-PLAN-1", today, ordered_units=9, ordered_sum_rub=1800, delivered_units=1, delivered_sum_rub=200)
+    _seed_funnel_stat(db_session, store_id, "SKU-PLAN-1", today, ordered_units=1, revenue_rub=200)
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/product-planner", params={"year": today.year, "month": today.month})
+    assert resp.status_code == 200
+    row = resp.json()["rows"][0]
+    day_entry = next(e for e in row["daily"] if e["date"] == today.isoformat())
+    assert day_entry["orders_units"] == 9  # postings, NOT the funnel's 1
+
+
 def test_orders_from_funnel_alone_when_postings_sync_has_no_row_that_day(client, db_session, two_stores_with_users):
     """Motivating real-world case: postings autosync failed/is stale for a
     day, but the funnel's own nightly sync already has that day — the unit

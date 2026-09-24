@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, require_store_role
+from app.core.moscow_time import moscow_today
 from app.db.session import get_db
 from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.models.membership import StoreRole
@@ -52,8 +53,11 @@ def list_order_daily_statistics(
     (units only, never ordered_sum_rub — unconfirmed price basis) as the
     identical switch made on «РНП Товары», see app.services.
     product_planner_service's own module docstring for the full story. Only
-    applied to a date the funnel has actually synced — a date with no
-    funnel rows keeps the postings figure unchanged."""
+    applied to a date the funnel has actually synced AND that's already
+    CLOSED (strictly before today in Moscow time, ИСПРАВЛЕНО 2026-09-24 —
+    see moscow_today()'s own docstring for the real account that surfaced
+    this) — a date with no funnel rows, or today itself, keeps the
+    postings figure unchanged."""
     stmt = select(OrderDailyStatistic).where(OrderDailyStatistic.store_id == ctx.store_id)
     if date_from:
         stmt = stmt.where(OrderDailyStatistic.date >= date_from)
@@ -75,6 +79,11 @@ def list_order_daily_statistics(
         ProductAnalyticsDailyStatistic.date, func.sum(ProductAnalyticsDailyStatistic.ordered_units)
     ).where(
         ProductAnalyticsDailyStatistic.store_id == ctx.store_id,
+        # Никогда для СЕГОДНЯ — см. product_planner_service's module
+        # docstring, «ИСПРАВЛЕНО 2026-09-24»: сегодняшняя строка воронки
+        # (если уже есть) отражает лишь то, что Ozon успел посчитать к
+        # последней ночной попытке, а не весь ещё идущий день.
+        ProductAnalyticsDailyStatistic.date < moscow_today(),
     )
     if date_from:
         funnel_stmt = funnel_stmt.where(ProductAnalyticsDailyStatistic.date >= date_from)

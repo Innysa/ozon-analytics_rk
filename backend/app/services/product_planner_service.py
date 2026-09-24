@@ -15,8 +15,20 @@ sync services — this module reads, it never calls Ozon itself:
     is free for every seller, unlike the funnel's other Premium Plus/Pro-
     only metrics — see OzonSellerClient.get_analytics_data()'s docstring)
     over ProductOrderDailyStatistic (our own aggregation of FBO/FBS
-    postings) for any (sku, day) where a funnel row exists, falling back to
-    the postings figure only for days the funnel sync hasn't covered.
+    postings) for any (sku, day) where a funnel row exists AND that day is
+    already CLOSED (strictly before today in Moscow time — see
+    app.core.moscow_time.moscow_today), falling back to the postings figure
+    for days the funnel sync hasn't covered and for today specifically.
+    **ИСПРАВЛЕНО 2026-09-24**: today was originally included in the
+    switch too, on the same "funnel row exists -> use it" rule as any other
+    day. CONFIRMED wrong on a real account via backend/scripts/show_
+    product_analytics_daily.py: for the CURRENT day, the funnel row (once
+    it exists at all, from whichever of the night's 3 sync attempts last
+    touched it) showed 1 unit while postings for the exact same still-
+    forming day already had 9 — the funnel simply doesn't keep updating
+    across a day already in progress the way postings does, so treating it
+    as authoritative for "today" made the figure look artificially low
+    for however many hours are left before the day closes.
     REASON: the user found the two tabs on the same product's page
     ("Продажи" vs "Воронка карточки") showing DIFFERENT «Заказано, шт»
     totals for an identical period (247 vs 293) and, combined with the
@@ -133,6 +145,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.moscow_time import moscow_today
 from app.models.advertising_daily_statistic import AdvertisingDailyStatistic
 from app.models.product import Product
 from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
@@ -264,6 +277,11 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
             ProductAnalyticsDailyStatistic.store_id == store_id,
             ProductAnalyticsDailyStatistic.date >= date_from,
             ProductAnalyticsDailyStatistic.date <= date_to,
+            # Никогда не для СЕГОДНЯ — см. module docstring, «ИСПРАВЛЕНО
+            # 2026-09-24»: сегодняшняя строка воронки (если уже есть)
+            # отражает лишь то, что Ozon успел посчитать на момент
+            # последней ночной попытки, а не весь ещё идущий день.
+            ProductAnalyticsDailyStatistic.date < moscow_today(),
         )
     ).all()
     for r in funnel_rows:
