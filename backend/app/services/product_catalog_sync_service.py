@@ -39,11 +39,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
+from app.core.moscow_time import moscow_today
 from app.models.product import Product
 from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot
 from app.services.ozon.exceptions import OzonAPIError, OzonAuthError, OzonFeatureUnavailable
@@ -96,7 +96,11 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
     # sync, so «СПП (расчёт)» can use a SKU's price on its OWN historical
     # day instead of always today's snapshot. Preloaded once (not queried
     # per product inside _upsert) — a sync can touch thousands of products.
-    price_snapshot_date = datetime.now(timezone.utc).date()
+    # ИСПРАВЛЕНО 2026-09-24: moscow_today(), не голая UTC-дата — та же
+    # причина, что и в order_daily_sync_service (Россия — UTC+3 круглый
+    # год): иначе ночной автосинк в 00:00-03:00 МСК штамповал бы снимок
+    # ещё ВЧЕРАШНЕЙ по UTC датой, хотя по Москве уже наступил новый день.
+    price_snapshot_date = moscow_today()
     existing_snapshots_today = {
         s.ozon_sku: s
         for s in db.query(ProductPriceDailySnapshot).filter(
