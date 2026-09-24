@@ -121,16 +121,35 @@ def sync_product_catalog(db: Session, *, store_id: str, client) -> ProductCatalo
         def _fetch_marketing_seller_prices(offer_ids: list[str]) -> dict[str, Decimal | None]:
             """One batch, one call — offer_ids is already <= PRODUCT_INFO_
             BATCH_SIZE (100) here, so no further chunking is needed. Returns
-            {} (not raises) on an empty input rather than making a
-            pointless call."""
+            {} on an empty input rather than making a pointless call.
+
+            Deliberately NEVER lets an OzonAPIError (or a parsing surprise
+            in Ozon's response) propagate out of here and abort the WHOLE
+            catalog sync — marketing_seller_price_rub is an ENHANCEMENT to
+            an already-working sync (price/old_price/stock/name from
+            /v3/product/info/list), not something the rest of the sync
+            should depend on succeeding. A failure here is logged and
+            surfaced as a non-fatal outcome.errors note instead."""
             if not offer_ids:
                 return {}
-            prices = client.get_product_prices(offer_ids)
-            return {
+            try:
+                prices = client.get_product_prices(offer_ids)
+            except OzonAPIError as exc:
+                logger.warning("Товары: не удалось получить marketing_seller_price для %d SKU: %s", len(offer_ids), exc)
+                outcome.errors.append(f"«Ваша цена» (СПП) не обновлена для части товаров: {exc}")
+                return {}
+            result = {
                 item.offer_id: _to_decimal(str(item.price.marketing_seller_price))
                 for item in prices.items
                 if item.offer_id and item.price is not None and item.price.marketing_seller_price is not None
             }
+            if offer_ids and not result:
+                logger.warning(
+                    "Товары: /v5/product/info/prices вернул 0 цен для %d запрошенных offer_id — "
+                    "проверьте форму ответа, если это повторяется",
+                    len(offer_ids),
+                )
+            return result
 
         def _upsert(item, sku: str, marketing_seller_price: Decimal | None) -> None:
             fbo_stock = fbs_stock = 0

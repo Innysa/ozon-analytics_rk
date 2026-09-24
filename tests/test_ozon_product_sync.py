@@ -310,6 +310,46 @@ def test_sync_ozon_products_captures_marketing_seller_price(client, two_stores_w
     assert float(snap.marketing_seller_price_rub) == 150.0
 
 
+def test_sync_ozon_products_survives_get_product_prices_failure(client, two_stores_with_users, monkeypatch):
+    """ДОБАВЛЕНО 2026-09-24: a failure fetching marketing_seller_price
+    (OzonAPIError from /v5/product/info/prices) must NOT abort the whole
+    catalog sync — price/old_price/stock/name from /v3/product/info/list
+    must still sync normally, with marketing_seller_price_rub simply left
+    unset and a non-fatal note in the SyncRun's error_message."""
+    from app.services.ozon.exceptions import OzonAPIError
+
+    d = two_stores_with_users
+    login(client, "admin@example.com", "adminpass123")
+    client.put(f"/api/stores/{d['store_a'].id}/ozon/credentials", json={"client_id": "cid", "api_key": "key"})
+
+    list_response = OzonProductListResponse.model_validate(PRODUCT_LIST_PAYLOAD)
+    empty_response = OzonProductListResponse.model_validate({"result": {"items": [], "total": 0, "last_id": ""}})
+    info_response = OzonProductInfoListResponse.model_validate(PRODUCT_INFO_PAYLOAD)
+
+    @contextmanager
+    def fake_client_cm(*_args, **_kwargs):
+        fake = MagicMock()
+        fake.list_products.side_effect = lambda *, last_id="": (empty_response if last_id else list_response)
+        fake.get_products_info.return_value = info_response
+        fake.get_product_prices.side_effect = OzonAPIError("Ozon вернул 500")
+        yield fake
+
+    import app.api.routes.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "OzonSellerClient", fake_client_cm)
+
+    resp = client.post(f"/api/stores/{d['store_a'].id}/sync/ozon-products")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] in ("success", "partial")  # not "failed" — the catalog data itself synced fine
+    assert body["items_created"] == 1
+
+    products = client.get(f"/api/stores/{d['store_a'].id}/products").json()
+    assert len(products) == 1
+    assert float(products[0]["price_rub"]) == 20.0  # unaffected
+    assert products[0]["marketing_seller_price_rub"] is None  # simply not obtained this run
+
+
 def test_sync_ozon_products_captures_daily_price_snapshot(client, two_stores_with_users, monkeypatch, db_session):
     """ADDED 2026-09-22 — see ProductPriceDailySnapshot's own docstring: each
     catalog sync must also record today's price/stock as a dated row, not
