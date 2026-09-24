@@ -142,19 +142,18 @@ function RowCells({ row }: { row: DayRow }) {
   // продавца — если нет, показываем "≈" вместо точного знака равенства,
   // тем же принципом, что costKnown ниже для себестоимости.
   const sppKnown = row.orderedUnitsWithKnownSellerPrice >= totalUnits && totalUnits > 0;
-  const sppPctRaw =
+  const sppPct =
     row.orderedSumSellerPriceRub > 0
       ? ((row.orderedSumSellerPriceRub - row.orderedSumDiscountedForKnownSellerPriceRub) / row.orderedSumSellerPriceRub) * 100
       : null;
-  // Отрицательный СПП — не настоящая цифра, а артефакт базы: «Ваша цена»
-  // здесь текущая цена продавца, а не цена на дату заказа (снимок цены по
-  // дням есть только с 2026-09-22, см. ProductPriceDailySnapshot's own
-  // докстринг) — если цена с тех пор изменилась, оплаченная сумма может
-  // оказаться выше текущей и формула уйдёт в минус, хотя реальная скидка
-  // отрицательной быть не может. Показываем «—» вместо сбивающего с толку
-  // минуса, тем же приёмом, что и в DailyBreakdownTable на «РНП Товары».
-  const sppUnreliable = sppPctRaw !== null && sppPctRaw < 0;
-  const sppPct = sppUnreliable ? null : sppPctRaw;
+  // ПОКАЗЫВАЕМ ЧИСЛО ВСЕГДА, даже отрицательное — по прямой просьбе
+  // пользователя (2026-09-24: "зачем мне прочерк, мне надо чтобы считало и
+  // показывало"). Отрицательное значение само по себе не ошибка расчёта —
+  // база («Ваша цена») для дат ДО 2026-09-22 берётся ТЕКУЩАЯ, не
+  // историческая (снимок цены по дням см. ProductPriceDailySnapshot's own
+  // докстринг), и если цена продавца с тех пор изменилась — результат
+  // может уйти в минус. Подсказка объясняет почему, число не прячем.
+  const sppUnreliable = sppPct !== null && sppPct < 0;
   const avgCheckBefore = totalUnits > 0 ? row.orderedSumRub / totalUnits : null;
   const avgCheckAfter = totalUnits > 0 ? row.orderedSumDiscountedRub / totalUnits : null;
   const buyoutPct = totalUnits > 0 ? (row.deliveredUnits / totalUnits) * 100 : null;
@@ -172,7 +171,7 @@ function RowCells({ row }: { row: DayRow }) {
       <td
         title={
           sppUnreliable
-            ? "Не удалось посчитать: цена продавца известна только текущая, а не на дату заказа — похоже, цена с тех пор изменилась. Снимок цены по дням ведётся с 22.09.2026, для более ранних дат такое возможно."
+            ? "Отрицательное значение из-за базы расчёта: цена продавца известна только текущая, а не на дату заказа — похоже, цена с тех пор изменилась. Снимок цены по дням ведётся с 22.09.2026, для более ранних дат такое возможно."
             : sppKnown || sppPct === null
               ? undefined
               : "Текущая цена продавца известна не для всех заказанных товаров — СПП посчитан только по известным"
