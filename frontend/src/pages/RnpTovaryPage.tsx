@@ -656,13 +656,29 @@ function DailyBreakdownTable({ row }: { row: ProductPlannerRow }) {
                 d.orders_sum_seller_price_rub > 0
                   ? ((d.orders_sum_seller_price_rub - d.orders_sum_discounted_for_known_seller_price_rub) / d.orders_sum_seller_price_rub) * 100
                   : null;
+              // Отрицательный СПП — не настоящая цифра, а артефакт базы:
+              // «Ваша цена» здесь — ТЕКУЩАЯ цена продавца (снимок цены по
+              // дням есть только начиная с 2026-09-22, см. ProductPriceDailySnapshot's
+              // own докстринг), а не цена именно на дату заказа. Если цена
+              // продавца с тех пор заметно изменилась, оплаченная сумма
+              // может оказаться ВЫШЕ текущей цены — формула даёт
+              // отрицательный результат, хотя реальная скидка отрицательной
+              // быть не может. Показываем «—» с пояснением вместо
+              // сбивающего с толку минуса.
+              const sppUnreliable = sppPct !== null && sppPct < 0;
               return (
                 <td
                   key={d.date}
                   className="whitespace-nowrap px-2 text-center"
-                  title={sppKnown || sppPct === null ? undefined : "Текущая цена продавца известна не для всех заказанных товаров — СПП посчитан только по известным"}
+                  title={
+                    sppUnreliable
+                      ? "Не удалось посчитать: цена продавца известна только текущая, а не на дату заказа — похоже, цена с тех пор изменилась. Снимок цены по дням ведётся с 22.09.2026, для более ранних дат такое возможно."
+                      : sppKnown || sppPct === null
+                        ? undefined
+                        : "Текущая цена продавца известна не для всех заказанных товаров — СПП посчитан только по известным"
+                  }
                 >
-                  {sppPct === null ? "—" : `${sppKnown ? "" : "≈"}${fmtPct(sppPct)}`}
+                  {sppPct === null || sppUnreliable ? "—" : `${sppKnown ? "" : "≈"}${fmtPct(sppPct)}`}
                 </td>
               );
             })}
