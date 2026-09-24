@@ -9,10 +9,12 @@ day's ProductPriceDailySnapshot row (price_rub / marketing_seller_price_rub)
 (store total) now shows plausible СПП since yesterday but «РНП Товары»
 (per-product) still doesn't, for individual days.
 
-Usage (inside the running container):
+Usage (inside the running container) — --store-id/--store-name are now
+OPTIONAL: with just --sku, the script finds the store on its own (by SKU,
+or the only store in the database):
 
     docker compose exec app python backend/scripts/show_spp_day_breakdown.py \\
-        --store-name Комфорт --sku 3249061904 --date-from 2026-09-11 --date-to 2026-09-24
+        --sku 3249061904 --date-from 2026-09-11 --date-to 2026-09-24
 """
 from __future__ import annotations
 
@@ -30,19 +32,43 @@ from app.models.product_price_daily_snapshot import ProductPriceDailySnapshot  #
 from app.models.store import Store  # noqa: E402
 
 
-def _resolve_store_id(db, *, store_id: str | None, store_name: str | None) -> str | None:
+def _resolve_store_id(db, *, store_id: str | None, store_name: str | None, sku: str) -> str | None:
+    """Кириллица не вводится в терминале пользователя ни вставкой, ни
+    печатью (подтверждено вживую 2026-09-24 — --store-name с кириллицей
+    пришёл ПУСТЫМ, argparse отказал), поэтому --store-name дальше не
+    единственный путь: если он не задан, сначала пробуем найти магазин
+    ПО САМОМУ SKU (обычно уникален), затем — если в базе всего один
+    магазин, берём его; и только если ничего не помогло, печатаем список
+    магазинов с их id (ASCII UUID — его вставить в терминал можно), чтобы
+    в следующий раз использовать --store-id."""
     if store_id:
         return store_id
-    matches = db.query(Store).filter(Store.name.ilike(f"%{store_name}%")).all()
-    if len(matches) == 1:
-        print(f"Найден магазин: {matches[0].id} — {matches[0].name}")
-        return matches[0].id
-    if not matches:
-        print(f"Магазин с именем, похожим на «{store_name}», не найден.")
-        return None
-    print(f"Найдено несколько магазинов, подходящих под «{store_name}» — уточните --store-id:")
-    for m in matches:
-        print(f"    {m.id}  —  {m.name}")
+    if store_name:
+        matches = db.query(Store).filter(Store.name.ilike(f"%{store_name}%")).all()
+        if len(matches) == 1:
+            print(f"Найден магазин по имени: {matches[0].id} — {matches[0].name}")
+            return matches[0].id
+        if matches:
+            print(f"Найдено несколько магазинов, подходящих под «{store_name}» — уточните --store-id:")
+            for m in matches:
+                print(f"    {m.id}  —  {m.name}")
+            return None
+
+    by_sku = db.query(Product).filter(Product.ozon_sku == sku).all()
+    distinct_stores = {p.store_id for p in by_sku}
+    if len(distinct_stores) == 1:
+        store = db.get(Store, next(iter(distinct_stores)))
+        print(f"Найден магазин по SKU: {store.id} — {store.name}")
+        return store.id
+
+    all_stores = db.query(Store).all()
+    if len(all_stores) == 1:
+        print(f"В базе всего один магазин: {all_stores[0].id} — {all_stores[0].name}")
+        return all_stores[0].id
+
+    print("Не удалось определить магазин автоматически. Доступные магазины (скопируйте id для --store-id):")
+    for s in all_stores:
+        print(f"    {s.id}  —  {s.name}")
     return None
 
 
@@ -55,16 +81,12 @@ def main() -> None:
     parser.add_argument("--date-to", required=True, help="YYYY-MM-DD")
     args = parser.parse_args()
 
-    if not args.store_id and not args.store_name:
-        print("Укажите --store-id или --store-name.")
-        return
-
     date_from = date.fromisoformat(args.date_from)
     date_to = date.fromisoformat(args.date_to)
 
     db = SessionLocal()
     try:
-        store_id = _resolve_store_id(db, store_id=args.store_id, store_name=args.store_name)
+        store_id = _resolve_store_id(db, store_id=args.store_id, store_name=args.store_name, sku=args.sku)
         if not store_id:
             return
 
