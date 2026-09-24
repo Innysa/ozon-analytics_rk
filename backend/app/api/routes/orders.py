@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import StoreContext, require_store_role
@@ -10,6 +10,7 @@ from app.models.accrual_daily_statistic import AccrualDailyStatistic
 from app.models.membership import StoreRole
 from app.models.order_daily_statistic import OrderDailyStatistic
 from app.models.product import Product
+from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
 from app.models.product_order_daily_statistic import ProductOrderDailyStatistic
 from app.schemas.order_daily import (
     OrderDailyStatisticListResponse,
@@ -42,7 +43,17 @@ def list_order_daily_statistics(
     day's rows (FBO/FBS are separate rows, see OrderDailyStatistic's own
     UniqueConstraint) and zeroed on the other, since the "РНП" page sums
     commission_rub across every row for a date client-side — applying the
-    already-whole-day accrual figure to both rows would double it."""
+    already-whole-day accrual figure to both rows would double it.
+
+    ordered_units is overridden the SAME way (applied once per date, zeroed
+    on the day's other row), with the store's ProductAnalyticsDailyStatistic
+    (Ozon Analytics API funnel) rows summed across every SKU for that date —
+    **ПЕРЕКЛЮЧЕНО 2026-09-24**, same reasoning and same narrow scope
+    (units only, never ordered_sum_rub — unconfirmed price basis) as the
+    identical switch made on «РНП Товары», see app.services.
+    product_planner_service's own module docstring for the full story. Only
+    applied to a date the funnel has actually synced — a date with no
+    funnel rows keeps the postings figure unchanged."""
     stmt = select(OrderDailyStatistic).where(OrderDailyStatistic.store_id == ctx.store_id)
     if date_from:
         stmt = stmt.where(OrderDailyStatistic.date >= date_from)
@@ -60,14 +71,33 @@ def list_order_daily_statistics(
         accrual_stmt = accrual_stmt.where(AccrualDailyStatistic.date <= date_to)
     accrual_by_date = {d: float(c) for d, c in db.execute(accrual_stmt).all()}
 
-    applied_dates: set[date] = set()
+    funnel_stmt = select(
+        ProductAnalyticsDailyStatistic.date, func.sum(ProductAnalyticsDailyStatistic.ordered_units)
+    ).where(
+        ProductAnalyticsDailyStatistic.store_id == ctx.store_id,
+    )
+    if date_from:
+        funnel_stmt = funnel_stmt.where(ProductAnalyticsDailyStatistic.date >= date_from)
+    if date_to:
+        funnel_stmt = funnel_stmt.where(ProductAnalyticsDailyStatistic.date <= date_to)
+    funnel_units_by_date = {
+        d: int(units) for d, units in db.execute(funnel_stmt.group_by(ProductAnalyticsDailyStatistic.date)).all()
+    }
+
+    applied_commission_dates: set[date] = set()
+    applied_orders_dates: set[date] = set()
     items = []
     for r in rows:
         item = OrderDailyStatisticOut.model_validate(r)
+        update: dict = {}
         if r.date in accrual_by_date:
-            commission = accrual_by_date[r.date] if r.date not in applied_dates else 0.0
-            applied_dates.add(r.date)
-            item = item.model_copy(update={"commission_rub": commission})
+            update["commission_rub"] = accrual_by_date[r.date] if r.date not in applied_commission_dates else 0.0
+            applied_commission_dates.add(r.date)
+        if r.date in funnel_units_by_date:
+            update["ordered_units"] = funnel_units_by_date[r.date] if r.date not in applied_orders_dates else 0
+            applied_orders_dates.add(r.date)
+        if update:
+            item = item.model_copy(update=update)
         items.append(item)
     return OrderDailyStatisticListResponse(items=items, total=len(items))
 

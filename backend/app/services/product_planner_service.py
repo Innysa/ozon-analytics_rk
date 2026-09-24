@@ -8,15 +8,15 @@ sync services — this module reads, it never calls Ozon itself:
     as the "РНП" day-based page, sliced by SKU) — no equivalent metric
     exists in the Ozon Analytics API funnel (below), so this stays
     postings-based.
-  - Заказы (orders_units/orders_sum_rub, incl. the daily breakdown):
+  - Заказы, **только orders_units** (штуки, incl. the daily breakdown):
     **ПЕРЕКЛЮЧЕНО 2026-09-22** to prefer ProductAnalyticsDailyStatistic
     (Ozon's own centrally-computed per-SKU-per-day funnel metric, "Воронка
-    карточки" on the product card — POST /v1/analytics/data, requires
-    Premium Plus/Pro) over ProductOrderDailyStatistic (our own aggregation
-    of FBO/FBS postings) for any (sku, day) where a funnel row exists,
-    falling back to the postings figure only for days the funnel sync
-    hasn't covered (e.g. before this store's Premium Plus started, or
-    before PRODUCT_ANALYTICS_STATS_SCHEDULER was enabled).
+    карточки" on the product card — POST /v1/analytics/data, "ordered_units"
+    is free for every seller, unlike the funnel's other Premium Plus/Pro-
+    only metrics — see OzonSellerClient.get_analytics_data()'s docstring)
+    over ProductOrderDailyStatistic (our own aggregation of FBO/FBS
+    postings) for any (sku, day) where a funnel row exists, falling back to
+    the postings figure only for days the funnel sync hasn't covered.
     REASON: the user found the two tabs on the same product's page
     ("Продажи" vs "Воронка карточки") showing DIFFERENT «Заказано, шт»
     totals for an identical period (247 vs 293) and, combined with the
@@ -25,17 +25,25 @@ sync services — this module reads, it never calls Ozon itself:
     docstring) and a sync attempt failing outright on her store, asked to
     just standardize on the funnel number as ground truth rather than keep
     chasing postings-side discrepancies — "зачем изобретать велосипед".
-    IMPORTANT CAVEAT the user should know (ProductAnalyticsDailyStatistic's
-    own model docstring makes the same point): Ozon does NOT document these
-    two metrics as identical — the funnel's "ordered_units" and postings'
-    "ordered_units" are two separately-computed numbers on Ozon's side, not
-    two views of the same underlying data, so preferring one doesn't prove
-    it's "more correct" in some absolute sense, only that it's Ozon's own
-    already-aggregated figure rather than one this app reconstructs from
-    raw postings (fewer moving parts on our side, and immune to the FBO
-    pagination bug class specifically). Выкупы/Прибыль/Маржа/КРПП still
-    need postings data (delivered_units, commission_rub) that the funnel
-    simply doesn't expose, so those stay unchanged.
+    orders_sum_rub is DELIBERATELY NOT switched — it stays
+    ProductOrderDailyStatistic-only (postings), even on a day the funnel
+    covers. Reason: ordered_sum_rub is documented (see
+    ProductOrderDailyStatistic's own model docstring) as summed by "old_
+    price" (Ozon's inflated pre-discount reference price) — a specific,
+    already-confirmed basis. The funnel's "revenue" metric has no confirmed
+    price basis anywhere in this codebase (most likely the ACTUAL/
+    discounted sale value, going by how "revenue" normally reads in an
+    analytics API, i.e. closer to ordered_sum_discounted_rub than to
+    ordered_sum_rub) — swapping it in under ordered_sum_rub without
+    confirming that would silently mix two different price bases under one
+    label, exactly the mistake ProductAnalyticsDailyStatistic's own model
+    docstring warns against ("Ozon does not document these as identical").
+    The user's own complaint was specifically about «Заказано, шт»
+    (units), never about the rubles figure, so narrowing the switch to
+    units only is not a compromise on what she asked for.
+    Выкупы/Прибыль/Маржа/КРПП still need postings data (delivered_units,
+    commission_rub) that the funnel simply doesn't expose, so those stay
+    unchanged.
   - Рекламный бюджет: AdvertisingDailyStatistic.spend_rub, summed by SKU
     across every campaign that advertised it that day. Показы/Клики (per-
     day breakdown only — ADDED 2026-09-22, requested by the user alongside
@@ -260,9 +268,10 @@ def _aggregate_month(db: Session, *, store_id: str, date_from: date, date_to: da
     ).all()
     for r in funnel_rows:
         agg = by_sku.setdefault(r.ozon_sku, _ProductAgg())
-        day = agg.day(r.date)
-        day.orders_units = r.ordered_units
-        day.orders_sum_rub = float(r.revenue_rub or 0)
+        # ТОЛЬКО штуки — см. module docstring для того, почему orders_sum_rub
+        # намеренно не переключается на funnel revenue_rub (неподтверждённая
+        # база цены).
+        agg.day(r.date).orders_units = r.ordered_units
 
     for agg in by_sku.values():
         agg.orders_units = sum(day.orders_units for day in agg.by_date.values())

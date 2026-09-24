@@ -141,12 +141,15 @@ def test_profit_and_margin_subtract_ozon_commission(client, db_session, two_stor
 
 
 def test_orders_prefer_funnel_data_over_postings_when_both_exist_for_same_day(client, db_session, two_stores_with_users):
-    """ПЕРЕКЛЮЧЕНО 2026-09-22: «Заказано» (units/₽) now prefers
+    """ПЕРЕКЛЮЧЕНО 2026-09-22: «Заказано, шт» now prefers
     ProductAnalyticsDailyStatistic (Ozon Analytics API funnel) over
     ProductOrderDailyStatistic (postings) for any (sku, day) both cover —
     the user found the "Продажи" and "Воронка карточки" tabs on the same
     product disagreeing (247 vs 293) and asked to standardize on the
-    funnel number. Выкупы must stay postings-based (no funnel equivalent)."""
+    funnel number. Only units switch — «Заказано на сумму» stays postings-
+    based (module docstring: the funnel's "revenue" has no confirmed price
+    basis, unlike ordered_sum_rub's documented "old_price" one) — and
+    Выкупы stays postings-based too (no funnel equivalent)."""
     d = two_stores_with_users
     store_id = d["store_a"].id
     _seed_product(db_session, store_id, cost_price_rub=100)
@@ -163,10 +166,10 @@ def test_orders_prefer_funnel_data_over_postings_when_both_exist_for_same_day(cl
     assert resp.status_code == 200
     row = resp.json()["rows"][0]
     assert row["orders"]["actual_month_units"] == 15
-    assert row["orders"]["actual_month_rub"] == 3000
+    assert row["orders"]["actual_month_rub"] == 2000  # postings, NOT funnel revenue (3000)
     day_entry = row["daily"][0]
     assert day_entry["orders_units"] == 15
-    assert day_entry["orders_sum_rub"] == 3000
+    assert day_entry["orders_sum_rub"] == 2000
     # Выкупы никак не затронуты — их аналог в Analytics API не существует.
     assert row["buyouts"]["actual_month_units"] == 8
     assert row["buyouts"]["actual_month_rub"] == 1600
@@ -198,8 +201,10 @@ def test_orders_fall_back_to_postings_on_days_the_funnel_has_not_synced(client, 
 
 def test_orders_from_funnel_alone_when_postings_sync_has_no_row_that_day(client, db_session, two_stores_with_users):
     """Motivating real-world case: postings autosync failed/is stale for a
-    day, but the funnel's own nightly sync already has that day — orders
-    must still show up from the funnel alone, not disappear."""
+    day, but the funnel's own nightly sync already has that day — the unit
+    count must still show up from the funnel alone, not disappear. The
+    rubles figure has no postings row to draw on and stays 0 — this module
+    never derives it from funnel revenue (see module docstring)."""
     d = two_stores_with_users
     store_id = d["store_a"].id
     _seed_product(db_session, store_id, cost_price_rub=100)
@@ -212,7 +217,7 @@ def test_orders_from_funnel_alone_when_postings_sync_has_no_row_that_day(client,
     assert resp.status_code == 200
     row = resp.json()["rows"][0]
     assert row["orders"]["actual_month_units"] == 7
-    assert row["orders"]["actual_month_rub"] == 1400
+    assert row["orders"]["actual_month_rub"] == 0
     assert row["buyouts"]["actual_month_units"] == 0
 
 

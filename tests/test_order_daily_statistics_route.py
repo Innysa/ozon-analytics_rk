@@ -351,6 +351,109 @@ def test_listing_does_not_double_count_accrual_commission_across_fbo_and_fbs_row
     assert total_commission == -300.0  # NOT -600.0
 
 
+def test_listing_prefers_funnel_ordered_units_over_postings_for_a_synced_date(client, db_session, two_stores_with_users):
+    """ПЕРЕКЛЮЧЕНО 2026-09-24: same switch as «РНП Товары» (see
+    product_planner_service's module docstring), applied to the store-level
+    "РНП" day table too — the user found a day's «Заказано, шт» here still
+    looked wrong right after we'd already fixed the per-product page, and
+    expected the fix to apply everywhere «Заказано» is shown. Store-wide
+    funnel units are the SUM of ProductAnalyticsDailyStatistic.ordered_units
+    across every SKU for that date. ordered_sum_rub must stay untouched —
+    same unconfirmed-price-basis reasoning as the per-product switch."""
+    from datetime import date
+
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 22), delivery_schema="FBO",
+        ordered_units=10, ordered_sum_rub=2000, ordered_sum_discounted_rub=2000,
+        delivered_units=8, delivered_sum_rub=1600, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-100,
+        source="ozon_seller_api",
+    ))
+    db_session.add(ProductAnalyticsDailyStatistic(
+        store_id=store_id, ozon_sku="SKU-1", date=date(2026, 9, 22),
+        revenue_rub=1000, ordered_units=9, views_pdp=0, cart_adds_pdp=0, sessions_pdp=0,
+        source="ozon_seller_api",
+    ))
+    db_session.add(ProductAnalyticsDailyStatistic(
+        store_id=store_id, ozon_sku="SKU-2", date=date(2026, 9, 22),
+        revenue_rub=2000, ordered_units=6, views_pdp=0, cart_adds_pdp=0, sessions_pdp=0,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["ordered_units"] == 15  # 9 + 6 from the funnel, NOT the postings' 10
+    assert items[0]["ordered_sum_rub"] == 2000  # untouched — postings, not funnel revenue
+
+
+def test_listing_falls_back_to_postings_units_on_a_date_the_funnel_has_not_synced(client, db_session, two_stores_with_users):
+    from datetime import date
+
+    from app.models.order_daily_statistic import OrderDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 23), delivery_schema="FBO",
+        ordered_units=4, ordered_sum_rub=800, ordered_sum_discounted_rub=800,
+        delivered_units=3, delivered_sum_rub=600, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-40,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    items = resp.json()["items"]
+    assert items[0]["ordered_units"] == 4  # no funnel row for this date — postings kept
+
+
+def test_listing_does_not_double_count_funnel_units_across_fbo_and_fbs_rows(client, db_session, two_stores_with_users):
+    from datetime import date
+
+    from app.models.order_daily_statistic import OrderDailyStatistic
+    from app.models.product_analytics_daily_statistic import ProductAnalyticsDailyStatistic
+
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 22), delivery_schema="FBO",
+        ordered_units=5, ordered_sum_rub=500, ordered_sum_discounted_rub=500,
+        delivered_units=4, delivered_sum_rub=400, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-20,
+        source="ozon_seller_api",
+    ))
+    db_session.add(OrderDailyStatistic(
+        store_id=store_id, date=date(2026, 9, 22), delivery_schema="FBS",
+        ordered_units=3, ordered_sum_rub=300, ordered_sum_discounted_rub=300,
+        delivered_units=2, delivered_sum_rub=200, cost_of_delivered_rub=0, cost_of_delivered_known_units=0,
+        cancelled_units=0, cancelled_sum_rub=0, unfinished_units=0, commission_rub=-10,
+        source="ozon_seller_api",
+    ))
+    db_session.add(ProductAnalyticsDailyStatistic(
+        store_id=store_id, ozon_sku="SKU-1", date=date(2026, 9, 22),
+        revenue_rub=1000, ordered_units=12, views_pdp=0, cart_adds_pdp=0, sessions_pdp=0,
+        source="ozon_seller_api",
+    ))
+    db_session.commit()
+
+    login(client, "owner_a@example.com", "password123")
+    resp = client.get(f"/api/stores/{store_id}/orders/daily-statistics")
+    items = resp.json()["items"]
+    assert len(items) == 2
+    total_units = sum(item["ordered_units"] for item in items)
+    assert total_units == 12  # NOT 12 + 12 = 24
+
+
 def test_store_isolation_on_daily_statistics_listing(client, db_session, two_stores_with_users, monkeypatch):
     import app.api.routes.sync as sync_routes
 

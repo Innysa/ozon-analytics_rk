@@ -188,6 +188,7 @@ export function RnpPage() {
   const [rows, setRows] = useState<DayRow[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncingOrdersFunnel, setSyncingOrdersFunnel] = useState(false);
   const [dateFrom, setDateFrom] = useState(defaultDateFrom);
   const [dateTo, setDateTo] = useState(defaultDateTo);
 
@@ -243,6 +244,39 @@ export function RnpPage() {
     }
   };
 
+  // «Заказано, шт» в таблице ниже теперь берётся из Ozon Analytics API
+  // (воронка) там, где она уже собрана за день, и только падает назад на
+  // отгрузки для дней без строки воронки — см. list_order_daily_statistics
+  // в app/api/routes/orders.py и product_planner_service.py (та же логика,
+  // применённая раньше к «РНП Товары»). Обычно обновляется ночным
+  // автосбором; эта кнопка обновляет сразу.
+  const syncOrdersFunnel = async () => {
+    setSyncingOrdersFunnel(true);
+    setNotice("Запрос данных «Заказано» через Ozon Analytics API (воронка)...");
+    try {
+      const run = await api.post<SyncRun>(`/stores/${currentStore.id}/sync/ozon-product-analytics`);
+      setNotice("Обновление выполняется в фоне (лимит Ozon — 1 запрос/мин, может занять несколько минут)...");
+      const finished = await pollSyncRun(run.id);
+      if (!finished) {
+        setNotice("Не удалось получить статус обновления — обновите страницу.");
+      } else if (finished.status === "failed") {
+        setNotice(`Не удалось обновить «Заказано»: ${finished.error_message ?? "неизвестная ошибка"}`);
+      } else if (finished.status === "running") {
+        setNotice("Обновление всё ещё выполняется — проверьте журнал синхронизаций позже.");
+      } else {
+        setNotice(
+          `«Заказано» обновлено из Ozon Analytics API: получено ${finished.items_fetched}.` +
+            (finished.error_message ? ` Предупреждения: ${finished.error_message}` : "")
+        );
+      }
+      load();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Ошибка обновления «Заказано»");
+    } finally {
+      setSyncingOrdersFunnel(false);
+    }
+  };
+
   const total = rows ? sumRows(rows) : null;
 
   return (
@@ -263,14 +297,25 @@ export function RnpPage() {
           >
             {syncing ? "Сбор заказов..." : "Обновить заказы (авто)"}
           </button>
+          <button
+            onClick={syncOrdersFunnel}
+            disabled={syncingOrdersFunnel}
+            className="rounded-md bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+            title="Обновить «Заказано, шт» через Ozon Analytics API — требуется Premium Plus/Premium Pro (POST /v1/analytics/data)"
+          >
+            {syncingOrdersFunnel ? "Обновление..." : "Обновить «Заказано»"}
+          </button>
         </div>
       </div>
 
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-        Заказы, выкупы, отмены и комиссия — из Ozon Seller API (FBO/FBS), автоматически. Расход на рекламу и ДРР — из
-        уже собранной статистики на странице «Реклама». Себестоимость выкупа — только если она указана на карточках{" "}
+        Заказы, выкупы, отмены и комиссия — из Ozon Seller API (FBO/FBS), автоматически. «Заказано, шт» — там, где за
+        день уже собрана воронка Ozon Analytics API, берётся оттуда (кнопка «Обновить «Заказано»» выше или ночной
+        автосбор), иначе — из отгрузок, как раньше; «Заказано на сумму» всегда из отгрузок (у воронки нет
+        подтверждённой базы цены). Расход на рекламу и ДРР — из уже собранной статистики на странице «Реклама».
+        Себестоимость выкупа — только если она указана на карточках{" "}
         <Link to="/products" className="underline">
           товаров
         </Link>
