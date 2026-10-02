@@ -25,6 +25,7 @@ from app.api.routes import (
     stores,
     sync,
     users,
+    warehouse_stocks,
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -119,6 +120,7 @@ app.include_router(products.router)
 app.include_router(product_analytics.router)
 app.include_router(product_planner.router)
 app.include_router(search_queries.router)
+app.include_router(warehouse_stocks.router)
 app.include_router(change_history.router)
 
 

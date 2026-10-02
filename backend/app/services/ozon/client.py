@@ -744,3 +744,20 @@ class OzonSellerClient:
         get_cash_flow_statement(), since only
         app.api.routes.sync's rating-summary sync route reads from it."""
         return self._post("/v1/rating/summary", {})
+
+    def get_stock_on_warehouses(self, *, limit: int = 1000, offset: int = 0, warehouse_type: str = "ALL") -> dict:
+        """POST /v2/analytics/stock_on_warehouses — CONFIRMED live
+        2026-10-02 (backend/scripts/probe_stocks.py, real account) as a
+        working per-warehouse FBO stock source (contract was previously
+        unconfirmed — see docs/ozon-seller-api-methods.md). Request body
+        {"limit", "offset", "warehouse_type": "ALL"} — confirmed accepted;
+        "warehouse_type" values other than ALL untested. Returns the raw
+        parsed dict: the top-level key the item list sits under was never
+        directly confirmed (see OzonStockOnWarehouseItem's own comment in
+        schemas.py) — app.services.warehouse_stock_sync_service handles
+        that defensively rather than this client guessing a Pydantic
+        field name that might silently drop the whole list."""
+        return self._post(
+            "/v2/analytics/stock_on_warehouses",
+            {"limit": limit, "offset": offset, "warehouse_type": warehouse_type},
+        )

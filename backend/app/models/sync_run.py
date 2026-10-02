@@ -26,6 +26,7 @@ class SyncSourceType(str, enum.Enum):
     OZON_RATING_SUMMARY_API = "ozon_rating_summary_api"  # Ozon Seller API (/v1/rating/summary — store-wide localization_index for «РНП Товары»'s Итого row)
     OZON_REALIZATION_REPORT_API = "ozon_realization_report_api"  # Ozon Seller API (/v2/finance/realization — official monthly settlement, closed months only)
     OZON_ACCRUAL_DAILY_API = "ozon_accrual_daily_api"  # Ozon Seller API (/v1/finance/accrual/by-day — confirmed TRUE-DAILY total, matches cabinet exactly)
+    OZON_STOCK_ON_WAREHOUSES_API = "ozon_stock_on_warehouses_api"  # Ozon Seller API (/v2/analytics/stock_on_warehouses — per-warehouse FBO stock for «Остатки»)
     CSV_IMPORT = "csv_import"
     XLSX_IMPORT = "xlsx_import"
 

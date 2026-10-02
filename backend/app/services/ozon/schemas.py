@@ -294,3 +294,38 @@ class OzonAnalyticsDataResponse(BaseModel):
 
     result: OzonAnalyticsDataResult | None = None
     timestamp: str | None = None
+
+
+# --- Stock on warehouses (/v2/analytics/stock_on_warehouses) --------------
+#
+# CONFIRMED against a real account (backend/scripts/probe_stocks.py,
+# 2026-10-02), request body {"limit": N, "offset": M, "warehouse_type":
+# "ALL"}. One row per (SKU, конкретный склад FBO) — a SKU present on
+# several warehouses gets several rows. promised_amount's exact meaning is
+# NOT officially confirmed (no accessible docs page) — see
+# ProductWarehouseStock's own docstring for the working hypothesis
+# ("в пути на склад Ozon") and what would confirm it.
+class OzonStockOnWarehouseItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    sku: int | None = None
+    item_code: str | None = None  # offer_id
+    item_name: str | None = None
+    warehouse_id: int | None = None
+    warehouse_name: str | None = None
+    cluster_id: int | None = None
+    cluster_name: str | None = None
+    free_to_sell_amount: int = 0
+    reserved_amount: int = 0
+    promised_amount: int = 0
+
+
+
+# Deliberately NO top-level response wrapper model here — the probe only
+# confirmed the ITEM shape (see above), not which key the list sits under
+# (result/items/rows all plausible, cropped screenshots never showed the
+# very top of the payload). app.services.warehouse_stock_sync_service
+# parses the raw dict defensively (tries several candidate keys, surfaces
+# an explicit error if none match) rather than risk a wrong Pydantic
+# field name silently returning an empty list — see that module's own
+# docstring.

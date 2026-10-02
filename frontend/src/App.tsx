@@ -13,6 +13,7 @@ import { ProductsPage } from "./pages/ProductsPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { AdvertisingPage } from "./pages/AdvertisingPage";
 import { SearchPositionsPage } from "./pages/SearchPositionsPage";
+import { WarehouseStocksPage } from "./pages/WarehouseStocksPage";
 import { AISettingsPage } from "./pages/AISettingsPage";
 import { OzonSettingsPage } from "./pages/OzonSettingsPage";
 import { AdminStoresPage } from "./pages/AdminStoresPage";
@@ -101,6 +102,7 @@ export default function App() {
             <Route path="/products/:productId" element={<ProductDetailPage />} />
             <Route path="/advertising" element={<AdvertisingPage />} />
             <Route path="/search-positions" element={<SearchPositionsPage />} />
+            <Route path="/warehouse-stocks" element={<WarehouseStocksPage />} />
             <Route path="/ai-settings" element={<AISettingsPage />} />
             <Route path="/ozon-settings" element={<OzonSettingsPage />} />
           </Route>

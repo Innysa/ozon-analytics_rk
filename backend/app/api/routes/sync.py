@@ -36,6 +36,7 @@ from app.services.product_catalog_sync_service import sync_product_catalog
 from app.services.accrual_daily_sync_service import sync_accrual_daily_statistic, sync_recent_accrual_days
 from app.services.realization_report_sync_service import sync_missing_realization_reports, sync_realization_report_month
 from app.services.search_query_details_sync_service import sync_search_query_details
+from app.services.warehouse_stock_sync_service import sync_warehouse_stocks
 from app.services.ozon_performance.client import OzonPerformanceClient
 from app.services.ozon_performance.client import PerformanceCredentials as OzonPerfCredentials
 from app.services.ozon_performance.exceptions import (
@@ -969,6 +970,80 @@ def sync_ozon_rating_summary(
     run.items_fetched = fetched
     run.items_created = created
     run.items_skipped_duplicate = updated
+    run.error_message = error_message
+    db.flush()
+    record_audit(
+        db,
+        action="sync_finished",
+        user_id=user.id,
+        store_id=ctx.store_id,
+        target_type="sync_run",
+        target_id=run.id,
+        result="success" if run.status == SyncStatus.SUCCESS else "failure",
+        message=error_message,
+    )
+    db.commit()
+    return _serialize(run)
+
+
+@router.post("/ozon-warehouse-stocks")
+def sync_ozon_warehouse_stocks(
+    ctx: StoreContext = Depends(require_store_role(StoreRole.MANAGER)),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Pulls per-warehouse FBO stock from Ozon Seller API's POST /v2/
+    analytics/stock_on_warehouses for the «Остатки» tab — see
+    app.services.warehouse_stock_sync_service's own docstring for the
+    confirmed contract. A small, fast, paginated call (no async-report
+    flow), so this runs synchronously like sync_ozon_rating_summary
+    above, not via BackgroundTasks."""
+    creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
+    if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
+
+    run = SyncRun(
+        store_id=ctx.store_id,
+        initiated_by_user_id=user.id,
+        source_type=SyncSourceType.OZON_STOCK_ON_WAREHOUSES_API,
+        status=SyncStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    record_audit(db, action="sync_started", user_id=user.id, store_id=ctx.store_id, target_type="sync_run", target_id=run.id)
+    db.commit()
+
+    client_id = decrypt_secret(creds.client_id_encrypted)
+    api_key = decrypt_secret(creds.api_key_encrypted)
+
+    try:
+        with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
+            outcome = sync_warehouse_stocks(db, store_id=ctx.store_id, client=client)
+        if outcome.hard_failure:
+            run.status = SyncStatus.FAILED
+        elif outcome.errors:
+            run.status = SyncStatus.PARTIAL
+        else:
+            run.status = SyncStatus.SUCCESS
+        error_message = "; ".join(outcome.errors[:20]) if outcome.errors else None
+        fetched, created = outcome.fetched, outcome.upserted
+    except OzonAuthError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+        fetched = created = 0
+    except OzonFeatureUnavailable as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+        fetched = created = 0
+    except OzonAPIError as exc:
+        run.status = SyncStatus.FAILED
+        error_message = str(exc)
+        fetched = created = 0
+
+    run.finished_at = datetime.now(timezone.utc)
+    run.items_fetched = fetched
+    run.items_created = created
     run.error_message = error_message
     db.flush()
     record_audit(

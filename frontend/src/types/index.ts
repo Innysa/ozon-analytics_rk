@@ -606,6 +606,33 @@ export interface SearchQueryStatisticListResponse {
   total: number;
 }
 
+export interface WarehouseStockRow {
+  ozon_sku: string;
+  offer_id: string | null;
+  warehouse_id: number;
+  warehouse_name: string | null;
+  cluster_name: string | null;
+  free_to_sell_amount: number;
+  reserved_amount: number;
+  promised_amount: number;
+}
+
+export interface ProductWarehouseStockSummary {
+  ozon_sku: string;
+  offer_id: string | null;
+  name: string | null;
+  fbo_free_to_sell_total: number;
+  fbo_reserved_total: number;
+  fbo_promised_total: number;
+  fbs_stock: number | null;
+  warehouses: WarehouseStockRow[];
+}
+
+export interface WarehouseStockListResponse {
+  items: ProductWarehouseStockSummary[];
+  synced_at: string | null;
+}
+
 export interface TopQueryItem {
   query_text: string;
   people_searched: number | null;

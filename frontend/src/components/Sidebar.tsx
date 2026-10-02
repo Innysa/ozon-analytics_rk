@@ -33,6 +33,9 @@ export function Sidebar() {
         <NavLink to="/search-positions" className={linkClass}>
           Позиции в поиске
         </NavLink>
+        <NavLink to="/warehouse-stocks" className={linkClass}>
+          Остатки
+        </NavLink>
         <NavLink to="/ai-settings" className={linkClass}>
           Настройки ответов
         </NavLink>
