@@ -146,11 +146,10 @@ def main() -> None:
                 client,
                 path="/v3/supply-order/list",
                 bodies=[
-                    {"filter": {}, "limit": 20, "sort_by": 1},
-                    {"filter": {}, "limit": 20, "sort_by": 2},
-                    {"filter": {}, "limit": 20, "sort_by": 3},
-                    {"filter": {}, "limit": 20, "sort_by": "SORT_BY_CREATED_AT"},
-                    {"filter": {}, "limit": 20, "sort_by": "CREATED_AT"},
+                    {"filter": {"states": [1]}, "limit": 20, "sort_by": 1},
+                    {"filter": {"states": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}, "limit": 20, "sort_by": 1},
+                    {"filter": {"states": ["ORDER_STATE_DATA_FILLING"]}, "limit": 20, "sort_by": 1},
+                    {"filter": {"states": ["ORDER_STATE_IN_TRANSIT"]}, "limit": 20, "sort_by": 1},
                 ],
             )
             if data:
