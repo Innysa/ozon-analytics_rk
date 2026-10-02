@@ -90,27 +90,23 @@ def main() -> None:
             order_id = order_ids[0]
             print(f"\nБерём order_id={order_id} для проверки деталей\n")
 
-            print("\n========== /v3/supply-order/get ==========")
+            print("\n========== /v3/supply-order/get (полностью) ==========")
             data = _try_endpoint(client, path="/v3/supply-order/get", bodies=[
                 {"order_ids": [order_id]},
-                {"supply_order_id": order_id},
             ])
             if data:
-                print(json.dumps(data, ensure_ascii=False, indent=2)[:6000])
+                print(json.dumps(data, ensure_ascii=False, indent=2))
 
             print("\n========== /v1/supply-order/bundle ==========")
             data = _try_endpoint(client, path="/v1/supply-order/bundle", bodies=[
-                {"order_ids": [order_id]},
-                {"supply_order_id": order_id},
-                {"bundle_ids": [order_id]},
+                {"bundle_ids": [str(order_id)]},
             ])
             if data:
                 print(json.dumps(data, ensure_ascii=False, indent=2)[:6000])
 
             print("\n========== /v1/supply-order/details ==========")
             data = _try_endpoint(client, path="/v1/supply-order/details", bodies=[
-                {"order_ids": [order_id]},
-                {"supply_order_id": order_id},
+                {"order_id": order_id},
             ])
             if data:
                 print(json.dumps(data, ensure_ascii=False, indent=2)[:6000])
