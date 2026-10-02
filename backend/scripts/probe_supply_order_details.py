@@ -46,6 +46,25 @@ def _resolve_store_id(db, *, store_id: str | None) -> str | None:
     return None
 
 
+def _find_key(obj, key: str):
+    """Recursively finds the first value for `key` anywhere in a nested
+    dict/list response — used to pull bundle_id out of /v3/supply-order/get
+    without assuming exactly where it sits in the structure."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for value in obj.values():
+            found = _find_key(value, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_key(item, key)
+            if found is not None:
+                return found
+    return None
+
+
 def _try_endpoint(client: OzonSellerClient, *, path: str, bodies: list[dict]) -> dict | None:
     for body in bodies:
         try:
@@ -91,18 +110,29 @@ def main() -> None:
             print(f"\nБерём order_id={order_id} для проверки деталей\n")
 
             print("\n========== /v3/supply-order/get (полностью) ==========")
-            data = _try_endpoint(client, path="/v3/supply-order/get", bodies=[
+            get_data = _try_endpoint(client, path="/v3/supply-order/get", bodies=[
                 {"order_ids": [order_id]},
             ])
-            if data:
-                print(json.dumps(data, ensure_ascii=False, indent=2))
+            if get_data:
+                print(json.dumps(get_data, ensure_ascii=False, indent=2))
 
-            print("\n========== /v1/supply-order/bundle ==========")
+            bundle_id = _find_key(get_data, "bundle_id") if get_data else None
+            print(f"\nНайден bundle_id внутри supply-order/get: {bundle_id!r}\n")
+
+            print("\n========== /v1/supply-order/bundle (с order_id как раньше) ==========")
             data = _try_endpoint(client, path="/v1/supply-order/bundle", bodies=[
                 {"bundle_ids": [str(order_id)]},
             ])
             if data:
                 print(json.dumps(data, ensure_ascii=False, indent=2)[:6000])
+
+            if bundle_id:
+                print("\n========== /v1/supply-order/bundle (с настоящим bundle_id) ==========")
+                data = _try_endpoint(client, path="/v1/supply-order/bundle", bodies=[
+                    {"bundle_ids": [bundle_id]},
+                ])
+                if data:
+                    print(json.dumps(data, ensure_ascii=False, indent=2)[:6000])
 
             print("\n========== /v1/supply-order/details ==========")
             data = _try_endpoint(client, path="/v1/supply-order/details", bodies=[
