@@ -8,7 +8,7 @@ function fmtNum(v: number | null): string {
   return v === null ? "—" : v.toLocaleString("ru-RU");
 }
 
-const COLUMNS = ["Товар", "FBO доступно", "Едет к покупателю", "FBO ожидается", "FBS"];
+const COLUMNS = ["Товар", "FBO доступно", "Возвращается от покупателя", "FBO ожидается", "FBS"];
 const DEFAULT_WIDTHS = [320, 130, 150, 130, 90];
 
 export function WarehouseStocksPage() {
@@ -102,13 +102,15 @@ export function WarehouseStocksPage() {
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-        «FBO доступно» — можно продать прямо сейчас. «Едет к покупателю» — уже куплено покупателями, ждёт сборки/отгрузки
-        со склада Ozon (ещё физически на складе, но продать кому-то ещё нельзя). Оба — из Ozon Seller API (POST
-        /v2/analytics/stock_on_warehouses), по каждому складу отдельно — раскройте строку товара, чтобы увидеть
-        разбивку. «FBO ожидается» — рабочая гипотеза (поле Ozon называется promised_amount, официального описания не
-        нашлось) — вероятно, товар в пути на склад, но это пока не подтверждено на реальном примере. «FBS» — из
-        каталога (как и раньше на карточке товара). Данные Ozon не даёт историю остатков — это всегда текущий срез
-        на момент последнего «Обновить остатки».
+        «FBO доступно» — можно продать прямо сейчас. «Возвращается от покупателя» (поле Ozon называется
+        reserved_amount) — рабочая гипотеза, сверена на двух реальных товарах с отчётом Ozon «Доступность товаров»:
+        на одном совпало точно, на другом — близко, но не один в один (вероятно, из-за разницы во времени между
+        последним «Обновить остатки» и моментом сверки). Оба показателя — из Ozon Seller API (POST /v2/analytics/
+        stock_on_warehouses), по каждому складу отдельно — раскройте строку товара, чтобы увидеть разбивку. «FBO
+        ожидается» — тоже рабочая гипотеза (поле promised_amount, официального описания не нашлось) — товар уже
+        отгружен и едет на склад Ozon (не то же самое, что «в заявке на поставку, но ещё не отгружен» — это
+        подтверждено отдельно). «FBS» — из каталога (как и раньше на карточке товара). Данные Ozon не даёт историю
+        остатков — это всегда текущий срез на момент последнего «Обновить остатки».
       </div>
 
       {!data ? (
@@ -122,24 +124,24 @@ export function WarehouseStocksPage() {
           Ничего не найдено по запросу «{search}».
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+        <div className="max-h-[70vh] overflow-auto rounded-md border border-slate-200 bg-white">
           <table className="text-sm" style={{ tableLayout: "fixed", width: widths.reduce((a, b) => a + b, 0) }}>
             <colgroup>
               {widths.map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
             </colgroup>
-            <thead className="bg-slate-50 text-xs text-slate-500">
+            <thead className="sticky top-0 z-20 bg-slate-50 text-xs text-slate-500">
               <tr>
                 {COLUMNS.map((label, i) => (
                   <th
                     key={label}
-                    className={`relative select-none overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 ${i === 0 ? "text-left" : "text-right"}`}
+                    className={`relative select-none overflow-hidden text-ellipsis whitespace-nowrap bg-slate-50 px-3 py-2 ${i === 0 ? "text-left" : "text-right"}`}
                     title={
-                      label === "Едет к покупателю"
-                        ? "Уже куплено покупателями, ждёт сборки/отгрузки со склада Ozon"
+                      label === "Возвращается от покупателя"
+                        ? "Рабочая гипотеза — сверено с отчётом Ozon «Доступность товаров», не идеально точно"
                         : label === "FBO ожидается"
-                          ? "Рабочая гипотеза (Ozon не описывает это поле официально) — вероятно, товар в пути на склад Ozon"
+                          ? "Рабочая гипотеза (Ozon не описывает это поле официально) — товар уже отгружен и едет на склад Ozon"
                           : undefined
                     }
                   >
