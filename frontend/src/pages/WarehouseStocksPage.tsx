@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { useResizableColumns } from "../hooks/useResizableColumns";
 import { useStore } from "../store/StoreContext";
 import type { ProductWarehouseStockSummary, SyncRun, WarehouseStockListResponse } from "../types";
 
 function fmtNum(v: number | null): string {
   return v === null ? "—" : v.toLocaleString("ru-RU");
 }
+
+const COLUMNS = ["Товар", "FBO доступно", "FBO резерв", "FBO ожидается", "FBS"];
+const DEFAULT_WIDTHS = [320, 130, 110, 130, 90];
 
 export function WarehouseStocksPage() {
   const { currentStore } = useStore();
@@ -14,6 +18,7 @@ export function WarehouseStocksPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const { widths, startResize } = useResizableColumns(DEFAULT_WIDTHS);
 
   const load = () => {
     if (!currentStore) return;
@@ -97,11 +102,13 @@ export function WarehouseStocksPage() {
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-        «FBO доступно»/«FBO резерв» — из Ozon Seller API (POST /v2/analytics/stock_on_warehouses), по каждому складу
-        отдельно — раскройте строку товара, чтобы увидеть разбивку. «FBO ожидается» — рабочая гипотеза (поле Ozon
-        называется promised_amount, официального описания не нашлось) — вероятно, товар в пути на склад, но это пока
-        не подтверждено на реальном примере. «FBS» — из каталога (как и раньше на карточке товара). Данные Ozon не
-        даёт историю остатков — это всегда текущий срез на момент последнего «Обновить остатки».
+        «FBO доступно» — можно продать прямо сейчас. «FBO резерв» — уже куплено покупателями, ждёт сборки/отгрузки
+        со склада Ozon (ещё физически на складе, но продать кому-то ещё нельзя). Оба — из Ozon Seller API (POST
+        /v2/analytics/stock_on_warehouses), по каждому складу отдельно — раскройте строку товара, чтобы увидеть
+        разбивку. «FBO ожидается» — рабочая гипотеза (поле Ozon называется promised_amount, официального описания не
+        нашлось) — вероятно, товар в пути на склад, но это пока не подтверждено на реальном примере. «FBS» — из
+        каталога (как и раньше на карточке товара). Данные Ozon не даёт историю остатков — это всегда текущий срез
+        на момент последнего «Обновить остатки».
       </div>
 
       {!data ? (
@@ -116,14 +123,33 @@ export function WarehouseStocksPage() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
-          <table className="w-full min-w-[900px] text-sm">
+          <table className="text-sm" style={{ tableLayout: "fixed", width: widths.reduce((a, b) => a + b, 0) }}>
+            <colgroup>
+              {widths.map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+            </colgroup>
             <thead className="bg-slate-50 text-xs text-slate-500">
               <tr>
-                <th className="px-3 py-2 text-left">Товар</th>
-                <th className="px-3 py-2 text-right">FBO доступно</th>
-                <th className="px-3 py-2 text-right">FBO резерв</th>
-                <th className="px-3 py-2 text-right">FBO ожидается</th>
-                <th className="px-3 py-2 text-right">FBS</th>
+                {COLUMNS.map((label, i) => (
+                  <th
+                    key={label}
+                    className={`relative select-none overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 ${i === 0 ? "text-left" : "text-right"}`}
+                    title={
+                      label === "FBO резерв"
+                        ? "Уже куплено покупателями, ждёт сборки/отгрузки со склада Ozon"
+                        : label === "FBO ожидается"
+                          ? "Рабочая гипотеза (Ozon не описывает это поле официально) — вероятно, товар в пути на склад Ozon"
+                          : undefined
+                    }
+                  >
+                    {label}
+                    <span
+                      onMouseDown={startResize(i)}
+                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-300"
+                    />
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -134,9 +160,9 @@ export function WarehouseStocksPage() {
                     className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
                     onClick={() => toggle(row.ozon_sku)}
                   >
-                    <td className="px-3 py-2">
+                    <td className="overflow-hidden px-3 py-2">
                       <span className="mr-1 inline-block w-3 text-slate-400">{expanded.has(row.ozon_sku) ? "▾" : "▸"}</span>
-                      {row.name ?? row.offer_id ?? row.ozon_sku}
+                      <span className="overflow-hidden text-ellipsis whitespace-nowrap">{row.name ?? row.offer_id ?? row.ozon_sku}</span>
                       <div className="text-xs text-slate-400">SKU {row.ozon_sku}</div>
                     </td>
                     <td className="px-3 py-2 text-right">{fmtNum(row.fbo_free_to_sell_total)}</td>
@@ -147,7 +173,7 @@ export function WarehouseStocksPage() {
                   {expanded.has(row.ozon_sku) &&
                     row.warehouses.map((w) => (
                       <tr key={`${row.ozon_sku}-${w.warehouse_name}`} className="border-t border-slate-50 bg-slate-50/50 text-xs text-slate-600">
-                        <td className="px-3 py-1.5 pl-9">
+                        <td className="overflow-hidden text-ellipsis whitespace-nowrap px-3 py-1.5 pl-9">
                           {w.warehouse_name}
                           {w.cluster_name && <span className="text-slate-400"> · {w.cluster_name}</span>}
                         </td>
