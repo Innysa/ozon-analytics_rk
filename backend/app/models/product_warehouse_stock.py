@@ -8,15 +8,25 @@
 Ozon отдаёт free_to_sell_amount («доступно к продаже»), reserved_amount
 («зарезервировано» — уже заказано, ждёт отгрузки покупателю),
 promised_amount — поле без официального описания под рукой, но по
-смыслу названия и структуре ответа (значение > 0 у части строк, когда
-free_to_sell/reserved = 0) — похоже на «обещанный», то есть ожидаемый к
-поступлению на этот склад остаток ("в пути на склад Ozon"), который
-пользователь прямо просила показать отдельно; ТРЕБУЕТ дальнейшего
+смыслу названия и структуре ответа — похоже на «обещанный», то есть
+ожидаемый к поступлению на этот склад остаток ("в пути на склад Ozon"),
+который пользователь прямо просила показать отдельно; ТРЕБУЕТ дальнейшего
 подтверждения на реальном примере с promised_amount > 0 прежде чем
 подписывать это пользователю как факт, а не гипотезу — см. README.
 
+ИСПРАВЛЕНО 2026-10-02 (тот же день, вторая проверка на реальных данных):
+запрос по ВСЕМУ каталогу (без фильтра по конкретному SKU — именно так
+устроена и сама синхронизация) у части складов НЕ возвращает warehouse_id
+вообще (только warehouse_name) — хотя в первом тестовом прогоне на одном
+товаре оно было у каждой строки. Из-за этого ключ строился по
+warehouse_id и реально пропускал почти все строки (получено 302, сохранено
+0 на реальном магазине). warehouse_name оказался единственным полем,
+присутствующим во ВСЕХ наблюдавшихся строках — он и стал настоящим
+естественным ключом склада; warehouse_id остался как необязательное
+дополнительное поле (может быть NULL).
+
 Снимок, не история: как и ProductPriceDailySnapshot, каждая синхронизация
-ПЕРЕЗАПИСЫВАЕТ текущее состояние по (store, sku, warehouse_id), не
+ПЕРЕЗАПИСЫВАЕТ текущее состояние по (store, sku, warehouse_name), не
 накапливает — Ozon не отдаёт историю остатков по датам через этот метод,
 только текущий срез."""
 from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
@@ -28,7 +38,7 @@ from app.db.base import Base, TimestampMixin, new_uuid
 class ProductWarehouseStock(TimestampMixin, Base):
     __tablename__ = "product_warehouse_stocks"
     __table_args__ = (
-        UniqueConstraint("store_id", "ozon_sku", "warehouse_id", name="uq_product_warehouse_stock_store_sku_warehouse"),
+        UniqueConstraint("store_id", "ozon_sku", "warehouse_name", name="uq_product_warehouse_stock_store_sku_warehouse"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -37,8 +47,11 @@ class ProductWarehouseStock(TimestampMixin, Base):
     ozon_sku: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     offer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    warehouse_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Естественный ключ склада — см. докстринг выше про 2026-10-02:
+    # warehouse_id ненадёжен (бывает NULL), warehouse_name присутствует
+    # во всех наблюдавшихся строках.
+    warehouse_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    warehouse_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cluster_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

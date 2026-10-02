@@ -1,7 +1,13 @@
 """Tests for app.services.warehouse_stock_sync_service — per-warehouse FBO
 stock from POST /v2/analytics/stock_on_warehouses (CONFIRMED live
 2026-10-02, see that module's own docstring and OzonSellerClient.
-get_stock_on_warehouses's own docstring)."""
+get_stock_on_warehouses's own docstring).
+
+warehouse_name, not warehouse_id, is the real per-warehouse key — a real
+account's full-catalog response omitted warehouse_id for a chunk of
+warehouses (302 fetched, 0 saved on the first real run) while
+warehouse_name was present on every row observed. See
+ProductWarehouseStock's own docstring, «ИСПРАВЛЕНО 2026-10-02»."""
 from app.models.product_warehouse_stock import ProductWarehouseStock
 from app.services.ozon.exceptions import OzonAuthError
 from app.services.warehouse_stock_sync_service import sync_warehouse_stocks
@@ -25,7 +31,7 @@ class _RaisingClient:
         raise OzonAuthError("bad key")
 
 
-def _item(sku=111, warehouse_id=1, warehouse_name="ВОРОНЕЖ_РФЦ", free=10, reserved=2, promised=0):
+def _item(sku=111, warehouse_name="ВОРОНЕЖ_РФЦ", warehouse_id=1, free=10, reserved=2, promised=0):
     return {
         "sku": sku,
         "item_code": "offer-111",
@@ -43,7 +49,7 @@ def _item(sku=111, warehouse_id=1, warehouse_name="ВОРОНЕЖ_РФЦ", free=
 def test_sync_creates_rows(db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
-    client = _FakeClient([[_item(warehouse_id=1), _item(warehouse_id=2, warehouse_name="УФА_РФЦ")]])
+    client = _FakeClient([[_item(warehouse_name="ВОРОНЕЖ_РФЦ"), _item(warehouse_name="УФА_РФЦ", warehouse_id=2)]])
 
     outcome = sync_warehouse_stocks(db_session, store_id=store_id, client=client)
     db_session.commit()
@@ -56,33 +62,51 @@ def test_sync_creates_rows(db_session, two_stores_with_users):
     assert {r.warehouse_name for r in rows} == {"ВОРОНЕЖ_РФЦ", "УФА_РФЦ"}
 
 
+def test_sync_keeps_row_when_warehouse_id_is_missing(db_session, two_stores_with_users):
+    """The exact real-account bug: a row with warehouse_name but no
+    warehouse_id at all must still be saved, not silently dropped."""
+    d = two_stores_with_users
+    store_id = d["store_a"].id
+    item = _item(warehouse_name="Екатеринбург_РФЦ_НОВЫЙ")
+    del item["warehouse_id"]
+    client = _FakeClient([[item]])
+
+    outcome = sync_warehouse_stocks(db_session, store_id=store_id, client=client)
+    db_session.commit()
+
+    assert outcome.upserted == 1
+    row = db_session.query(ProductWarehouseStock).filter(ProductWarehouseStock.store_id == store_id).first()
+    assert row.warehouse_name == "Екатеринбург_РФЦ_НОВЫЙ"
+    assert row.warehouse_id is None
+
+
 def test_sync_is_a_full_replace_snapshot(db_session, two_stores_with_users):
     """A SKU/warehouse missing from the latest Ozon response must not
     linger as a stale row — see ProductWarehouseStock's own docstring."""
     d = two_stores_with_users
     store_id = d["store_a"].id
 
-    first_client = _FakeClient([[_item(warehouse_id=1), _item(warehouse_id=2)]])
+    first_client = _FakeClient([[_item(warehouse_name="ВОРОНЕЖ_РФЦ"), _item(warehouse_name="УФА_РФЦ", warehouse_id=2)]])
     sync_warehouse_stocks(db_session, store_id=store_id, client=first_client)
     db_session.commit()
     assert db_session.query(ProductWarehouseStock).filter(ProductWarehouseStock.store_id == store_id).count() == 2
 
-    second_client = _FakeClient([[_item(warehouse_id=1, free=5)]])
+    second_client = _FakeClient([[_item(warehouse_name="ВОРОНЕЖ_РФЦ", free=5)]])
     outcome = sync_warehouse_stocks(db_session, store_id=store_id, client=second_client)
     db_session.commit()
 
     rows = db_session.query(ProductWarehouseStock).filter(ProductWarehouseStock.store_id == store_id).all()
     assert outcome.upserted == 1
     assert len(rows) == 1
-    assert rows[0].warehouse_id == 1
+    assert rows[0].warehouse_name == "ВОРОНЕЖ_РФЦ"
     assert rows[0].free_to_sell_amount == 5
 
 
 def test_sync_paginates_until_a_short_page(db_session, two_stores_with_users):
     d = two_stores_with_users
     store_id = d["store_a"].id
-    full_page = [_item(warehouse_id=i) for i in range(1000)]
-    short_page = [_item(warehouse_id=1000)]
+    full_page = [_item(warehouse_name=f"СКЛАД_{i}") for i in range(1000)]
+    short_page = [_item(warehouse_name="СКЛАД_1000")]
     client = _FakeClient([full_page, short_page])
 
     outcome = sync_warehouse_stocks(db_session, store_id=store_id, client=client)

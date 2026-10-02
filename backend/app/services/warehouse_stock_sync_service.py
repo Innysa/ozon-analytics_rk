@@ -90,18 +90,28 @@ def sync_warehouse_stocks(db: Session, *, store_id: str, client) -> WarehouseSto
         )
 
     rows: list[ProductWarehouseStock] = []
+    # warehouse_id is UNRELIABLE (see ProductWarehouseStock's own docstring,
+    # «ИСПРАВЛЕНО 2026-10-02»: a full-catalog call omits it for a chunk of
+    # warehouses) — warehouse_name is the real key, warehouse_id is kept
+    # only as optional extra info when Ozon does supply it.
+    seen: set[tuple[str, str]] = set()
     for item in items:
         sku = item.get("sku")
-        warehouse_id = item.get("warehouse_id")
-        if sku is None or warehouse_id is None:
+        warehouse_name = item.get("warehouse_name")
+        if sku is None or not warehouse_name:
             continue
+        key = (str(sku), warehouse_name)
+        if key in seen:
+            continue  # defensive — Ozon hasn't been observed to repeat a (sku, warehouse) pair, but the unique constraint would reject a duplicate mid-sync
+        seen.add(key)
+        warehouse_id = item.get("warehouse_id")
         rows.append(
             ProductWarehouseStock(
                 store_id=store_id,
                 ozon_sku=str(sku),
                 offer_id=item.get("item_code"),
-                warehouse_id=int(warehouse_id),
-                warehouse_name=item.get("warehouse_name"),
+                warehouse_name=warehouse_name,
+                warehouse_id=int(warehouse_id) if warehouse_id is not None else None,
                 cluster_id=item.get("cluster_id"),
                 cluster_name=item.get("cluster_name"),
                 free_to_sell_amount=int(item.get("free_to_sell_amount") or 0),

@@ -609,8 +609,8 @@ export interface SearchQueryStatisticListResponse {
 export interface WarehouseStockRow {
   ozon_sku: string;
   offer_id: string | null;
-  warehouse_id: number;
-  warehouse_name: string | null;
+  warehouse_id: number | null;
+  warehouse_name: string;
   cluster_name: string | null;
   free_to_sell_amount: number;
   reserved_amount: number;

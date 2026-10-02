@@ -4,8 +4,8 @@ from pydantic import BaseModel
 class WarehouseStockRowOut(BaseModel):
     ozon_sku: str
     offer_id: str | None
-    warehouse_id: int
-    warehouse_name: str | None
+    warehouse_id: int | None
+    warehouse_name: str
     cluster_name: str | None
     free_to_sell_amount: int
     reserved_amount: int

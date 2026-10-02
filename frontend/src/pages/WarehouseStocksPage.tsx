@@ -146,9 +146,9 @@ export function WarehouseStocksPage() {
                   </tr>
                   {expanded.has(row.ozon_sku) &&
                     row.warehouses.map((w) => (
-                      <tr key={`${row.ozon_sku}-${w.warehouse_id}`} className="border-t border-slate-50 bg-slate-50/50 text-xs text-slate-600">
+                      <tr key={`${row.ozon_sku}-${w.warehouse_name}`} className="border-t border-slate-50 bg-slate-50/50 text-xs text-slate-600">
                         <td className="px-3 py-1.5 pl-9">
-                          {w.warehouse_name ?? w.warehouse_id}
+                          {w.warehouse_name}
                           {w.cluster_name && <span className="text-slate-400"> · {w.cluster_name}</span>}
                         </td>
                         <td className="px-3 py-1.5 text-right">{fmtNum(w.free_to_sell_amount)}</td>
