@@ -7,7 +7,7 @@ as small as possible to isolate where things go wrong.
 
 Usage (inside the running container):
 
-    docker compose exec app python backend/scripts/probe_supply_order_bundle.py --store-id a586ccc5-6030-4ec9-b133-da9de24dafcf --bundle-id 01a0fb66-d5e4-7eec-b111-197a722a0561
+    docker compose exec app python backend/scripts/probe_supply_order_bundle.py --store-id a586ccc5-6030-4ec9-b133-da9de24dafcf --bundle-id 01a0fb66-d5e4-7eec-b111-197a722a0561 --order-id 132107093
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--store-id", required=True)
     parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--order-id", required=True, type=int)
     args = parser.parse_args()
 
     db = SessionLocal()
@@ -43,7 +44,9 @@ def main() -> None:
         with OzonSellerClient(ClientCredentials(client_id=client_id, api_key=api_key)) as client:
             print("ready, calling /v1/supply-order/bundle")
             try:
-                data = client._post("/v1/supply-order/bundle", {"bundle_ids": [args.bundle_id]})  # noqa: SLF001
+                data = client._post(  # noqa: SLF001
+                    "/v1/supply-order/bundle", {"bundle_ids": [args.bundle_id], "limit": 100},
+                )
                 print("success")
                 print(json.dumps(data, ensure_ascii=False, indent=2)[:8000])
             except OzonAPIError as exc:
@@ -51,7 +54,7 @@ def main() -> None:
 
             print("\ncalling /v1/supply-order/details")
             try:
-                data = client._post("/v1/supply-order/details", {"order_id": args.bundle_id})  # noqa: SLF001
+                data = client._post("/v1/supply-order/details", {"order_id": args.order_id})  # noqa: SLF001
                 print("success")
                 print(json.dumps(data, ensure_ascii=False, indent=2)[:8000])
             except OzonAPIError as exc:
