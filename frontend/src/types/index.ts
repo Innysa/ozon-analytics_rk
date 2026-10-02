@@ -625,6 +625,7 @@ export interface ProductWarehouseStockSummary {
   fbo_reserved_total: number;
   fbo_promised_total: number;
   fbs_stock: number | null;
+  pending_supply_units: number | null;
   warehouses: WarehouseStockRow[];
 }
 

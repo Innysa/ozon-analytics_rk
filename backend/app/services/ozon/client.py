@@ -761,3 +761,49 @@ class OzonSellerClient:
             "/v2/analytics/stock_on_warehouses",
             {"limit": limit, "offset": offset, "warehouse_type": warehouse_type},
         )
+
+    def list_supply_orders(self, *, states: list[int], limit: int = 100, last_id: str = "") -> dict:
+        """POST /v3/supply-order/list — CONFIRMED live 2026-10-02
+        (backend/scripts/probe_stocks.py / probe_supply_order_details.py,
+        real account): returns ONLY {"order_ids": [...], "last_id": ...},
+        no item composition — see get_supply_order() / get_supply_order_
+        bundle() for that. Required fields confirmed the hard way:
+        filter.states must be non-empty (an empty filter rejects with
+        "States: value must contain at least 1 item(s)"), sort_by must be
+        a non-zero int (1 confirmed working — the actual enum meaning of
+        1 is NOT confirmed, just that it's accepted and returns real
+        draft/unshipped orders), limit must be in (0, 100]. Real state
+        VALUES this app's "not yet shipped" states cover are not fully
+        catalogued — see app.services.supply_order_pending_sync_service's
+        own docstring for which ones are used and why."""
+        return self._post(
+            "/v3/supply-order/list",
+            {"filter": {"states": states}, "limit": limit, "sort_by": 1, "last_id": last_id},
+        )
+
+    def get_supply_order(self, order_id: int) -> dict:
+        """POST /v3/supply-order/get — CONFIRMED live 2026-10-02: one
+        order_id per call (body {"order_ids": [order_id]} — a list, but
+        only ever tried with exactly one element). Response is order-level
+        metadata (timeslot, warehouse, vehicle, marking/ETTN flags, cancel-
+        lability...) — crucially includes a nested content.bundle_id
+        SOMEWHERE in the response (exact path/nesting not pinned down —
+        app.services.supply_order_pending_sync_service extracts it with a
+        generic recursive key search rather than a fixed path that might
+        silently miss it on a response shaped slightly differently), the
+        ONLY confirmed way to then fetch the actual SKU/quantity
+        composition via get_supply_order_bundle(). Does NOT itself contain
+        sku/quantity anywhere (confirmed by grepping a real response)."""
+        return self._post("/v3/supply-order/get", {"order_ids": [order_id]})
+
+    def get_supply_order_bundle(self, bundle_id: str, *, limit: int = 100) -> dict:
+        """POST /v1/supply-order/bundle — CONFIRMED live 2026-10-02: the
+        actual per-SKU composition of a supply order ("Состав заявки" in
+        the seller cabinet) — a real response for one bundle_id returned 6
+        rows, each {"sku": ..., "quantity": ...}, matching the user's own
+        cabinet screenshot's "Всего N SKU" breakdown. bundle_id must be
+        the UUID from get_supply_order()'s content.bundle_id — the
+        supply order's own numeric order_id/supply id does NOT work here
+        (confirmed: "invalid value for string field bundle_ids"/wrong
+        shape errors). limit is required (validated range (0, 100])."""
+        return self._post("/v1/supply-order/bundle", {"bundle_ids": [bundle_id], "limit": limit})

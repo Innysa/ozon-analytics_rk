@@ -44,9 +44,34 @@ def list_warehouse_stocks(
                 fbo_reserved_total=sum(r.reserved_amount for r in sku_rows),
                 fbo_promised_total=sum(r.promised_amount for r in sku_rows),
                 fbs_stock=product.fbs_stock if product else None,
+                pending_supply_units=product.pending_supply_units if product else None,
                 warehouses=[WarehouseStockRowOut.model_validate(r) for r in sku_rows],
             )
         )
+
+    # A product can have pending (not-yet-shipped) supply quantity without
+    # yet having any row in ProductWarehouseStock at all (e.g. brand new,
+    # never been on an FBO warehouse) — still show it, with zero FBO/FBS,
+    # rather than silently dropping it from the list.
+    for sku, product in products_by_sku.items():
+        if sku in by_sku:
+            continue
+        if not product.pending_supply_units:
+            continue
+        items.append(
+            ProductWarehouseStockSummaryOut(
+                ozon_sku=sku,
+                offer_id=product.offer_id,
+                name=product.name,
+                fbo_free_to_sell_total=0,
+                fbo_reserved_total=0,
+                fbo_promised_total=0,
+                fbs_stock=product.fbs_stock,
+                pending_supply_units=product.pending_supply_units,
+                warehouses=[],
+            )
+        )
+
     items.sort(key=lambda r: r.name or "")
 
     last_sync = (

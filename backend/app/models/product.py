@@ -41,6 +41,17 @@ class Product(TimestampMixin, Base):
     cost_price_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     fbo_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fbs_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ДОБАВЛЕНО 2026-10-02 по прямой просьбе пользователя: суммарное
+    # количество этого SKU во всех НЕ ОТГРУЖЕННЫХ заявках на поставку
+    # («В поставке (не отгружено)» на «Остатки») — см.
+    # app.services.supply_order_pending_sync_service для подтверждённой
+    # цепочки из трёх методов Ozon, которая до этого нужна была, чтобы
+    # получить состав заявки (sku/quantity), и почему promised_amount
+    # (см. ProductWarehouseStock) — это другое число («едет», уже
+    # отгружено). NULL, пока синк ни разу не запускался; full-replace
+    # снимок, как и остальные Ozon-производные поля здесь — Ozon не
+    # отдаёт историю, только текущее состояние заявок.
+    pending_supply_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Per-product «Доля локальных продаж» — like cost_price_rub, no Ozon

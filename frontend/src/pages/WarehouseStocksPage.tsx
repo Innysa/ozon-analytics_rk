@@ -8,8 +8,8 @@ function fmtNum(v: number | null): string {
   return v === null ? "—" : v.toLocaleString("ru-RU");
 }
 
-const COLUMNS = ["Товар", "FBO доступно", "Возвращается от покупателя", "FBO ожидается", "FBS"];
-const DEFAULT_WIDTHS = [320, 130, 150, 130, 90];
+const COLUMNS = ["Товар", "FBO доступно", "Возвращается от покупателя", "FBO ожидается", "FBS", "В поставке (не отгружено)"];
+const DEFAULT_WIDTHS = [320, 130, 150, 130, 90, 170];
 
 export function WarehouseStocksPage() {
   const { currentStore } = useStore();
@@ -108,9 +108,10 @@ export function WarehouseStocksPage() {
         последним «Обновить остатки» и моментом сверки). Оба показателя — из Ozon Seller API (POST /v2/analytics/
         stock_on_warehouses), по каждому складу отдельно — раскройте строку товара, чтобы увидеть разбивку. «FBO
         ожидается» — тоже рабочая гипотеза (поле promised_amount, официального описания не нашлось) — товар уже
-        отгружен и едет на склад Ozon (не то же самое, что «в заявке на поставку, но ещё не отгружен» — это
-        подтверждено отдельно). «FBS» — из каталога (как и раньше на карточке товара). Данные Ozon не даёт историю
-        остатков — это всегда текущий срез на момент последнего «Обновить остатки».
+        отгружен и едет на склад Ozon. «В поставке (не отгружено)» — отдельно подтверждённая цепочка методов Ozon
+        (список заявок на поставку → состав каждой заявки) — сколько штук уже оформлено в заявку, но физически ещё
+        не отгружено со склада продавца. «FBS» — из каталога (как и раньше на карточке товара). Данные Ozon не даёт
+        историю остатков — это всегда текущий срез на момент последнего «Обновить остатки».
       </div>
 
       {!data ? (
@@ -142,7 +143,9 @@ export function WarehouseStocksPage() {
                         ? "Рабочая гипотеза — сверено с отчётом Ozon «Доступность товаров», не идеально точно"
                         : label === "FBO ожидается"
                           ? "Рабочая гипотеза (Ozon не описывает это поле официально) — товар уже отгружен и едет на склад Ozon"
-                          : undefined
+                          : label === "В поставке (не отгружено)"
+                            ? "Суммарно по всем заявкам на поставку, которые ещё не отгружены (подтверждено: POST /v3/supply-order/list + /v3/supply-order/get + /v1/supply-order/bundle)"
+                            : undefined
                     }
                   >
                     {label}
@@ -171,6 +174,7 @@ export function WarehouseStocksPage() {
                     <td className="px-3 py-2 text-right">{fmtNum(row.fbo_reserved_total)}</td>
                     <td className="px-3 py-2 text-right">{fmtNum(row.fbo_promised_total)}</td>
                     <td className="px-3 py-2 text-right">{fmtNum(row.fbs_stock)}</td>
+                    <td className="px-3 py-2 text-right">{fmtNum(row.pending_supply_units)}</td>
                   </tr>
                   {expanded.has(row.ozon_sku) &&
                     row.warehouses.map((w) => (
@@ -182,6 +186,7 @@ export function WarehouseStocksPage() {
                         <td className="px-3 py-1.5 text-right">{fmtNum(w.free_to_sell_amount)}</td>
                         <td className="px-3 py-1.5 text-right">{fmtNum(w.reserved_amount)}</td>
                         <td className="px-3 py-1.5 text-right">{fmtNum(w.promised_amount)}</td>
+                        <td className="px-3 py-1.5 text-right"></td>
                         <td className="px-3 py-1.5 text-right"></td>
                       </tr>
                     ))}

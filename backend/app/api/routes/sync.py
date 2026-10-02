@@ -36,6 +36,7 @@ from app.services.product_catalog_sync_service import sync_product_catalog
 from app.services.accrual_daily_sync_service import sync_accrual_daily_statistic, sync_recent_accrual_days
 from app.services.realization_report_sync_service import sync_missing_realization_reports, sync_realization_report_month
 from app.services.search_query_details_sync_service import sync_search_query_details
+from app.services.supply_order_pending_sync_service import sync_supply_order_pending_quantities
 from app.services.warehouse_stock_sync_service import sync_warehouse_stocks
 from app.services.ozon_performance.client import OzonPerformanceClient
 from app.services.ozon_performance.client import PerformanceCredentials as OzonPerfCredentials
@@ -997,7 +998,14 @@ def sync_ozon_warehouse_stocks(
     app.services.warehouse_stock_sync_service's own docstring for the
     confirmed contract. A small, fast, paginated call (no async-report
     flow), so this runs synchronously like sync_ozon_rating_summary
-    above, not via BackgroundTasks."""
+    above, not via BackgroundTasks.
+
+    Also runs app.services.supply_order_pending_sync_service in the SAME
+    call (one button on «Остатки», not two) — a SEPARATE Ozon call chain
+    from a different store_id's own SyncRun's perspective, so its own
+    failure is tracked independently and never blocks/rolls back the
+    warehouse-stock half, same pattern as accrual_daily_sync_service's
+    realization/by-day addition."""
     creds = db.query(OzonCredentials).filter(OzonCredentials.store_id == ctx.store_id).first()
     if not creds or not creds.client_id_encrypted or not creds.api_key_encrypted:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для магазина не заданы ключи Ozon Seller API")
@@ -1020,13 +1028,15 @@ def sync_ozon_warehouse_stocks(
     try:
         with OzonSellerClient(OzonClientCredentials(client_id=client_id, api_key=api_key)) as client:
             outcome = sync_warehouse_stocks(db, store_id=ctx.store_id, client=client)
+            pending_outcome = sync_supply_order_pending_quantities(db, store_id=ctx.store_id, client=client)
+        all_errors = list(outcome.errors) + [f"поставки: {e}" for e in pending_outcome.errors]
         if outcome.hard_failure:
             run.status = SyncStatus.FAILED
-        elif outcome.errors:
+        elif all_errors:
             run.status = SyncStatus.PARTIAL
         else:
             run.status = SyncStatus.SUCCESS
-        error_message = "; ".join(outcome.errors[:20]) if outcome.errors else None
+        error_message = "; ".join(all_errors[:20]) if all_errors else None
         fetched, created = outcome.fetched, outcome.upserted
     except OzonAuthError as exc:
         run.status = SyncStatus.FAILED

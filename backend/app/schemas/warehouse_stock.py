@@ -25,6 +25,7 @@ class ProductWarehouseStockSummaryOut(BaseModel):
     fbo_reserved_total: int
     fbo_promised_total: int
     fbs_stock: int | None
+    pending_supply_units: int | None
     warehouses: list[WarehouseStockRowOut]
 
 
