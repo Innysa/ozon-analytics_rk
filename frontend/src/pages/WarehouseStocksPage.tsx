@@ -8,8 +8,8 @@ function fmtNum(v: number | null): string {
   return v === null ? "—" : v.toLocaleString("ru-RU");
 }
 
-const COLUMNS = ["Товар", "FBO доступно", "FBO резерв", "FBO ожидается", "FBS"];
-const DEFAULT_WIDTHS = [320, 130, 110, 130, 90];
+const COLUMNS = ["Товар", "FBO доступно", "Едет к покупателю", "FBO ожидается", "FBS"];
+const DEFAULT_WIDTHS = [320, 130, 150, 130, 90];
 
 export function WarehouseStocksPage() {
   const { currentStore } = useStore();
@@ -102,7 +102,7 @@ export function WarehouseStocksPage() {
       {notice && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-600">{notice}</div>}
 
       <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-        «FBO доступно» — можно продать прямо сейчас. «FBO резерв» — уже куплено покупателями, ждёт сборки/отгрузки
+        «FBO доступно» — можно продать прямо сейчас. «Едет к покупателю» — уже куплено покупателями, ждёт сборки/отгрузки
         со склада Ozon (ещё физически на складе, но продать кому-то ещё нельзя). Оба — из Ozon Seller API (POST
         /v2/analytics/stock_on_warehouses), по каждому складу отдельно — раскройте строку товара, чтобы увидеть
         разбивку. «FBO ожидается» — рабочая гипотеза (поле Ozon называется promised_amount, официального описания не
@@ -136,7 +136,7 @@ export function WarehouseStocksPage() {
                     key={label}
                     className={`relative select-none overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 ${i === 0 ? "text-left" : "text-right"}`}
                     title={
-                      label === "FBO резерв"
+                      label === "Едет к покупателю"
                         ? "Уже куплено покупателями, ждёт сборки/отгрузки со склада Ozon"
                         : label === "FBO ожидается"
                           ? "Рабочая гипотеза (Ozon не описывает это поле официально) — вероятно, товар в пути на склад Ozon"
