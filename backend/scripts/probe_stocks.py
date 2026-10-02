@@ -134,7 +134,8 @@ def main() -> None:
                 client,
                 path="/v1/product/info/stocks-by-warehouse/fbo",
                 bodies=[
-                    {"sku": [int(args.sku)], "limit": 100},
+                    {"skus": [int(args.sku)], "limit": 100},
+                    {"skus": [args.sku], "limit": 100},
                 ],
             )
             if data:
@@ -145,8 +146,11 @@ def main() -> None:
                 client,
                 path="/v3/supply-order/list",
                 bodies=[
-                    {"filter": {}, "limit": 20},
-                    {"limit": 20},
+                    {"filter": {}, "limit": 20, "sort_by": 1},
+                    {"filter": {}, "limit": 20, "sort_by": 2},
+                    {"filter": {}, "limit": 20, "sort_by": 3},
+                    {"filter": {}, "limit": 20, "sort_by": "SORT_BY_CREATED_AT"},
+                    {"filter": {}, "limit": 20, "sort_by": "CREATED_AT"},
                 ],
             )
             if data:
